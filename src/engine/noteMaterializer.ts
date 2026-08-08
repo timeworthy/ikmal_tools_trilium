@@ -5,16 +5,19 @@
  * journal note when the plan calls for it, and creates its child notes.
  *
  * `api.createNote` is the only piece of this exposed on the frontend script
- * API. Cloning a note to a second parent isn't — Trilium's own client uses
- * `PUT notes/{childNoteId}/clone-to-note/{parentNoteId}` (branches.ts) for
- * that, which this replicates with the same authenticated-fetch-plus-CSRF-
- * retry convention packagePersistence.ts uses for the same reason (no
- * `runOnBackend`, since backendScriptingEnabled is commonly off).
+ * API. Cloning a note to a second parent uses toggle-in-parent or
+ * `api.ensureNoteIsPresentInParent` via `TriliumApiBridge`.
  */
 
 import { NoteCreationPlan } from './noteCreationEngine.js';
 import { RelationshipEngine } from './relationshipEngine.js';
 import { TemplateEngine } from './templateEngine.js';
+
+// Trilium injects `api` as a scoped variable into backend script execution; it is
+// not a property of `globalThis` there. Closures passed to `runOnBackend` are
+// serialised to source and re-parsed on the backend, so they must reference this
+// bare identifier rather than capturing anything from the frontend scope.
+declare const api: any;
 
 interface TriliumFNote {
     noteId: string;
@@ -107,6 +110,20 @@ export function applyDerivedTopics(
 }
 
 async function cloneNoteToParentNote(childNoteId: string, parentNoteId: string): Promise<void> {
+    const frontendApi = (globalThis as any).api;
+    if (frontendApi && typeof frontendApi.runOnBackend === 'function') {
+        try {
+            const applied = await frontendApi.runOnBackend((cId: string, pId: string) => {
+                if (typeof api === 'undefined' || typeof api.ensureNoteIsPresentInParent !== 'function') {
+                    return false;
+                }
+                api.ensureNoteIsPresentInParent(cId, pId, '');
+                return true;
+            }, [childNoteId, parentNoteId]);
+            if (applied) return;
+        } catch {}
+    }
+
     const glob = (globalThis as any).glob;
     if (!glob) throw new Error('Not running inside Trilium.');
 
@@ -115,7 +132,7 @@ async function cloneNoteToParentNote(childNoteId: string, parentNoteId: string):
         'trilium-component-id': glob.componentId,
         'content-type': 'application/json',
     };
-    const path = `${glob.baseApiUrl}notes/${childNoteId}/clone-to-note/${parentNoteId}`;
+    const path = `${glob.baseApiUrl}notes/${childNoteId}/toggle-in-parent/${parentNoteId}/true`;
     const send = () => (globalThis as any).fetch(path, {
         method: 'PUT',
         credentials: 'same-origin',
@@ -210,8 +227,9 @@ async function attachProjectDashboard(noteId: string): Promise<void> {
     });
     if (!dashboardCode) return;
 
+    const project = typeof api.getNote === 'function' ? await api.getNote(noteId) : null;
     const { note: dashboard } = await api.createNote(noteId, {
-        title: 'Project Dashboard',
+        title: project?.title ? `Dashboard: ${project.title}` : 'Project Dashboard',
         type: 'render',
         activate: false,
     });
@@ -463,6 +481,20 @@ export async function materializeNoteCreation(
 }
 
 async function removeNoteFromParentNote(childNoteId: string, parentNoteId: string): Promise<void> {
+    const frontendApi = (globalThis as any).api;
+    if (frontendApi && typeof frontendApi.runOnBackend === 'function') {
+        try {
+            const applied = await frontendApi.runOnBackend((cId: string, pId: string) => {
+                if (typeof api === 'undefined' || typeof api.ensureNoteIsAbsentFromParent !== 'function') {
+                    return false;
+                }
+                api.ensureNoteIsAbsentFromParent(cId, pId);
+                return true;
+            }, [childNoteId, parentNoteId]);
+            if (applied) return;
+        } catch {}
+    }
+
     const glob = (globalThis as any).glob;
     if (!glob) return;
 
@@ -471,11 +503,12 @@ async function removeNoteFromParentNote(childNoteId: string, parentNoteId: strin
         'trilium-component-id': glob.componentId,
         'content-type': 'application/json',
     };
-    const path = `${glob.baseApiUrl}notes/${childNoteId}/remove-from-parent/${parentNoteId}`;
+    const path = `${glob.baseApiUrl}notes/${childNoteId}/toggle-in-parent/${parentNoteId}/false`;
     const send = () => (globalThis as any).fetch(path, {
-        method: 'DELETE',
+        method: 'PUT',
         credentials: 'same-origin',
         headers,
+        body: JSON.stringify({}),
     });
 
     let response = await send();
@@ -587,6 +620,5 @@ export async function reconcileProjectHubStatuses(): Promise<number> {
     }
     return updated;
 }
-
 
 

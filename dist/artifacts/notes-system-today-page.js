@@ -763,11 +763,39 @@ ${content}`;
     };
   }
   async function fetchWeather(weather, signal) {
-    const response = await fetch(buildWeatherUrl(weather), { signal });
-    if (!response.ok) {
-      throw new Error(`Weather service returned ${response.status}`);
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError");
     }
-    return parseWeatherResponse(await response.json());
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    let timedOut = false;
+    const timeoutId = controller ? setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 5e3) : null;
+    const forwardAbort = () => controller?.abort();
+    if (signal && controller) {
+      signal.addEventListener("abort", forwardAbort);
+    }
+    const cleanup = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", forwardAbort);
+    };
+    try {
+      const response = await fetch(buildWeatherUrl(weather), {
+        signal: controller?.signal || signal
+      });
+      cleanup();
+      if (!response.ok) {
+        throw new Error(`Weather service returned ${response.status}`);
+      }
+      return parseWeatherResponse(await response.json());
+    } catch (err) {
+      cleanup();
+      if (timedOut && err?.name === "AbortError") {
+        throw new Error("Weather request timed out after 5 seconds");
+      }
+      throw err;
+    }
   }
 
   // src/engine/noteInsightsEngine.ts
@@ -1759,6 +1787,39 @@ ${content}`;
       const value = note.getOwnedLabelValue(name);
       return value === void 0 || value === null ? null : value;
     }
+    function isProjectDashboard(note) {
+      return noteMarker(note, "extProjectDashboard") === "projectHub" || noteMarker(note, "extHubDashboard") === "projectHub";
+    }
+    async function loadProjectDashboardIds(api2) {
+      const dashboards = /* @__PURE__ */ new Map();
+      for (const query of ["#extProjectDashboard", "#extHubDashboard"]) {
+        try {
+          for (const dashboard of await api2.searchForNotes(query)) {
+            if (dashboard?.noteId && isProjectDashboard(dashboard)) {
+              dashboards.set(dashboard.noteId, dashboard);
+            }
+          }
+        } catch {
+        }
+      }
+      const projectDashboardIds = /* @__PURE__ */ new Map();
+      for (const dashboard of dashboards.values()) {
+        let parentIds = [];
+        if (typeof dashboard.getParentNoteIds === "function") {
+          try {
+            parentIds = await Promise.resolve(dashboard.getParentNoteIds());
+          } catch {
+            parentIds = [];
+          }
+        }
+        for (const parentId of parentIds || []) {
+          if (!projectDashboardIds.has(parentId)) {
+            projectDashboardIds.set(parentId, dashboard.noteId);
+          }
+        }
+      }
+      return projectDashboardIds;
+    }
     async function loadActiveProjects() {
       const api2 = triliumApi3();
       if (!api2) return SAMPLE_ACTIVE_PROJECTS;
@@ -1775,16 +1836,23 @@ ${content}`;
         } catch {
         }
       }
-      return [...notes.values()].filter((note) => {
+      const projectNotes = [...notes.values()].filter((note) => {
         const isProject = noteMarker(note, "extProjectHub") !== null || noteMarker(note, "extTemplate") === "projectHub" || noteLabel(note, "kind") === "project";
         return isProject && noteLabel(note, "status") === "active" && !noteLabel(note, "projectArchive");
-      }).map((note) => ({
-        id: note.noteId,
-        title: note.title,
-        kind: noteLabel(note, "kind") || "project",
-        status: noteLabel(note, "status") || "active",
-        startDate: parseTriliumTimestamp(noteLabel(note, "startDate") || note.dateModified)
-      })).sort((a, b) => (Number.isFinite(b.startDate) ? b.startDate : 0) - (Number.isFinite(a.startDate) ? a.startDate : 0));
+      }).sort((a, b) => parseTriliumTimestamp(noteLabel(b, "startDate") || b.dateModified) - parseTriliumTimestamp(noteLabel(a, "startDate") || a.dateModified));
+      const projectDashboardIds = await loadProjectDashboardIds(api2);
+      const projectsWithDashboards = await Promise.all(projectNotes.map(async (note) => {
+        const dashboardId = projectDashboardIds.get(note.noteId);
+        return {
+          id: note.noteId,
+          dashboardId,
+          title: note.title,
+          kind: noteLabel(note, "kind") || "project",
+          status: noteLabel(note, "status") || "active",
+          startDate: parseTriliumTimestamp(noteLabel(note, "startDate") || note.dateModified)
+        };
+      }));
+      return projectsWithDashboards.sort((a, b) => (Number.isFinite(b.startDate) ? b.startDate : 0) - (Number.isFinite(a.startDate) ? a.startDate : 0));
     }
     function ensureActiveProjectsLoaded(card) {
       if (activeProjectCache) return true;
@@ -1811,7 +1879,7 @@ ${content}`;
         const actions = api2?.openTabWithNote ? [iconAction({
           icon: "bx-right-arrow-alt",
           title: `Open ${project.title}`,
-          onClick: () => api2.openTabWithNote(project.id, true)
+          onClick: () => api2.openTabWithNote(project.dashboardId || project.id, true)
         })] : void 0;
         card.appendChild(listItem({
           icon: "bx-book",
@@ -1927,10 +1995,10 @@ ${content}`;
               icon: "bx-check-double",
               title: "Mark Touched",
               onClick: () => {
-                const api2 = globalThis.api;
-                if (api2?.runOnBackend) {
-                  api2.runOnBackend((id) => {
-                    const n = api2.getNote(id);
+                const frontendApi = globalThis.api;
+                if (frontendApi?.runOnBackend) {
+                  frontendApi.runOnBackend((id) => {
+                    const n = api.getNote?.(id);
                     if (n) n.touch?.();
                   }, [entry.noteId]);
                 }
@@ -2842,6 +2910,20 @@ ${content}`;
     }
   }
   async function cloneNoteToParentNote(childNoteId, parentNoteId) {
+    const frontendApi = globalThis.api;
+    if (frontendApi && typeof frontendApi.runOnBackend === "function") {
+      try {
+        const applied = await frontendApi.runOnBackend((cId, pId) => {
+          if (typeof api === "undefined" || typeof api.ensureNoteIsPresentInParent !== "function") {
+            return false;
+          }
+          api.ensureNoteIsPresentInParent(cId, pId, "");
+          return true;
+        }, [childNoteId, parentNoteId]);
+        if (applied) return;
+      } catch {
+      }
+    }
     const glob = globalThis.glob;
     if (!glob) throw new Error("Not running inside Trilium.");
     const headers = {
@@ -2849,7 +2931,7 @@ ${content}`;
       "trilium-component-id": glob.componentId,
       "content-type": "application/json"
     };
-    const path = `${glob.baseApiUrl}notes/${childNoteId}/clone-to-note/${parentNoteId}`;
+    const path = `${glob.baseApiUrl}notes/${childNoteId}/toggle-in-parent/${parentNoteId}/true`;
     const send = () => globalThis.fetch(path, {
       method: "PUT",
       credentials: "same-origin",
@@ -2926,8 +3008,9 @@ ${content}`;
       return note.type === "code" && !note.isArchived && note.getOwnedLabelValue?.("packageOwner") === "iansherr/ikmal_tools_trilium" && ["notes-system-project-dashboard", "notes-system-project-dashboard-script"].includes(artifact || "");
     });
     if (!dashboardCode) return;
+    const project = typeof api2.getNote === "function" ? await api2.getNote(noteId) : null;
     const { note: dashboard } = await api2.createNote(noteId, {
-      title: "Project Dashboard",
+      title: project?.title ? `Dashboard: ${project.title}` : "Project Dashboard",
       type: "render",
       activate: false
     });
@@ -3130,6 +3213,20 @@ ${content}`;
     return { noteId: note.noteId, title: note.title, clonedUnder, childNoteIds };
   }
   async function removeNoteFromParentNote(childNoteId, parentNoteId) {
+    const frontendApi = globalThis.api;
+    if (frontendApi && typeof frontendApi.runOnBackend === "function") {
+      try {
+        const applied = await frontendApi.runOnBackend((cId, pId) => {
+          if (typeof api === "undefined" || typeof api.ensureNoteIsAbsentFromParent !== "function") {
+            return false;
+          }
+          api.ensureNoteIsAbsentFromParent(cId, pId);
+          return true;
+        }, [childNoteId, parentNoteId]);
+        if (applied) return;
+      } catch {
+      }
+    }
     const glob = globalThis.glob;
     if (!glob) return;
     const headers = {
@@ -3137,11 +3234,12 @@ ${content}`;
       "trilium-component-id": glob.componentId,
       "content-type": "application/json"
     };
-    const path = `${glob.baseApiUrl}notes/${childNoteId}/remove-from-parent/${parentNoteId}`;
+    const path = `${glob.baseApiUrl}notes/${childNoteId}/toggle-in-parent/${parentNoteId}/false`;
     const send = () => globalThis.fetch(path, {
-      method: "DELETE",
+      method: "PUT",
       credentials: "same-origin",
-      headers
+      headers,
+      body: JSON.stringify({})
     });
     let response = await send();
     if (response.status === 403) {

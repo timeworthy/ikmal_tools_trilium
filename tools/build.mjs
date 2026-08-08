@@ -14,7 +14,43 @@ if (!fs.existsSync(distArtifactsDir)) {
     fs.mkdirSync(distArtifactsDir, { recursive: true });
 }
 
-// 1. Bundle jsx/ts artifacts into standalone browser/backend JS using esbuild
+// 1. Audit source files for deprecated or forbidden API routes.
+// This gates the build, so it has to run before anything is written -- running
+// it last only produced a nonzero exit code on top of a fully built,
+// deployable dist/ tree.
+console.log('🔍 Auditing source code for API route safety...');
+const deprecatedPatterns = [/remove-from-parent/, /clone-to-note/];
+const srcFiles = [];
+function scanDir(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) scanDir(full);
+        else if (entry.isFile() && (full.endsWith('.js') || full.endsWith('.ts') || full.endsWith('.jsx') || full.endsWith('.tsx'))) {
+            srcFiles.push(full);
+        }
+    }
+}
+scanDir(path.join(rootDir, 'src'));
+
+const violations = [];
+for (const file of srcFiles) {
+    const content = fs.readFileSync(file, 'utf8');
+    for (const pattern of deprecatedPatterns) {
+        if (pattern.test(content)) {
+            violations.push({ file: path.relative(rootDir, file), pattern: pattern.toString() });
+        }
+    }
+}
+
+if (violations.length > 0) {
+    console.error('❌ BUILD AUDIT FAILED: Deprecated REST API endpoints detected in source files:');
+    for (const v of violations) {
+        console.error(`   - ${v.file}: matches ${v.pattern}`);
+    }
+    process.exit(1);
+}
+
+// 2. Bundle jsx/ts artifacts into standalone browser/backend JS using esbuild
 try {
     // The engines and components are compiled to dist/ as well as bundled into the
     // artifacts. The test suite imports dist/, so without this step it would keep
@@ -55,23 +91,12 @@ try {
     console.log('🔨 Bundling launcher artifact...');
     execSync('npx esbuild src/artifacts/notes-system-launcher.js --bundle --format=iife --target=es2020 --outfile=dist/artifacts/notes-system-launcher.js', { stdio: 'inherit' });
 
-    console.log('🔨 Bundling word count status bar artifact...');
-    execSync('npx esbuild src/artifacts/notes-system-word-count.js --bundle --format=iife --target=es2020 --outfile=dist/artifacts/notes-system-word-count.js', { stdio: 'inherit' });
-
     console.log('🔨 Bundling workspace bootstrap artifact...');
     execSync('npx esbuild src/artifacts/notes-system-workspace-bootstrap.js --bundle --format=iife --target=es2020 --outfile=dist/artifacts/notes-system-workspace-bootstrap.js', { stdio: 'inherit' });
 
     console.log('🔨 Copying CSS stylesheet...');
     const stylesheetSource = fs.readFileSync(path.join(rootDir, 'src', 'artifacts', 'notes-system.css'), 'utf8');
     fs.writeFileSync(path.join(distArtifactsDir, 'notes-system.css'), stylesheetSource);
-
-    const editorStart = '/* Ikmal Editor standalone styles begin. Keep this marked block extractable so';
-    const editorEnd = '/* Ikmal Editor standalone styles end. */';
-    const editorStartIndex = stylesheetSource.indexOf(editorStart);
-    const editorEndIndex = stylesheetSource.indexOf(editorEnd, editorStartIndex);
-    if (editorStartIndex < 0 || editorEndIndex < 0) throw new Error('Ikmal Editor stylesheet extraction markers are missing.');
-    const editorStyles = stylesheetSource.slice(editorStartIndex, editorEndIndex + editorEnd.length).trim() + '\n';
-    fs.writeFileSync(path.join(distArtifactsDir, 'ikmal-editor.css'), editorStyles);
 
     const distBackendDir = path.join(rootDir, 'dist', 'backend');
     if (!fs.existsSync(distBackendDir)) {
@@ -91,11 +116,11 @@ try {
     process.exit(1);
 }
 
-// 2. Read trilium-package.json
+// 3. Read trilium-package.json
 const manifestRaw = fs.readFileSync(packageManifestPath, 'utf8');
 const manifest = JSON.parse(manifestRaw);
 
-// 3. Calculate SRI sha256 integrity hashes for bundled dist/artifacts
+// 4. Calculate SRI sha256 integrity hashes for bundled dist/artifacts
 for (const artifact of manifest.artifacts) {
     const distRelPath = artifact.source.replace(/^src\//, 'dist/').replace(/\.jsx$/, '.js');
     const artifactPath = path.join(rootDir, distRelPath);
@@ -110,55 +135,16 @@ for (const artifact of manifest.artifacts) {
     console.log(`  ✓ ${artifact.id} -> ${artifact.integrity}`);
 }
 
-// 4. Save updated trilium-package.json
+// 5. Save updated trilium-package.json
 fs.writeFileSync(packageManifestPath, JSON.stringify(manifest, null, 2) + '\n');
 console.log('✅ Updated trilium-package.json with computed SRI hashes.');
-// 5. Generate staged standalone component metadata from the same build outputs.
-// These manifests are intentionally not registered or deployed until the host
-// ownership-transfer migration is ready; generation must not create a second
-// live package tree.
+// 6. Generate staged bundle metadata. Standalone components own their own
+// manifests and payloads; this package only records the optional relationship.
 if (!fs.existsSync(stagedManifestDir)) fs.mkdirSync(stagedManifestDir, { recursive: true });
 const sriFor = (relativePath) => {
     const bytes = fs.readFileSync(path.join(rootDir, relativePath));
     return `sha256-${crypto.createHash('sha256').update(bytes).digest('base64')}`;
 };
-const editorManifest = {
-    id: 'iansherr/ikmal_editor_trilium',
-    version: '0.1.0',
-    name: 'Ikmal Editor',
-    description: 'Local Trilium editor decorations with word count, selection details, and non-destructive duplicate-word highlighting.',
-    author: manifest.author,
-    maintainer: manifest.maintainer,
-    repository: manifest.repository,
-    homepage: manifest.homepage,
-    license: manifest.license,
-    maintenance: manifest.maintenance,
-    securityStatus: manifest.securityStatus,
-    compatibility: manifest.compatibility,
-    permissions: ['read-notes'],
-    artifacts: [
-        {
-            id: 'ikmal-editor',
-            type: 'frontend',
-            source: 'dist/artifacts/notes-system-word-count.js',
-            integrity: sriFor('dist/artifacts/notes-system-word-count.js'),
-            title: 'Ikmal Editor',
-            activation: 'startup'
-        },
-        {
-            id: 'ikmal-editor-css',
-            type: 'css',
-            source: 'dist/artifacts/ikmal-editor.css',
-            integrity: sriFor('dist/artifacts/ikmal-editor.css'),
-            title: 'Ikmal Editor styles',
-            activation: 'startup'
-      }
-    ],
-    staged: true,
-    stagedReason: 'Publish after the compatibility package ownership transfer is validated.'
-};
-fs.writeFileSync(path.join(stagedManifestDir, 'ikmal-editor.json'), JSON.stringify(editorManifest, null, 2) + '\n');
-
 const bundleManifest = {
     schemaVersion: 1,
     kind: 'bundle',
@@ -171,7 +157,7 @@ const bundleManifest = {
     stagedReason: 'Publish after component ownership transfer and bundle lifecycle UI are validated.',
     components: [
         { id: manifest.id, role: 'core', required: true },
-        { id: editorManifest.id, role: 'editor', required: false, defaultEnabled: true }
+        { id: 'iansherr/ikmal_editor_trilium', role: 'editor', required: false, defaultEnabled: true }
     ]
 };
 fs.writeFileSync(path.join(stagedManifestDir, 'ikmal-tools-bundle.json'), JSON.stringify(bundleManifest, null, 2) + '\n');
@@ -230,5 +216,5 @@ const kanbanManifest = {
 };
 fs.writeFileSync(path.join(stagedManifestDir, 'ikmal-kanban.json'), JSON.stringify(kanbanManifest, null, 2) + '\n');
 
-console.log('✅ Generated staged Ikmal Editor, Shortcuts, Kanban, and Ikmal Tools bundle manifests.');
+console.log('✅ Generated staged Shortcuts, Kanban, and Ikmal Tools bundle manifests.');
 console.log('🎉 Build completed successfully!');

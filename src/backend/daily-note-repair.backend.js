@@ -6,11 +6,12 @@ if (!dayNote || !dayNote.hasOwnedLabel('dateNote')) {
 }
 
 const day = dayNote.getOwnedLabelValue('dateNote');
+// Story drafts and Reporting Notes are attached by the explicit New Story
+// workflow. Do not infer that relationship from the day a note was created:
+// opening a new journal should not pull every same-day story project into it.
 const sources = [
     ['extTask'],
     ['extMeeting'],
-    ['extStoryDraft'],
-    ['extReportingNotes'],
     ['extEmailDraft'],
     ['extScratch'],
     ['noteGroup', 'people'],
@@ -25,8 +26,14 @@ for (const [name, value] of sources) {
 }
 
 for (const note of candidates.values()) {
-    if (api.dayjs(note.dateCreated).format('YYYY-MM-DD') !== day) {
-        continue;
+    try {
+        if (!note || !note.dateCreated || typeof api.dayjs !== 'function') continue;
+        const createdDate = api.dayjs(note.dateCreated)?.format?.('YYYY-MM-DD');
+        if (createdDate !== day) continue;
+        api.ensureNoteIsPresentInParent(note.noteId, dayNote.noteId, '');
+    } catch (err) {
+        if (typeof api.log === 'function') {
+            api.log(`Daily note repair skipped note ${note?.noteId}: ${err?.message || err}`);
+        }
     }
-    api.ensureNoteIsPresentInParent(note.noteId, dayNote.noteId, '');
 }

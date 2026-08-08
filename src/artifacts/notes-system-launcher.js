@@ -1,7 +1,7 @@
 /**
  * Notes System Launcher Bar script.
  * Registers the legacy Ikmal creation actions and keyboard shortcut
- * (Cmd/Ctrl+Shift+K) into Trilium, allowing instant note creation from
+ * (Cmd/Ctrl+Shift+K) and the Cmd/Ctrl+? help shortcut into Trilium, allowing instant note creation from
  * anywhere in Trilium. The native launchbar can be vertical and icon-only,
  * so every action keeps an explicit title and accessible label even when its
  * text is hidden.
@@ -39,7 +39,12 @@ import { openModal } from '../components/nativeUi.js';
 
     function triggerQuickCapture(templateId, initialRelations) {
         const targetTpl = templateId || settingsEngine.get('defaultQuickCaptureTemplate') || 'task';
-        showQuickCaptureModal(targetTpl, templateEngine, noteCreationEngine, undefined, initialRelations);
+        showQuickCaptureModal(targetTpl, templateEngine, noteCreationEngine, undefined, initialRelations)
+            .catch((error) => {
+                if (typeof api !== 'undefined' && api.showError) {
+                    api.showError(`Could not open quick capture: ${error.message || error}`);
+                }
+            });
     }
 
     // Native script launchers execute a small copy of this source in the
@@ -52,7 +57,7 @@ import { openModal } from '../components/nativeUi.js';
         return;
     }
 
-    // Register global keyboard shortcuts (Cmd/Ctrl+Shift+K, Alt+M, Alt+T, Alt+S).
+    // Register global keyboard shortcuts (Cmd/Ctrl+Shift+K, Alt+M, Alt+T, Alt+S, Cmd/Ctrl+?).
     if (!window.__ns_keyboard_shortcut_registered) {
         window.__ns_keyboard_shortcut_registered = true;
         document.addEventListener('keydown', (e) => {
@@ -72,7 +77,7 @@ import { openModal } from '../components/nativeUi.js';
                     e.preventDefault(); e.stopPropagation();
                     triggerQuickCapture('story');
                 }
-            } else if (e.key === '?' && !['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName) && !document.activeElement?.isContentEditable) {
+            } else if ((e.ctrlKey || e.metaKey) && e.key === '?' && !e.isComposing) {
                 e.preventDefault();
                 const hotkeyModal = openModal({
                     title: 'Keyboard Shortcuts & Quick Actions',
@@ -89,7 +94,7 @@ import { openModal } from '../components/nativeUi.js';
                                     <tr data-action="quick capture task"><td><code>Alt + T</code></td><td>Quick Capture Task</td></tr>
                                     <tr data-action="quick capture story project"><td><code>Alt + S</code></td><td>Quick Capture Story Project</td></tr>
                                     <tr data-action="quick capture meeting"><td><code>Alt + M</code></td><td>Quick Capture Meeting</td></tr>
-                                    <tr data-action="show hotkey cheatsheet help"><td><code>?</code></td><td>Show Hotkey Cheatsheet</td></tr>
+                                    <tr data-action="show hotkey cheatsheet help"><td><code>Cmd / Ctrl + ?</code></td><td>Show Hotkey Cheatsheet</td></tr>
                                     <tr data-action="close active dialog modal cancel"><td><code>Esc</code></td><td>Close Active Dialog / Modal</td></tr>
                                 </tbody>
                             </table>
@@ -99,8 +104,11 @@ import { openModal } from '../components/nativeUi.js';
                 }, () => true);
 
                 setTimeout(() => {
-                    const searchInput = hotkeyModal.querySelector<HTMLInputElement>('#hotkey-search-input');
-                    const rows = hotkeyModal.querySelectorAll<HTMLTableRowElement>('#hotkeys-table tbody tr');
+                    // This artifact is JavaScript (not TypeScript); keeping the
+                    // selectors unparameterized prevents esbuild from emitting
+                    // the generic syntax as runtime comparison operators.
+                    const searchInput = hotkeyModal.querySelector('#hotkey-search-input');
+                    const rows = hotkeyModal.querySelectorAll('#hotkeys-table tbody tr');
                     searchInput?.focus();
                     searchInput?.addEventListener('input', () => {
                         const q = searchInput.value.toLowerCase().trim();
@@ -116,7 +124,7 @@ import { openModal } from '../components/nativeUi.js';
             trigger: triggerQuickCapture,
             list: LAUNCHER_ACTIONS,
         };
-        console.log('[Notes System Plugin] Global keyboard shortcuts registered (Cmd/Ctrl+Shift+K, Alt+M/T/S, ?).');
+        console.log('[Notes System Plugin] Global keyboard shortcuts registered (Cmd/Ctrl+Shift+K, Alt+M/T/S, Cmd/Ctrl+?).');
     }
 
     // In-editor Reporting Notes Action Bar Renderer
@@ -361,49 +369,129 @@ import { openModal } from '../components/nativeUi.js';
         });
     }
 
+    // Render editor affordances for the current note and after Trilium replaces
+    // the note-detail DOM during navigation. Startup scripts run before the
+    // first note detail exists, so a one-shot call is insufficient. Trilium's
+    // public frontend API does not expose a global event listener; observing
+    // child-list replacement gives the same lifecycle signal without keeping
+    // a timer awake forever.
     if (typeof window !== 'undefined') {
-        setInterval(() => {
+        const renderEditorAffordances = () => {
             initReportingNoteActionBars();
             initStoryDraftEditorUI();
-        }, 1500);
+        };
+        renderEditorAffordances();
+        if (typeof MutationObserver !== 'undefined' && !window.__ikmal_editor_affordance_observer) {
+            let renderQueued = false;
+            const scheduleRender = () => {
+                if (renderQueued) return;
+                renderQueued = true;
+                window.setTimeout(() => {
+                    renderQueued = false;
+                    renderEditorAffordances();
+                }, 0);
+            };
+            const observeRoot = document.body || document.documentElement;
+            if (observeRoot) {
+                const observer = new MutationObserver((mutations) => {
+                    if (mutations.some((mutation) => mutation.type === 'childList'
+                        && (mutation.addedNodes.length || mutation.removedNodes.length))) {
+                        scheduleRender();
+                    }
+                });
+                observer.observe(observeRoot, { childList: true, subtree: true });
+                window.__ikmal_editor_affordance_observer = observer;
+            }
+        }
     }
 
     // Trilium's native launcher configuration owns these buttons. This keeps
     // them visible in Configure Launchbar, lets users reorder/hide them, and
     // gives their icons the current theme's normal launcher color.
-    const launcherScript = `(() => {
-        const type = api.currentNote?.getOwnedLabelValue?.('extLauncherType');
-        if (type && window.__ikmalQuickCapture) window.__ikmalQuickCapture(type);
-        else if (api.showError) api.showError('Ikmal Tools launcher is not ready. Reload the frontend.');
+    const launcherScriptFor = (type) => `(() => {
+        const type = ${JSON.stringify(type)};
+        (async () => {
+            if (window.__ikmalQuickCapture) {
+                await window.__ikmalQuickCapture(type);
+                return;
+            }
+
+            // Native launchers can execute in a context which does not share
+            // the startup artifact's window. Keep creation usable there by
+            // dispatching straight to the backend note-creation handler.
+            if (!api.showPromptDialog || !api.runOnBackend) {
+                throw new Error('Quick capture is not ready. Reload the frontend.');
+            }
+
+            const title = await api.showPromptDialog({
+                title: type === 'edit' ? 'New Edit Package' : ('New ' + type),
+                message: 'Title',
+                defaultValue: '',
+            });
+            if (!title || !title.trim()) return;
+
+            let body = { type, title: title.trim() };
+            if (type === 'story' || type === 'edit') {
+                body = { action: 'startStory', title: title.trim(), mode: type === 'edit' ? 'edit' : 'project' };
+            }
+
+            // Preferred path. The backend artifact registers its dispatcher in
+            // process, so creation never leaves the server. Reaching the HTTP
+            // handler instead would mean pulling the shared #createNoteSecret
+            // into page JS, where any other script in this window can read it.
+            let payload = null;
+            try {
+                payload = await api.runOnBackend((requestBody) => {
+                    const dispatch = globalThis.__ikmalCreateNote;
+                    return typeof dispatch === 'function' ? dispatch(requestBody) : null;
+                }, [body]);
+            } catch {
+                payload = null;
+            }
+
+            if (!payload) {
+                // An older backend artifact is still deployed. Fall back to the
+                // HTTP handler, deriving its URL from baseApiUrl -- a hardcoded
+                // '/custom/create-note' 404s behind a sub-path reverse proxy.
+                const secret = await api.runOnBackend(() => {
+                    const config = api.getNoteWithLabel('extConfig');
+                    return config?.getOwnedLabelValue('createNoteSecret') || null;
+                });
+                if (!secret) throw new Error('Note creation is not configured. Run workspace repair.');
+
+                // baseApiUrl is relative and ends in 'api/' ('api/' on a root
+                // install, '/trilium/api/' when proxied under a sub-path). The
+                // custom route is its sibling, so swapping the last segment
+                // keeps both shapes correct; a leading-slash path would 404
+                // behind a sub-path proxy, and 'api/custom/...' 404s everywhere.
+                let base = (window.glob && window.glob.baseApiUrl) || 'api/';
+                if (!base.endsWith('/')) base = base + '/';
+                const root = base.endsWith('api/') ? base.slice(0, -4) : base;
+
+                const response = await fetch(root + 'custom/create-note', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'x-extension-secret': secret },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(body),
+                });
+                payload = await response.json();
+                if (!response.ok) throw new Error(payload.error || ('request failed (' + response.status + ')'));
+            }
+            if (payload.error) throw new Error(payload.error);
+            await api.waitUntilSynced?.();
+            if (payload.noteId && api.activateNewNote) await api.activateNewNote(payload.noteId);
+        })().catch((error) => {
+            if (api.showError) api.showError('Could not create note: ' + (error.message || error));
+        });
     })();`;
     if (typeof api !== 'undefined' && typeof api.runOnBackend === 'function' && api.currentNote?.noteId) {
-        api.runOnBackend((launchers, scriptNoteId, scriptContent) => {
-            const reservedTitles = new Set(launchers.map((launcher) => launcher.label));
-            const stableIds = new Set(launchers.map((launcher) => `al_${launcher.id}`));
-            const staleIkmalTitles = new Set([
-                'Ikmal Tools for Trilium: Live Editor Status Bar Word Count launcher',
-                'Ikmal Tools for Trilium: Header Launcher Bar & Hotkey launcher',
-            ]);
-            const roots = ['_lbVisibleLaunchers', '_lbAvailableLaunchers', 'lbVisibleLaunchers', 'lbAvailableLaunchers'];
-            const removeLegacyLaunchers = (note) => {
-                for (const child of note.getChildNotes()) {
-                    if (child.type === 'launcher'
-                        && !stableIds.has(child.noteId)
-                        && (reservedTitles.has(child.title) || staleIkmalTitles.has(child.title))) {
-                        child.deleteNote();
-                        continue;
-                    }
-                    removeLegacyLaunchers(child);
-                }
-            };
-            for (const rootId of roots) {
-                try {
-                    removeLegacyLaunchers(api.getNote(rootId));
-                } catch (error) {
-                    // Launcher roots vary between Trilium versions; creation
-                    // still works when an older root is absent.
-                }
-            }
+        api.runOnBackend((launchers, scriptNoteId) => {
+            // This startup script must be strictly idempotent. Older versions
+            // recursively deleted launchers by title before recreating them;
+            // on some databases that also matched the stable `al_*` notes and
+            // caused a delete/create feedback loop during frontend startup.
+            // Leave legacy launchers alone here. A cleanup can be explicit and
+            // user-invoked later, but startup should only upsert our own IDs.
             for (const launcher of launchers) {
                 let isVisible = true;
                 try {
@@ -429,7 +517,7 @@ import { openModal } from '../components/nativeUi.js';
                 note.setRelation('script', scriptNoteId);
                 note.setLabel('extLauncherType', launcher.type);
                 note.setLabel('extLauncherLabel', launcher.label);
-                note.setContent(scriptContent);
+                note.setContent(launcher.script);
                 note.setLabel('scriptInLauncherContent');
                 note.mime = 'application/javascript;env=frontend';
                 note.setLabel('iconClass', `bx bx-${launcher.icon}`);
@@ -463,6 +551,9 @@ import { openModal } from '../components/nativeUi.js';
             } catch (err) {
                 // Ordering is non-critical if branch manipulation isn't supported
             }
-        }, [LAUNCHER_ACTIONS, api.currentNote.noteId, launcherScript]);
+        }, [LAUNCHER_ACTIONS.map((launcher) => ({
+            ...launcher,
+            script: launcherScriptFor(launcher.type),
+        })), api.currentNote.noteId]);
     }
 })();

@@ -32,11 +32,15 @@ Execute all test suites with a single command:
 
 ## Redeploying to Live Instance
 
-To deploy updated artifacts to a live Docker Trilium instance (`http://localhost:38080`):
+To deploy updated artifacts to a live Trilium instance (`http://127.0.0.1:37840`):
 
 ```bash
-PYTHONPATH=. python3 tools/deploy_plugin_to_instance.py http://127.0.0.1:38080 test_smoke_token_12345
+PYTHONPATH=. python3 tools/deploy_plugin_to_instance.py http://127.0.0.1:37840 ETAPI_TOKEN trilium-package.json
 ```
+
+For a clean refresh after a package has been substantially reorganized, run
+`tools/cleanup_plugin_artifacts.py` first. It archives old package notes and
+removes activation labels without deleting user-authored notes.
 
 ## Responsive visual verification
 

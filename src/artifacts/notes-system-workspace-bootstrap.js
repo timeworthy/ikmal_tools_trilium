@@ -13,6 +13,68 @@
     window.__ikmal_workspace_bootstrap_started = true;
 
     const PACKAGE_ID = 'iansherr/ikmal_tools_trilium';
+    // Kept in lockstep with `trilium-package.json` by a package manifest test.
+    const PACKAGE_VERSION = '1.0.32';
+
+    // Remembered by `ensureSkeletonContainers` so the first-run marker can be
+    // written even when the freshly created Config note is not searchable yet.
+    // Without it a slow index would make every startup redo the full sweep.
+    let extConfigNoteId = null;
+
+    // These titles belonged to pre-package Ikmal startup scripts. Keep their
+    // notes and contents (they may be useful for recovery), but do not let
+    // them execute alongside the package-owned artifacts. In particular, the
+    // old Today Dashboard polled and repaired the database every second.
+    const LEGACY_STARTUP_TITLES = new Set([
+        'Note Creation Buttons',
+        'Topic Controls',
+        'Topic Index',
+        'Dashboard Filters',
+        'Project Hub Dashboard',
+        'Today Dashboard',
+        'Ikmal Tools for Trilium: Live Editor Status Bar Word Count',
+    ]);
+
+    // Several of the titles above are ordinary names a user could pick for
+    // their own script. Matching on title alone would silently strip `run`
+    // from a note this package never owned, so the body must also carry a
+    // recognisably Ikmal marker before anything is disabled.
+    const LEGACY_BODY_SIGNATURE = /Ikmal|todayRoot|projectRoot|extTemplate|extTodayDashboard/;
+
+    async function isLegacyIkmalScript(candidate) {
+        if (!LEGACY_STARTUP_TITLES.has(candidate.title)) return false;
+        if (candidate.getOwnedLabelValue?.('packageOwner')) return false;
+        if (candidate.type !== 'code') return false;
+        const content = await getNoteContent(candidate.noteId);
+        // Unreadable content means we cannot establish ownership; leave it be.
+        if (typeof content !== 'string') return false;
+        return LEGACY_BODY_SIGNATURE.test(content);
+    }
+
+    async function disableLegacyStartupScripts() {
+        const candidates = await searchIncludingHidden('#run');
+        for (const candidate of candidates) {
+            if (!(await isLegacyIkmalScript(candidate))) continue;
+            console.info(`[Ikmal Tools] Disabling legacy startup script "${candidate.title}" (${candidate.noteId}).`);
+            if (typeof api.runOnBackend === 'function') {
+                try {
+                    await api.runOnBackend((noteId) => {
+                        const note = api.getNote(noteId);
+                        if (!note || note.getOwnedLabelValue('packageOwner')) return false;
+                        const run = note.getOwnedLabelValue('run');
+                        if (!run) return false;
+                        note.removeLabel('run');
+                        return true;
+                    }, [candidate.noteId]);
+                    continue;
+                } catch {
+                    // Fall through to the authenticated frontend endpoint when
+                    // backend scripting is disabled or unavailable.
+                }
+            }
+            await setAttribute(candidate.noteId, 'label', 'run', '');
+        }
+    }
 
     function packageCode(artifactId, notes) {
         return notes.find((note) => note.type === 'code'
@@ -20,7 +82,42 @@
             && !note.isArchived);
     }
 
+    // Keep the public Today entry aligned without running the expensive full
+    // workspace migration. This is deliberately limited to one visible note,
+    // one hidden package lookup, and one relation update when needed.
+    async function ensureTodayAlignment({ allowCreate = false } = {}) {
+        const packageNotes = await searchIncludingHidden('#packageArtifact');
+        const todayNotes = packageNotes.filter((note) => [
+            'notes-system-today-page',
+            'notes-system-today-page-script',
+            'notes-system-dashboard',
+            'notes-system-dashboard-script',
+        ].includes(note.getOwnedLabelValue?.('packageArtifact')));
+        const todayCode = packageCode('notes-system-today-page', todayNotes)
+            || packageCode('notes-system-dashboard', todayNotes);
+        if (!todayCode) {
+            console.warn('[Ikmal Tools] Today alignment is waiting for the package artifact.');
+            return false;
+        }
+        return await findOrCreateVisibleToday(todayCode, { allowCreate });
+    }
+
     async function setAttribute(noteId, type, name, value) {
+        // The backend shortcut below only implements labels. Relations must
+        // continue through the authenticated frontend endpoint; returning
+        // early for a relation would make the Today watchdog appear healthy
+        // while silently skipping the renderNote repair.
+        if (type === 'label' && typeof api !== 'undefined' && typeof api.runOnBackend === 'function') {
+            try {
+                const applied = await api.runOnBackend((nId, aType, aName, aVal) => {
+                    const note = api.getNote(nId);
+                    if (!note || aType !== 'label') return false;
+                    note.setLabel(aName, aVal || '');
+                    return true;
+                }, [noteId, type, name, value || '']);
+                if (applied) return;
+            } catch {}
+        }
         const glob = window.glob;
         if (!glob) throw new Error('Trilium session context is unavailable.');
         const headers = {
@@ -92,6 +189,83 @@
         return typeof body.content === 'string' ? body.content : null;
     }
 
+    async function setNoteTitle(noteId, title) {
+        if (typeof api !== 'undefined' && typeof api.runOnBackend === 'function') {
+            try {
+                // The closure reports whether it actually wrote, so a miss
+                // falls through to the REST endpoint instead of returning a
+                // success the caller cannot distinguish from a no-op.
+                const applied = await api.runOnBackend((nId, newTitle) => {
+                    const note = api.getNote(nId);
+                    if (!note) return false;
+                    note.title = newTitle;
+                    // BNote only persists on an explicit save().
+                    note.save();
+                    return true;
+                }, [noteId, title]);
+                if (applied) return;
+            } catch {}
+        }
+        const glob = window.glob;
+        if (!glob) throw new Error('Trilium session context is unavailable.');
+        const headers = {
+            'x-csrf-token': glob.csrfToken,
+            'trilium-component-id': glob.componentId,
+            'content-type': 'application/json',
+        };
+        const path = `${glob.baseApiUrl}notes/${noteId}/title`;
+        const send = () => fetch(path, {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers,
+            body: JSON.stringify({ title }),
+        });
+        let response = await send();
+        if (response.status === 403) {
+            const bootstrap = await fetch(`./bootstrap${window.location.search || ''}`, {
+                credentials: 'same-origin',
+                cache: 'no-store',
+            });
+            if (bootstrap.ok) {
+                const refreshed = await bootstrap.json();
+                glob.csrfToken = refreshed.csrfToken;
+                headers['x-csrf-token'] = refreshed.csrfToken;
+                response = await send();
+            }
+        }
+        if (!response.ok) throw new Error(`Could not update title (HTTP ${response.status}).`);
+    }
+
+    // Returns a status rather than a boolean: callers treat a refusal as
+    // grounds for archiving the user's note, so "nothing to do" and "could not
+    // tell" must never be confused with "Trilium refused to remove it".
+    //   'removed'     - the branch was detached
+    //   'refused'     - Trilium declined (removing the only strong parent)
+    //   'absent'      - the note is not under that parent to begin with
+    //   'unavailable' - no way to check or call; state is unknown
+    async function removeFromParentIfPresent(note, parentNoteId) {
+        const parentIds = note?.getParentNoteIds?.();
+        if (!Array.isArray(parentIds)) return 'unavailable';
+        if (!parentIds.includes(parentNoteId)) return 'absent';
+        const glob = window.glob;
+        if (!glob) return 'unavailable';
+        // Trilium 0.104 exposes branch removal through toggle-in-parent. The
+        // legacy parent branch removal URL returns 404 even for a live branch.
+        const response = await fetch(`${glob.baseApiUrl}notes/${note.noteId}/toggle-in-parent/${parentNoteId}/false`, {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: {
+                'x-csrf-token': glob.csrfToken,
+                'trilium-component-id': glob.componentId,
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify({}),
+        });
+        if (!response.ok) throw new Error(`Could not remove stale parent branch (HTTP ${response.status}).`);
+        const result = await response.json().catch(() => null);
+        return result?.success === false ? 'refused' : 'removed';
+    }
+
     async function searchMany(searches) {
         const notes = new Map();
         for (const search of searches) {
@@ -117,6 +291,26 @@
         return await api.getNotes(result.searchResultNoteIds || [], true);
     }
 
+    async function getFreshOwnedRelationTarget(noteId, name) {
+        const glob = window.glob;
+        if (!glob?.baseApiUrl) return { available: false, target: null };
+        try {
+            const response = await fetch(`${glob.baseApiUrl}notes/${noteId}/attributes`, {
+                credentials: 'same-origin',
+            });
+            if (!response.ok) return { available: false, target: null };
+            const attributes = await response.json();
+            const relation = (attributes || []).find((attribute) =>
+                attribute.noteId === noteId
+                && attribute.type === 'relation'
+                && attribute.name === name
+                && !attribute.isDeleted);
+            return { available: true, target: relation?.value || null };
+        } catch {
+            return { available: false, target: null };
+        }
+    }
+
     function markerValue(note, name) {
         return note?.getOwnedLabelValue?.(name)
             ?? note?.labels?.find?.((label) => label.name === name)?.value
@@ -130,6 +324,16 @@
     }
 
     async function cloneNoteToParent(noteId, parentNoteId) {
+        if (typeof api !== 'undefined' && typeof api.runOnBackend === 'function') {
+            try {
+                const applied = await api.runOnBackend((nId, pId) => {
+                    if (typeof api.ensureNoteIsPresentInParent !== 'function') return false;
+                    api.ensureNoteIsPresentInParent(nId, pId, '');
+                    return true;
+                }, [noteId, parentNoteId]);
+                if (applied) return;
+            } catch {}
+        }
         const glob = window.glob;
         if (!glob) throw new Error('Trilium session context is unavailable.');
         const headers = {
@@ -137,7 +341,7 @@
             'trilium-component-id': glob.componentId,
             'content-type': 'application/json',
         };
-        const path = `${glob.baseApiUrl}notes/${noteId}/clone-to-note/${parentNoteId}`;
+        const path = `${glob.baseApiUrl}notes/${noteId}/toggle-in-parent/${parentNoteId}/true`;
         const send = () => fetch(path, {
             method: 'PUT',
             credentials: 'same-origin',
@@ -160,10 +364,16 @@
         if (!response.ok) throw new Error(`Could not file note under ${parentNoteId} (HTTP ${response.status}).`);
     }
 
-    async function findOrCreateVisibleToday(todayCode) {
+    // `allowCreate` is off for the recurring watchdog. A transient empty or
+    // stale `#todayRoot` result -- index lag right after creation, or a failed
+    // search -- would otherwise mint a duplicate root-level "Today" note on
+    // every tick. Creation belongs to first-run bootstrap and explicit repair.
+    async function findOrCreateVisibleToday(todayCode, { allowCreate = true } = {}) {
         const candidates = await api.searchForNotes('#todayRoot');
         let today = candidates.find((note) => note.getParentNoteIds?.().includes('root'))
             || candidates.find((note) => !note.isArchived);
+
+        if (!today && !allowCreate) return false;
 
         if (!today) {
             const result = await api.createNote('root', {
@@ -178,8 +388,13 @@
         }
 
         const renderNote = today.getRelations?.('renderNote')?.[0];
-        const currentTarget = renderNote?.value || renderNote?.targetNoteId;
-        if (currentTarget !== todayCode.noteId) {
+        const freshRelation = await getFreshOwnedRelationTarget(today.noteId, 'renderNote');
+        const currentTarget = freshRelation.available
+            ? freshRelation.target
+            : renderNote?.value || renderNote?.targetNoteId;
+        // If persisted attributes could not be read, prefer an idempotent
+        // repair over trusting a potentially stale FNote cache.
+        if (!freshRelation.available || currentTarget !== todayCode.noteId) {
             await setAttribute(today.noteId, 'relation', 'renderNote', todayCode.noteId);
         }
         if (today.getOwnedLabelValue('extTodayDashboard') !== 'today') {
@@ -192,11 +407,13 @@
         const journal = await api.getTodayNote?.();
         if (!journal?.noteId) return 0;
 
+        // Repair only ordinary journal captures. Story drafts and Reporting
+        // Notes are attached by the explicit New Story workflow; scanning
+        // them here makes merely opening a new day pull every same-day story
+        // project into that journal, repeatedly.
         const sources = [
             ['extTask'],
             ['extMeeting'],
-            ['extStoryDraft'],
-            ['extReportingNotes'],
             ['extEmailDraft'],
             ['extScratch'],
             ['noteGroup', 'people'],
@@ -231,9 +448,24 @@
     }
 
     function isDailyNote(note) {
-        return hasMarker(note, 'extTemplate', 'daily')
-            || hasMarker(note, 'noteType', 'daily')
-            || /^\d{4}-\d{2}-\d{2}\s+-/.test(note?.title || '');
+        const dateNote = markerValue(note, 'dateNote');
+        const template = markerValue(note, 'extTemplate');
+        const noteType = markerValue(note, 'noteType');
+        return dateNote !== undefined
+            || template === 'daily'
+            || noteType === 'daily'
+            || /^\d{4}-\d{2}-\d{2}\s+-\s+(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)$/.test(note?.title || '');
+    }
+
+    function isProjectHubCandidate(note) {
+        if (!note || note.isArchived || isDailyNote(note)) return false;
+        // Use owned markers only. hasLabel() can include inherited labels, so
+        // a Reporting Notes child under an active project area could otherwise
+        // be mistaken for another Project Hub and recursively get a child
+        // Reporting Notes note.
+        const template = markerValue(note, 'extTemplate') || markerValue(note, 'noteType');
+        return markerValue(note, 'extProjectHub') !== undefined
+            || template === 'projectHub';
     }
 
     function cleanDailyContent(content) {
@@ -331,13 +563,50 @@
         return removed;
     }
 
+    async function removeStrayReportingNotesFromDailyNotes() {
+        const dailyNotes = (await searchMany(['#dateNote', '#extTemplate']))
+            .filter((note) => !note.isArchived && isDailyNote(note));
+        let removed = 0;
+        for (const dailyNote of dailyNotes) {
+            const hydrated = typeof api.getNote === 'function'
+                ? await api.getNote(dailyNote.noteId)
+                : dailyNote;
+            const children = hydrated?.getChildNotes ? await hydrated.getChildNotes() : [];
+            for (const child of children) {
+                if (child.isArchived || !hasMarker(child, 'extReportingNotes')) continue;
+                const project = child.getRelations?.('project')?.[0];
+                const projectId = project?.value || project?.targetNoteId;
+                // A real New Story Reporting Notes note points to its Project
+                // Hub. A self-reference means an old repair path created it
+                // directly under the daily note.
+                if (projectId !== dailyNote.noteId) continue;
+                try {
+                    const outcome = await removeFromParentIfPresent(child, dailyNote.noteId);
+                    if (outcome === 'removed') {
+                        removed += 1;
+                    } else if (outcome === 'refused') {
+                        // Trilium refuses to remove a note's only strong
+                        // parent because that would orphan/delete the note.
+                        // Preserve the user's captured content, but hide this
+                        // known stray branch instead of repeatedly retrying it.
+                        await setAttribute(child.noteId, 'label', 'archived', '');
+                    }
+                    // 'absent' and 'unavailable' are left alone: archiving on
+                    // either would hide a note nothing ever tried to detach.
+                } catch (error) {
+                    console.warn(`[Ikmal Tools] Could not remove stray Reporting Notes branch: ${error.message}`);
+                }
+            }
+        }
+        return removed;
+    }
+
     async function attachProjectDashboards(dashboardCode) {
         // New notes use the marker label directly. Older Ikmal installs used
         // extTemplate=projectHub, so include those hubs during reinstall and
         // repair instead of silently leaving their dashboards behind.
         const projects = (await searchMany(['#extProjectHub', '#extTemplate']))
-            .filter((project) => hasMarker(project, 'extProjectHub')
-                || hasMarker(project, 'extTemplate', 'projectHub'));
+            .filter((project) => isProjectHubCandidate(project));
         let attached = 0;
         for (const project of projects) {
             if (project.isArchived) continue;
@@ -350,7 +619,11 @@
             const existing = children.find((child) =>
                 child.getOwnedLabelValue?.('extProjectDashboard') === 'projectHub'
                 || child.getOwnedLabelValue?.('extHubDashboard') === 'projectHub');
+            const expectedTitle = `Dashboard: ${project.title}`;
             if (existing) {
+                if (existing.title !== expectedTitle) {
+                    await setNoteTitle(existing.noteId, expectedTitle);
+                }
                 const relation = existing.getRelations?.('renderNote')?.[0];
                 const target = relation?.value || relation?.targetNoteId;
                 if (target !== dashboardCode.noteId) {
@@ -363,7 +636,7 @@
             }
 
             const result = await api.createNote(project.noteId, {
-                title: 'Project Dashboard',
+                title: expectedTitle,
                 type: 'render',
                 activate: false,
             });
@@ -391,12 +664,15 @@
             { marker: 'orgRoot', title: 'Organizations', icon: 'bx bx-buildings', parent: 'root' },
             { marker: 'topicRoot', title: 'Topics', icon: 'bx bx-purchase-tag', parent: 'root' },
             { marker: 'templateRoot', title: 'Templates', icon: 'bx bx-copy', parent: '_userHidden', type: 'book', labels: [{ name: 'subtreeHidden', value: '' }] },
-            { marker: 'extConfig', title: 'Config', icon: 'bx bx-cog', parent: '_userHidden', type: 'text', labels: [{ name: 'extensionVersion', value: '1.0.22' }] },
+            { marker: 'extConfig', title: 'Config', icon: 'bx bx-cog', parent: '_userHidden', type: 'text', labels: [{ name: 'extensionVersion', value: PACKAGE_VERSION }] },
         ];
 
         for (const c of containers) {
             const existing = await api.searchForNotes(`#${c.marker}`);
-            if (existing && existing.length > 0) continue;
+            if (existing && existing.length > 0) {
+                if (c.marker === 'extConfig') extConfigNoteId = existing[0].noteId;
+                continue;
+            }
 
             let parentId = 'root';
             if (c.parent !== 'root') {
@@ -422,12 +698,13 @@
             }
 
             try {
-                await api.createNote(parentId, {
+                const created = await api.createNote(parentId, {
                     title: c.title,
                     type: c.type || 'book',
                     activate: false,
                     attributes,
                 });
+                if (c.marker === 'extConfig' && created?.note) extConfigNoteId = created.note.noteId;
             } catch (err) {
                 console.warn(`[Ikmal Tools] Could not provision ${c.title} container: ${err.message}`);
             }
@@ -528,7 +805,7 @@
 
     async function ensureProjectReportingNotes() {
         const hubs = (await searchMany(['#extProjectHub', '#extTemplate']))
-            .filter((n) => !n.isArchived && (hasMarker(n, 'extProjectHub') || hasMarker(n, 'extTemplate', 'projectHub')));
+            .filter((n) => isProjectHubCandidate(n));
         const reportingTpl = (await searchIncludingHidden('#extTemplate'))
             .find((n) => markerValue(n, 'extTemplate') === 'reportingNotes' || n.title === 'Reporting Notes');
         let createdCount = 0;
@@ -590,8 +867,7 @@
 
     async function reconcileProjectHubStatuses() {
         const hubs = (await searchMany(['#extProjectHub', '#extTemplate']))
-            .filter((project) => hasMarker(project, 'extProjectHub')
-                || hasMarker(project, 'extTemplate', 'projectHub'));
+            .filter((project) => isProjectHubCandidate(project));
         const archiveRoot = (await api.searchForNotes('#archiveProjectRoot'))?.[0];
         const activeRoot = (await api.searchForNotes('#activeProjectRoot'))?.[0];
 
@@ -618,13 +894,7 @@
                 }
                 if (activeRoot?.noteId) {
                     try {
-                        const glob = window.glob;
-                        if (glob) {
-                            fetch(`${glob.baseApiUrl}notes/${hub.noteId}/remove-from-parent/${activeRoot.noteId}`, {
-                                method: 'DELETE', credentials: 'same-origin',
-                                headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId },
-                            });
-                        }
+                        await removeFromParentIfPresent(hub, activeRoot.noteId);
                     } catch {}
                 }
                 reconciled += 1;
@@ -635,13 +905,7 @@
                 }
                 if (archiveRoot?.noteId) {
                     try {
-                        const glob = window.glob;
-                        if (glob) {
-                            fetch(`${glob.baseApiUrl}notes/${hub.noteId}/remove-from-parent/${archiveRoot.noteId}`, {
-                                method: 'DELETE', credentials: 'same-origin',
-                                headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId },
-                            });
-                        }
+                        await removeFromParentIfPresent(hub, archiveRoot.noteId);
                     } catch {}
                 }
                 reconciled += 1;
@@ -699,8 +963,7 @@
 
     async function syncProjectMetadata() {
         const hubs = (await searchMany(['#extProjectHub', '#extTemplate']))
-            .filter((project) => hasMarker(project, 'extProjectHub')
-                || hasMarker(project, 'extTemplate', 'projectHub'));
+            .filter((project) => isProjectHubCandidate(project));
 
         let synced = 0;
         for (const hub of hubs) {
@@ -718,14 +981,7 @@
                 const expectedTitle = `${hub.title} — Reporting Notes`;
                 if (reporting.title !== expectedTitle) {
                     try {
-                        const glob = window.glob;
-                        if (glob) {
-                            await fetch(`${glob.baseApiUrl}notes/${reporting.noteId}/data`, {
-                                method: 'PUT', credentials: 'same-origin',
-                                headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId, 'content-type': 'application/json' },
-                                body: JSON.stringify({ title: expectedTitle }),
-                            });
-                        }
+                        await setNoteTitle(reporting.noteId, expectedTitle);
                     } catch {}
                 }
             }
@@ -911,6 +1167,7 @@
         // frontend search parser does not consistently support quoted
         // attribute-value searches, while the package marker itself is stable
         // and the package manager has already scoped these notes to Ikmal.
+        await disableLegacyStartupScripts();
         await ensureSkeletonContainers();
         const packageNotes = await searchIncludingHidden('#packageArtifact');
         const todayPageNotes = packageNotes.filter((note) => [
@@ -937,6 +1194,7 @@
         await cleanDailyTemplate();
         await cleanDailyNotes();
         await removeProjectDashboardsFromDailyNotes();
+        await removeStrayReportingNotesFromDailyNotes();
         await repairTodayBranches();
         await reattachExistingTemplates();
         await migrateLegacyEntityLabels();
@@ -951,22 +1209,71 @@
 
         await recordMigrationLog('repair', 'Workspace repair completed successfully with 100% schema alignment.');
 
-        if (typeof window !== 'undefined' && !window.__ikmal_reconciliation_timer) {
-            const runBackgroundSync = () => {
-                reconcileProjectHubStatuses().catch(() => {});
-                syncProjectMetadata().catch(() => {});
-                repairTodayBranches().catch(() => {});
-            };
-            window.__ikmal_reconciliation_timer = setInterval(runBackgroundSync, 15000);
-            window.addEventListener('focus', runBackgroundSync);
-            document.addEventListener('visibilitychange', () => {
-                if (document.visibilityState === 'visible') runBackgroundSync();
-            });
+        // Written last, and only on a clean pass: this marker is what tells the
+        // next frontend startup that the workspace is already provisioned. Any
+        // throw or early bail above leaves it unset so the run is retried.
+        const configNoteId = extConfigNoteId
+            || (await searchIncludingHidden('#extConfig'))?.[0]?.noteId;
+        if (configNoteId) {
+            await setAttribute(configNoteId, 'label', 'extBootstrapped', PACKAGE_VERSION);
+        } else {
+            console.warn('[Ikmal Tools] Config note not found; first-run marker was not written.');
         }
     }
 
-    repair().catch((error) => {
-        console.warn(`[Ikmal Tools] Workspace bootstrap could not complete: ${error.message}`);
-    });
-})();
+    // After the first run, workspace repair is intentionally opt-in. Sweeping
+    // the whole vault on every frontend startup made large Trilium databases
+    // appear hung and could race with note-tree initialization. The Settings
+    // Studio invokes this function when the user requests maintenance.
+    let repairPromise = null;
+    window.__ikmal_workspace_repair = () => {
+        if (!repairPromise) {
+            repairPromise = repair()
+                .catch((error) => {
+                    console.warn(`[Ikmal Tools] Workspace repair could not complete: ${error.message}`);
+                    throw error;
+                })
+                .finally(() => {
+                    repairPromise = null;
+                });
+        }
+        return repairPromise;
+    };
 
+    // `repair()` is the only caller of the container, template, saved-search
+    // and backend-event provisioning steps, so a package installed through the
+    // Community Packages screen would never build its workspace without this.
+    // One marker search per startup is cheap; the sweep itself runs only while
+    // the marker is absent, which on a healthy install means exactly once.
+    async function runFirstRunBootstrapIfNeeded() {
+        const bootstrapped = await searchIncludingHidden('#extBootstrapped');
+        if (bootstrapped && bootstrapped.length > 0) return;
+        console.log('[Ikmal Tools] First run detected; provisioning the workspace.');
+        await window.__ikmal_workspace_repair();
+    }
+
+    // The full repair stays explicit after that, but the public Today relation
+    // is a cheap, safe invariant to check automatically. A slow timer catches a
+    // package update or accidental relation removal without reviving the old
+    // per-second database sweep that made Trilium appear hung.
+    //
+    // This watchdog never creates. A transient empty or stale `#todayRoot`
+    // result -- index lag, or a search that failed -- would otherwise mint a
+    // duplicate root-level "Today" note. Creation belongs to the first-run
+    // bootstrap above and to explicit repair, both of which are one-shot.
+    let todayAlignmentPromise = null;
+    const checkTodayAlignment = () => {
+        if (document.visibilityState === 'hidden' || todayAlignmentPromise) return;
+        todayAlignmentPromise = ensureTodayAlignment({ allowCreate: false })
+            .catch((error) => console.warn(`[Ikmal Tools] Today alignment skipped: ${error.message}`))
+            .finally(() => { todayAlignmentPromise = null; });
+    };
+
+    runFirstRunBootstrapIfNeeded()
+        .catch((error) => console.warn(`[Ikmal Tools] First-run workspace setup could not complete: ${error.message}`))
+        .finally(() => {
+            checkTodayAlignment();
+            window.addEventListener('focus', checkTodayAlignment, { passive: true });
+            window.setInterval(checkTodayAlignment, 60_000);
+        });
+})();

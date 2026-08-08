@@ -11,43 +11,17 @@ test('side-effect frontend artifacts are not declared as custom-widget launchers
 
     assert.equal(launcherArtifact?.type, 'frontend');
     assert.equal(launcherArtifact?.activation, 'startup');
-    assert.equal(wordCountArtifact?.type, 'frontend');
-    assert.equal(wordCountArtifact?.activation, 'startup');
+    assert.equal(wordCountArtifact, undefined);
 });
 
-test('Ikmal Editor keeps word count inside the editable note footer', () => {
-    const source = fs.readFileSync(new URL('src/artifacts/notes-system-word-count.js', root), 'utf8');
-
-    assert.match(source, /ikmal-editor-footer/);
-    assert.match(source, /note-detail-editable-text/);
-    assert.match(source, /Ikmal Editor/);
-    assert.match(source, /editorElements/);
-    assert.match(source, /component\.note-split/);
-    assert.match(source, /ikmal-selection-menu/);
-    assert.match(source, /editorIssues/);
-    assert.match(source, /contextmenu/);
-    assert.match(source, /checks in this paragraph/);
-    assert.match(source, /local \$\{issueCount === 1 \? 'issue' : 'issues'\}/);
-    assert.match(source, /ikmal-editor-status-ok/);
-    assert.match(source, /bx-check-circle/);
-    assert.match(source, /duplicateHighlightName/);
-    assert.match(source, /duplicateWordRanges/);
-    assert.match(source, /duplicate-word/);
-    assert.doesNotMatch(source, /LanguageTool remains available/);
-    assert.doesNotMatch(source, /event\.preventDefault\(\)/);
-    assert.doesNotMatch(source, /statusBar\.appendChild/);
+test('Ikmal Tools no longer owns the editor implementation', () => {
+    assert.equal(fs.existsSync(new URL('src/artifacts/notes-system-word-count.js', root)), false);
+    assert.equal(fs.existsSync(new URL('manifests/ikmal-editor.json', root)), false);
+    assert.doesNotMatch(fs.readFileSync(new URL('src/artifacts/notes-system.css', root), 'utf8'), /Ikmal Editor standalone styles begin/);
 });
 
-test('build stages Ikmal Editor as an independent component without copying the package tree', () => {
-    const editorManifest = JSON.parse(fs.readFileSync(new URL('manifests/ikmal-editor.json', root), 'utf8'));
+test('bundle metadata points to the separately owned Ikmal Editor package', () => {
     const bundleManifest = JSON.parse(fs.readFileSync(new URL('manifests/ikmal-tools-bundle.json', root), 'utf8'));
-
-    assert.equal(editorManifest.id, 'iansherr/ikmal_editor_trilium');
-    assert.equal(editorManifest.staged, true);
-    assert.deepEqual(editorManifest.artifacts.map((artifact) => artifact.id), ['ikmal-editor', 'ikmal-editor-css']);
-    assert.match(editorManifest.artifacts[0].source, /^dist\/artifacts\//);
-    assert.match(editorManifest.artifacts[1].source, /^dist\/artifacts\/ikmal-editor\.css$/);
-    assert.ok(editorManifest.artifacts.every((artifact) => /^sha256-[A-Za-z0-9+/]{43}=$/.test(artifact.integrity)));
 
     assert.equal(bundleManifest.kind, 'bundle');
     assert.equal(bundleManifest.staged, true);
@@ -69,9 +43,16 @@ test('launcher registers native configurable launchbar entries', () => {
     assert.match(launcherSource, /New Edit/);
     assert.match(launcherSource, /New Email/);
     assert.match(launcherSource, /__ikmalQuickCapture/);
-    assert.match(launcherSource, /Live Editor Status Bar Word Count launcher/);
-    assert.match(launcherSource, /Header Launcher Bar & Hotkey launcher/);
+    assert.match(launcherSource, /showPromptDialog/);
+    assert.match(launcherSource, /custom\/create-note/);
+    assert.match(launcherSource, /startStory/);
+    assert.match(launcherSource, /\(e\.ctrlKey \|\| e\.metaKey\) && e\.key === '\?' /);
+    assert.match(launcherSource, /Cmd \/ Ctrl \+ \?/);
     assert.match(launcherSource, /getParentBranches/);
+    assert.doesNotMatch(launcherSource, /legacyTitles/);
+    assert.doesNotMatch(launcherSource, /removeLegacyLaunchers/);
+    assert.doesNotMatch(launcherSource, /deleteNote\(\)/);
+    assert.doesNotMatch(launcherSource, /querySelector<|querySelectorAll</);
 });
 
 test('focused Today page hides the workspace Open Tasks widget and repairs daily-note sections', () => {
@@ -86,8 +67,30 @@ test('focused Today page hides the workspace Open Tasks widget and repairs daily
     assert.match(bootstrapSource, /cleanDailyNotes/);
     assert.match(bootstrapSource, /cleanDailyTemplate/);
     assert.match(bootstrapSource, /removeProjectDashboardsFromDailyNotes/);
+    assert.match(bootstrapSource, /removeStrayReportingNotesFromDailyNotes/);
+    assert.match(bootstrapSource, /isProjectHubCandidate/);
     assert.match(bootstrapSource, /notes\/\$\{noteId\}\/data/);
     assert.match(bootstrapSource, /data-box-size="expandable"/);
+    assert.match(homepageSource, /isProjectDashboard/);
+    assert.match(homepageSource, /loadProjectDashboardIds/);
+    assert.match(homepageSource, /project\.dashboardId \|\| project\.id/);
+    assert.doesNotMatch(homepageSource, /api\.createNote\(project\.noteId/);
+});
+
+test('daily repair does not pull story projects into newly opened journals', () => {
+    const bootstrapSource = fs.readFileSync(new URL('src/artifacts/notes-system-workspace-bootstrap.js', root), 'utf8');
+    const dailyRepairSource = fs.readFileSync(new URL('src/backend/daily-note-repair.backend.js', root), 'utf8');
+    const repairBody = bootstrapSource.match(/async function repairTodayBranches\(\) \{([\s\S]*?)\n    \}\n\n    function isDailyNote/)[1];
+
+    assert.doesNotMatch(repairBody, /extStoryDraft|extReportingNotes/);
+    assert.doesNotMatch(dailyRepairSource, /extStoryDraft|extReportingNotes/);
+    assert.match(bootstrapSource, /explicit New Story workflow/);
+    assert.match(dailyRepairSource, /explicit New Story/);
+    assert.match(bootstrapSource, /projectId !== dailyNote\.noteId/);
+    assert.match(bootstrapSource, /owned markers only/);
+    assert.match(bootstrapSource, /Saturday\)\$\/\.test/);
+    assert.match(bootstrapSource, /toggle-in-parent\/\$\{parentNoteId\}\/false/);
+    assert.match(bootstrapSource, /would orphan\/delete the note/);
 });
 
 test('workspace bootstrap is a startup artifact and project dashboards are render artifacts', () => {
@@ -101,15 +104,27 @@ test('workspace bootstrap is a startup artifact and project dashboards are rende
 
     const source = fs.readFileSync(new URL('src/artifacts/notes-system-workspace-bootstrap.js', root), 'utf8');
     assert.match(source, /findOrCreateVisibleToday/);
+    assert.match(source, /ensureTodayAlignment/);
+    assert.match(source, /type === 'label' && typeof api !== 'undefined'/);
+    assert.match(source, /getFreshOwnedRelationTarget/);
+    assert.match(source, /notes\/\$\{noteId\}\/attributes/);
+    assert.match(source, /!freshRelation\.available \|\| currentTarget !== todayCode\.noteId/);
+    assert.match(source, /setInterval\(checkTodayAlignment, 60_000\)/);
     assert.match(source, /attachProjectDashboards/);
+    assert.match(source, /Dashboard: \$\{project\.title\}/);
     assert.match(source, /#extTemplate/);
     assert.match(source, /projectHub/);
     assert.match(source, /markerValue/);
     assert.match(source, /hasMarker/);
     assert.match(source, /extHubDashboard/);
     assert.match(source, /repairTodayBranches/);
-    assert.match(source, /clone-to-note/);
+    assert.match(source, /disableLegacyStartupScripts/);
+    assert.match(source, /Today Dashboard/);
+    assert.match(source, /note\.removeLabel\('run'\)/);
+    assert.match(source, /toggle-in-parent/);
     assert.match(source, /quick-search/);
+    assert.match(source, /notes\/\$\{noteId\}\/title/);
+    assert.doesNotMatch(source, /notes\/\$\{reporting\.noteId\}\/data/);
     assert.match(source, /preserving any text the user entered there/);
 });
 
@@ -125,6 +140,77 @@ test('project dashboards support legacy hubs and show live related work', () => 
     assert.match(source, /@container project-dashboard/);
     assert.match(source, /getParentNoteIds/);
     assert.match(source, /getParentNotes/);
+});
+
+test('a fresh install provisions itself once, and the watchdog never creates', () => {
+    const source = fs.readFileSync(new URL('src/artifacts/notes-system-workspace-bootstrap.js', root), 'utf8');
+
+    // repair() is the only caller of the provisioning steps, so startup has to
+    // reach it at least once or a Community Packages install stays empty.
+    assert.match(source, /runFirstRunBootstrapIfNeeded\(\)/);
+    assert.match(source, /searchIncludingHidden\('#extBootstrapped'\)/);
+    assert.match(source, /await window\.__ikmal_workspace_repair\(\)/);
+
+    // The marker is written last so an early bail retries on the next startup.
+    const repairBody = source.match(/async function repair\(\) \{([\s\S]*?)\n    \}\n/)[1];
+    assert.ok(repairBody.indexOf('extBootstrapped') > repairBody.indexOf('runSystemVerification'));
+
+    // The recurring tick is lookup-only; a transient empty #todayRoot result
+    // must never mint a second root-level Today note.
+    assert.match(source, /ensureTodayAlignment\(\{ allowCreate: false \}\)/);
+    assert.doesNotMatch(source, /todayCreateAllowed/);
+});
+
+test('project archive and reopen refresh outside the rollback boundary', () => {
+    const source = fs.readFileSync(new URL('src/artifacts/notes-system-project-dashboard.js', root), 'utf8');
+
+    // loadDashboard() must not sit inside the try: a render failure after the
+    // hub has moved would otherwise roll `status` back to contradict its parent.
+    assert.match(source, /if \(archived\) \{\s*await loadDashboard\(\)/);
+    assert.match(source, /if \(reopened\) \{\s*await loadDashboard\(\)/);
+    // An empty previous doneDate must still be restored, not left behind.
+    assert.match(source, /await setLabel\(hub\.noteId, 'doneDate', previousDoneDate\);/);
+    assert.doesNotMatch(source, /if \(previousDoneDate\) await setLabel/);
+});
+
+test('launcher creates notes in process rather than shipping the handler secret to page JS', () => {
+    const launcherSource = fs.readFileSync(new URL('src/artifacts/notes-system-launcher.js', root), 'utf8');
+    const backendSource = fs.readFileSync(new URL('src/backend/create-note-api.backend.js', root), 'utf8');
+
+    assert.match(backendSource, /globalThis\.__ikmalCreateNote = dispatchAction/);
+    assert.match(backendSource, /function dispatchAction\(body = \{\}\)/);
+    assert.match(launcherSource, /globalThis\.__ikmalCreateNote/);
+
+    // The HTTP fallback survives for older backend artifacts, but its URL has
+    // to come from baseApiUrl or it 404s behind a sub-path reverse proxy.
+    // Verified against a live instance: baseApiUrl is 'api/' (relative), so the
+    // route must be its sibling -- 'api/custom/create-note' 404s.
+    assert.match(launcherSource, /root \+ 'custom\/create-note'/);
+    assert.match(launcherSource, /base\.endsWith\('api\/'\) \? base\.slice\(0, -4\) : base/);
+    assert.doesNotMatch(launcherSource, /fetch\('\/custom\/create-note'/);
+});
+
+test('both deploy archive paths strip the same activation labels', () => {
+    const source = fs.readFileSync(new URL('tools/deploy_plugin_to_instance.py', root), 'utf8');
+
+    assert.match(source, /ACTIVATION_LABELS = \{"run", "appCss", "widget", "customRequestHandler"\}/);
+    assert.equal(source.match(/delete_owned_labels\(api, note, ACTIVATION_LABELS\)/g)?.length, 2);
+    assert.doesNotMatch(source, /delete_owned_labels\(api, note, \{"/);
+});
+
+test('the version stamped on #extConfig matches the package manifest', () => {
+    const source = fs.readFileSync(new URL('src/artifacts/notes-system-workspace-bootstrap.js', root), 'utf8');
+    const declared = source.match(/const PACKAGE_VERSION = '([^']+)'/)?.[1];
+
+    assert.equal(declared, manifest.version);
+    assert.match(source, /value: PACKAGE_VERSION/);
+});
+
+test('render errors are escaped before reaching innerHTML', () => {
+    const source = fs.readFileSync(new URL('src/artifacts/notes-system-dashboard.jsx', root), 'utf8');
+
+    assert.match(source, /const escapeHtml = /);
+    assert.match(source, /\$\{escapeHtml\(renderError\?\.message/);
 });
 
 test('Today has a separate visible page from the workspace settings dashboard', () => {

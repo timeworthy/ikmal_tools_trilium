@@ -1216,6 +1216,175 @@ ${content}`;
     }
   };
 
+  // src/engine/triliumApiBridge.ts
+  var TriliumApiBridge = class {
+    static getGlob() {
+      return globalThis.glob || (typeof window !== "undefined" ? window.glob : null);
+    }
+    static getFrontendApi() {
+      return globalThis.api || (typeof window !== "undefined" ? window.api : null);
+    }
+    static async authenticatedFetch(pathRelative, options = {}) {
+      const glob = this.getGlob();
+      if (!glob) {
+        throw new Error("Trilium session context is unavailable.");
+      }
+      const headers = {
+        "x-csrf-token": glob.csrfToken || "",
+        "trilium-component-id": glob.componentId || "",
+        "content-type": "application/json",
+        ...options.headers || {}
+      };
+      const fetchFn = globalThis.fetch || (typeof window !== "undefined" ? window.fetch : null);
+      if (!fetchFn) {
+        throw new Error("Global fetch API is unavailable.");
+      }
+      const fullPath = `${glob.baseApiUrl}${pathRelative}`;
+      const send = () => fetchFn(fullPath, {
+        credentials: "same-origin",
+        ...options,
+        headers: { ...headers }
+      });
+      let response = await send();
+      if (response.status === 403) {
+        const locSearch = globalThis.location?.search || (typeof window !== "undefined" ? window.location?.search : "") || "";
+        const bootstrapUrl = `./bootstrap${locSearch}`;
+        const bootstrapResp = await fetchFn(bootstrapUrl, { credentials: "same-origin", cache: "no-store" }).catch(() => null);
+        if (bootstrapResp && bootstrapResp.ok) {
+          const refreshed = await bootstrapResp.json().catch(() => null);
+          if (refreshed?.csrfToken) {
+            glob.csrfToken = refreshed.csrfToken;
+            headers["x-csrf-token"] = refreshed.csrfToken;
+            response = await send();
+          }
+        }
+      }
+      return response;
+    }
+    /**
+     * Ensures a child note is attached/cloned under a parent note.
+     */
+    static async ensureNotePresentInParent(childNoteId, parentNoteId) {
+      if (!childNoteId || !parentNoteId) return;
+      const frontendApi = this.getFrontendApi();
+      if (frontendApi && typeof frontendApi.runOnBackend === "function") {
+        try {
+          const applied = await frontendApi.runOnBackend((cId, pId) => {
+            if (typeof api === "undefined" || typeof api.ensureNoteIsPresentInParent !== "function") {
+              return false;
+            }
+            api.ensureNoteIsPresentInParent(cId, pId, "");
+            return true;
+          }, [childNoteId, parentNoteId]);
+          if (applied) return;
+        } catch (err) {
+        }
+      }
+      const response = await this.authenticatedFetch(`notes/${childNoteId}/toggle-in-parent/${parentNoteId}/true`, {
+        method: "PUT",
+        body: JSON.stringify({})
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to clone note ${childNoteId} under ${parentNoteId} (HTTP ${response.status})`);
+      }
+    }
+    /**
+     * Ensures a child note is removed/unlinked from a parent note.
+     */
+    static async ensureNoteAbsentFromParent(childNoteId, parentNoteId) {
+      if (!childNoteId || !parentNoteId) return;
+      const frontendApi = this.getFrontendApi();
+      if (frontendApi && typeof frontendApi.runOnBackend === "function") {
+        try {
+          const applied = await frontendApi.runOnBackend((cId, pId) => {
+            if (typeof api === "undefined" || typeof api.ensureNoteIsAbsentFromParent !== "function") {
+              return false;
+            }
+            api.ensureNoteIsAbsentFromParent(cId, pId);
+            return true;
+          }, [childNoteId, parentNoteId]);
+          if (applied) return;
+        } catch (err) {
+        }
+      }
+      const response = await this.authenticatedFetch(`notes/${childNoteId}/toggle-in-parent/${parentNoteId}/false`, {
+        method: "PUT",
+        body: JSON.stringify({})
+      });
+      if (!response.ok && response.status !== 404) {
+        throw new Error(`Failed to remove note ${childNoteId} from ${parentNoteId} (HTTP ${response.status})`);
+      }
+    }
+    /**
+     * Sets or updates a note attribute (label or relation).
+     */
+    static async setNoteAttribute(noteId, type, name, value, targetNoteId) {
+      if (!noteId || !name) return;
+      const frontendApi = this.getFrontendApi();
+      if (frontendApi && typeof frontendApi.runOnBackend === "function") {
+        try {
+          const applied = await frontendApi.runOnBackend(
+            (nId, aType, aName, aVal, tId) => {
+              if (typeof api === "undefined") return false;
+              const note = api.getNote?.(nId);
+              if (!note) return false;
+              if (aType === "label") {
+                note.setLabel(aName, aVal || "");
+                return true;
+              }
+              if (aType === "relation" && tId) {
+                note.setRelation(aName, tId);
+                return true;
+              }
+              return false;
+            },
+            [noteId, type, name, value || "", targetNoteId || ""]
+          );
+          if (applied) return;
+        } catch (err) {
+        }
+      }
+      const payload = { type, name, isInheritable: false };
+      if (type === "label") payload.value = value || "";
+      if (type === "relation") payload.value = targetNoteId || value || "";
+      const response = await this.authenticatedFetch(`notes/${noteId}/set-attribute`, {
+        method: "PUT",
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to set attribute '${name}' on note ${noteId} (HTTP ${response.status})`);
+      }
+    }
+    /**
+     * Sets a note title.
+     */
+    static async setNoteTitle(noteId, title) {
+      if (!noteId) return;
+      const frontendApi = this.getFrontendApi();
+      if (frontendApi && typeof frontendApi.runOnBackend === "function") {
+        try {
+          const applied = await frontendApi.runOnBackend((nId, newTitle) => {
+            if (typeof api === "undefined") return false;
+            const note = api.getNote?.(nId);
+            if (!note) return false;
+            note.title = newTitle;
+            note.save();
+            return true;
+          }, [noteId, title]);
+          if (applied) return;
+        } catch (err) {
+        }
+      }
+      const response = await this.authenticatedFetch(`notes/${noteId}/title`, {
+        method: "PUT",
+        body: JSON.stringify({ title })
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to set title on note ${noteId} (HTTP ${response.status})`);
+      }
+    }
+  };
+
   // src/engine/packagePersistence.ts
   var PACKAGE_ID = "iansherr/ikmal_tools_trilium";
   function settingLabelName(key) {
@@ -1232,35 +1401,7 @@ ${content}`;
     return notes[0] ?? null;
   }
   async function writeLabel(note, name, value) {
-    const glob = globalThis.glob;
-    if (!glob) return;
-    const headers = {
-      "x-csrf-token": glob.csrfToken,
-      "trilium-component-id": glob.componentId,
-      "content-type": "application/json"
-    };
-    const body = JSON.stringify({ type: "label", name, value, isInheritable: false });
-    const path = `${glob.baseApiUrl}notes/${note.noteId}/set-attribute`;
-    const send = () => globalThis.fetch(path, {
-      method: "PUT",
-      credentials: "same-origin",
-      headers,
-      body
-    });
-    let response = await send();
-    if (response.status === 403) {
-      const bootstrapUrl = `./bootstrap${globalThis.location?.search ?? ""}`;
-      const bootstrap = await globalThis.fetch(bootstrapUrl, { credentials: "same-origin", cache: "no-store" });
-      if (bootstrap.ok) {
-        const refreshed = await bootstrap.json();
-        glob.csrfToken = refreshed.csrfToken;
-        headers["x-csrf-token"] = refreshed.csrfToken;
-        response = await send();
-      }
-    }
-    if (!response.ok) {
-      throw new Error(`Failed to save setting '${name}' (HTTP ${response.status})`);
-    }
+    return TriliumApiBridge.setNoteAttribute(note.noteId, "label", name, value);
   }
   function parseStoredBoolean(raw, fallback) {
     try {
@@ -1960,11 +2101,39 @@ ${YamlParser.stringify({ template: dumped })}
     };
   }
   async function fetchWeather(weather, signal) {
-    const response = await fetch(buildWeatherUrl(weather), { signal });
-    if (!response.ok) {
-      throw new Error(`Weather service returned ${response.status}`);
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError");
     }
-    return parseWeatherResponse(await response.json());
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    let timedOut = false;
+    const timeoutId = controller ? setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 5e3) : null;
+    const forwardAbort = () => controller?.abort();
+    if (signal && controller) {
+      signal.addEventListener("abort", forwardAbort);
+    }
+    const cleanup = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", forwardAbort);
+    };
+    try {
+      const response = await fetch(buildWeatherUrl(weather), {
+        signal: controller?.signal || signal
+      });
+      cleanup();
+      if (!response.ok) {
+        throw new Error(`Weather service returned ${response.status}`);
+      }
+      return parseWeatherResponse(await response.json());
+    } catch (err) {
+      cleanup();
+      if (timedOut && err?.name === "AbortError") {
+        throw new Error("Weather request timed out after 5 seconds");
+      }
+      throw err;
+    }
   }
 
   // src/engine/noteInsightsEngine.ts
@@ -2994,6 +3163,39 @@ ${YamlParser.stringify({ template: dumped })}
       const value = note.getOwnedLabelValue(name);
       return value === void 0 || value === null ? null : value;
     }
+    function isProjectDashboard(note) {
+      return noteMarker(note, "extProjectDashboard") === "projectHub" || noteMarker(note, "extHubDashboard") === "projectHub";
+    }
+    async function loadProjectDashboardIds(api2) {
+      const dashboards = /* @__PURE__ */ new Map();
+      for (const query of ["#extProjectDashboard", "#extHubDashboard"]) {
+        try {
+          for (const dashboard of await api2.searchForNotes(query)) {
+            if (dashboard?.noteId && isProjectDashboard(dashboard)) {
+              dashboards.set(dashboard.noteId, dashboard);
+            }
+          }
+        } catch {
+        }
+      }
+      const projectDashboardIds = /* @__PURE__ */ new Map();
+      for (const dashboard of dashboards.values()) {
+        let parentIds = [];
+        if (typeof dashboard.getParentNoteIds === "function") {
+          try {
+            parentIds = await Promise.resolve(dashboard.getParentNoteIds());
+          } catch {
+            parentIds = [];
+          }
+        }
+        for (const parentId of parentIds || []) {
+          if (!projectDashboardIds.has(parentId)) {
+            projectDashboardIds.set(parentId, dashboard.noteId);
+          }
+        }
+      }
+      return projectDashboardIds;
+    }
     async function loadActiveProjects() {
       const api2 = triliumApi4();
       if (!api2) return SAMPLE_ACTIVE_PROJECTS;
@@ -3010,16 +3212,23 @@ ${YamlParser.stringify({ template: dumped })}
         } catch {
         }
       }
-      return [...notes.values()].filter((note) => {
+      const projectNotes = [...notes.values()].filter((note) => {
         const isProject = noteMarker(note, "extProjectHub") !== null || noteMarker(note, "extTemplate") === "projectHub" || noteLabel(note, "kind") === "project";
         return isProject && noteLabel(note, "status") === "active" && !noteLabel(note, "projectArchive");
-      }).map((note) => ({
-        id: note.noteId,
-        title: note.title,
-        kind: noteLabel(note, "kind") || "project",
-        status: noteLabel(note, "status") || "active",
-        startDate: parseTriliumTimestamp(noteLabel(note, "startDate") || note.dateModified)
-      })).sort((a, b) => (Number.isFinite(b.startDate) ? b.startDate : 0) - (Number.isFinite(a.startDate) ? a.startDate : 0));
+      }).sort((a, b) => parseTriliumTimestamp(noteLabel(b, "startDate") || b.dateModified) - parseTriliumTimestamp(noteLabel(a, "startDate") || a.dateModified));
+      const projectDashboardIds = await loadProjectDashboardIds(api2);
+      const projectsWithDashboards = await Promise.all(projectNotes.map(async (note) => {
+        const dashboardId = projectDashboardIds.get(note.noteId);
+        return {
+          id: note.noteId,
+          dashboardId,
+          title: note.title,
+          kind: noteLabel(note, "kind") || "project",
+          status: noteLabel(note, "status") || "active",
+          startDate: parseTriliumTimestamp(noteLabel(note, "startDate") || note.dateModified)
+        };
+      }));
+      return projectsWithDashboards.sort((a, b) => (Number.isFinite(b.startDate) ? b.startDate : 0) - (Number.isFinite(a.startDate) ? a.startDate : 0));
     }
     function ensureActiveProjectsLoaded(card) {
       if (activeProjectCache) return true;
@@ -3046,7 +3255,7 @@ ${YamlParser.stringify({ template: dumped })}
         const actions = api2?.openTabWithNote ? [iconAction({
           icon: "bx-right-arrow-alt",
           title: `Open ${project.title}`,
-          onClick: () => api2.openTabWithNote(project.id, true)
+          onClick: () => api2.openTabWithNote(project.dashboardId || project.id, true)
         })] : void 0;
         card.appendChild(listItem({
           icon: "bx-book",
@@ -3162,10 +3371,10 @@ ${YamlParser.stringify({ template: dumped })}
               icon: "bx-check-double",
               title: "Mark Touched",
               onClick: () => {
-                const api2 = globalThis.api;
-                if (api2?.runOnBackend) {
-                  api2.runOnBackend((id) => {
-                    const n = api2.getNote(id);
+                const frontendApi = globalThis.api;
+                if (frontendApi?.runOnBackend) {
+                  frontendApi.runOnBackend((id) => {
+                    const n = api.getNote?.(id);
                     if (n) n.touch?.();
                   }, [entry.noteId]);
                 }
@@ -4602,12 +4811,12 @@ ${YamlParser.stringify({ template: dumped })}
             <div class="ns-row-desc mb-2">You are using <strong>Ikmal Tools Core Package</strong>. You can install companion tools individually or get the full suite:</div>
             <div class="d-flex flex-wrap gap-2">
                 <span class="badge bg-primary-subtle text-primary border p-2"><i class="bx bx-check-circle me-1"></i> Ikmal Tools Full Suite (Installed)</span>
-                <span class="badge bg-secondary-subtle text-body border p-2"><i class="bx bx-text me-1"></i> Ikmal Editor & Word Count</span>
+                <span class="badge bg-secondary-subtle text-body border p-2"><i class="bx bx-text me-1"></i> Ikmal Editor (companion)</span>
                 <span class="badge bg-secondary-subtle text-body border p-2"><i class="bx bx-keyboard me-1"></i> Ikmal Shortcuts & Command Palette</span>
                 <span class="badge bg-secondary-subtle text-body border p-2"><i class="bx bx-layout me-1"></i> Ikmal Standalone Kanban Board</span>
             </div>
             <div class="mt-2 text-end">
-                <a href="https://github.com/iansherr/trilium_plugins" target="_blank" class="btn btn-micro btn-outline-primary">
+                <a href="https://github.com/iansherr/ikmal_editor_trilium" target="_blank" class="btn btn-micro btn-outline-primary">
                     <i class="bx bx-store-alt me-1"></i> Complete Your Bundle on GitHub
                 </a>
             </div>
@@ -5003,11 +5212,13 @@ ${YamlParser.stringify({ template: dumped })}
         statusBox.className = "alert alert-info";
         statusBox.textContent = "Executing workspace repair and schema alignment...";
         try {
-          if (typeof window !== "undefined" && typeof window.__ikmal_workspace_bootstrap_started !== "undefined") {
-            window.__ikmal_workspace_bootstrap_started = false;
+          const repair = typeof window !== "undefined" ? window.__ikmal_workspace_repair : null;
+          if (typeof repair !== "function") {
+            throw new Error("Workspace repair is not loaded. Reload the Trilium frontend and try again.");
           }
+          await repair();
           statusBox.className = "alert alert-success";
-          statusBox.textContent = "\u{1F6E0}\uFE0F Workspace repair initiated! Containers, templates, saved search views, and backend event hooks have been aligned.";
+          statusBox.textContent = "\u{1F6E0}\uFE0F Workspace repair completed. Containers, templates, saved search views, and backend event hooks have been aligned.";
         } catch (err) {
           statusBox.className = "alert alert-danger";
           statusBox.textContent = `Repair error: ${err?.message || String(err)}`;
@@ -5061,6 +5272,20 @@ ${YamlParser.stringify({ template: dumped })}
     }
   }
   async function cloneNoteToParentNote(childNoteId, parentNoteId) {
+    const frontendApi = globalThis.api;
+    if (frontendApi && typeof frontendApi.runOnBackend === "function") {
+      try {
+        const applied = await frontendApi.runOnBackend((cId, pId) => {
+          if (typeof api === "undefined" || typeof api.ensureNoteIsPresentInParent !== "function") {
+            return false;
+          }
+          api.ensureNoteIsPresentInParent(cId, pId, "");
+          return true;
+        }, [childNoteId, parentNoteId]);
+        if (applied) return;
+      } catch {
+      }
+    }
     const glob = globalThis.glob;
     if (!glob) throw new Error("Not running inside Trilium.");
     const headers = {
@@ -5068,7 +5293,7 @@ ${YamlParser.stringify({ template: dumped })}
       "trilium-component-id": glob.componentId,
       "content-type": "application/json"
     };
-    const path = `${glob.baseApiUrl}notes/${childNoteId}/clone-to-note/${parentNoteId}`;
+    const path = `${glob.baseApiUrl}notes/${childNoteId}/toggle-in-parent/${parentNoteId}/true`;
     const send = () => globalThis.fetch(path, {
       method: "PUT",
       credentials: "same-origin",
@@ -5145,8 +5370,9 @@ ${YamlParser.stringify({ template: dumped })}
       return note.type === "code" && !note.isArchived && note.getOwnedLabelValue?.("packageOwner") === "iansherr/ikmal_tools_trilium" && ["notes-system-project-dashboard", "notes-system-project-dashboard-script"].includes(artifact || "");
     });
     if (!dashboardCode) return;
+    const project = typeof api2.getNote === "function" ? await api2.getNote(noteId) : null;
     const { note: dashboard } = await api2.createNote(noteId, {
-      title: "Project Dashboard",
+      title: project?.title ? `Dashboard: ${project.title}` : "Project Dashboard",
       type: "render",
       activate: false
     });
@@ -5349,6 +5575,20 @@ ${YamlParser.stringify({ template: dumped })}
     return { noteId: note.noteId, title: note.title, clonedUnder, childNoteIds };
   }
   async function removeNoteFromParentNote(childNoteId, parentNoteId) {
+    const frontendApi = globalThis.api;
+    if (frontendApi && typeof frontendApi.runOnBackend === "function") {
+      try {
+        const applied = await frontendApi.runOnBackend((cId, pId) => {
+          if (typeof api === "undefined" || typeof api.ensureNoteIsAbsentFromParent !== "function") {
+            return false;
+          }
+          api.ensureNoteIsAbsentFromParent(cId, pId);
+          return true;
+        }, [childNoteId, parentNoteId]);
+        if (applied) return;
+      } catch {
+      }
+    }
     const glob = globalThis.glob;
     if (!glob) return;
     const headers = {
@@ -5356,11 +5596,12 @@ ${YamlParser.stringify({ template: dumped })}
       "trilium-component-id": glob.componentId,
       "content-type": "application/json"
     };
-    const path = `${glob.baseApiUrl}notes/${childNoteId}/remove-from-parent/${parentNoteId}`;
+    const path = `${glob.baseApiUrl}notes/${childNoteId}/toggle-in-parent/${parentNoteId}/false`;
     const send = () => globalThis.fetch(path, {
-      method: "DELETE",
+      method: "PUT",
       credentials: "same-origin",
-      headers
+      headers,
+      body: JSON.stringify({})
     });
     let response = await send();
     if (response.status === 403) {
@@ -5795,6 +6036,13 @@ ${YamlParser.stringify({ template: dumped })}
   }
 
   // src/artifacts/notes-system-dashboard.jsx
+  var escapeHtml2 = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[char]);
   function initNotesSystemDashboard(containerEl) {
     const templateEngine = new TemplateEngine();
     const relationshipEngine = new RelationshipEngine(templateEngine);
@@ -5831,29 +6079,45 @@ ${YamlParser.stringify({ template: dumped })}
       shell.appendChild(nav);
       const contentArea = document.createElement("div");
       contentArea.className = "notes-system-content";
-      if (activeTab === "today") {
-        renderTodayHomepage(contentArea, todayEngine, templateEngine, (templateId) => {
-          showQuickCaptureModal(templateId, templateEngine, noteCreationEngine, ({ plan, result }) => {
-            if (result) {
-              renderMain();
-            } else {
-              const cloneTarget = plan.autoCloneContainers.length ? plan.autoCloneContainers.join(", ") : plan.journalClone ? "Today's Journal" : "None";
-              alert(`Preview only (no Trilium api present).
+      try {
+        if (activeTab === "today") {
+          renderTodayHomepage(contentArea, todayEngine, templateEngine, (templateId) => {
+            showQuickCaptureModal(templateId, templateEngine, noteCreationEngine, ({ plan, result }) => {
+              if (result) {
+                renderMain();
+              } else {
+                const cloneTarget = plan.autoCloneContainers.length ? plan.autoCloneContainers.join(", ") : plan.journalClone ? "Today's Journal" : "None";
+                alert(`Preview only (no Trilium api present).
 
 Formatted Title: ${plan.formattedTitle}
 Labels: ${plan.labelsToCreate.map((l) => "#" + l.name + "=" + l.value).join(", ")}
 Auto-Clone Target: ${cloneTarget}`);
-            }
+              }
+            });
+          }, settingsEngine, { api: typeof api !== "undefined" ? api : null });
+        } else if (activeTab === "templates") {
+          renderTemplateStudio(contentArea, templateEngine, ifThenRuleEngine, () => {
+            console.log("Templates & Automations updated!");
           });
-        }, settingsEngine, { api: typeof api !== "undefined" ? api : null });
-      } else if (activeTab === "templates") {
-        renderTemplateStudio(contentArea, templateEngine, ifThenRuleEngine, () => {
-          console.log("Templates & Automations updated!");
-        });
-      } else if (activeTab === "settings") {
-        renderSettingsStudio(contentArea, todayEngine, templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine, (yamlSpec) => {
-          return saveYamlSpecification(yamlSpec);
-        });
+        } else if (activeTab === "settings") {
+          renderSettingsStudio(contentArea, todayEngine, templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine, (yamlSpec) => {
+            return saveYamlSpecification(yamlSpec);
+          });
+        }
+      } catch (renderError) {
+        contentArea.innerHTML = `
+                <div class="card p-4 my-3 text-center border-danger">
+                    <div class="card-body">
+                        <i class="bx bx-error-circle text-danger display-4 mb-2"></i>
+                        <h4 class="card-title text-danger">Widget Render Issue</h4>
+                        <p class="card-text text-muted">${escapeHtml2(renderError?.message || "An unexpected rendering error occurred in this view.")}</p>
+                        <button type="button" class="btn btn-outline-primary btn-sm mt-2" data-action="reload-widget">
+                            <i class="bx bx-refresh"></i> Reload View
+                        </button>
+                    </div>
+                </div>
+            `;
+        contentArea.querySelector('[data-action="reload-widget"]')?.addEventListener("click", () => renderMain());
       }
       shell.appendChild(contentArea);
       containerEl.appendChild(shell);

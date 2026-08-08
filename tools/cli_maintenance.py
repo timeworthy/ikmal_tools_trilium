@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -29,7 +30,29 @@ except ImportError:
     from tools.etapi import Etapi, EtapiError
     import tools.deploy_plugin_to_instance as deployer
 
-VERSION = "1.0.29"
+
+def _descendants(api: Etapi, root_id: str) -> list[str]:
+    """Return a stable, cycle-safe preorder walk rooted at ``root_id``."""
+    result: list[str] = []
+    pending = [root_id]
+    seen: set[str] = set()
+    while pending:
+        note_id = pending.pop(0)
+        if not note_id or note_id in seen:
+            continue
+        seen.add(note_id)
+        result.append(note_id)
+        try:
+            child_ids = api.get_note(note_id).get("childNoteIds", [])
+        except Exception:
+            child_ids = []
+        pending.extend(child_ids)
+    return result
+
+# Kept in lockstep with `trilium-package.json` by a package manifest test, so
+# the version this tool stamps on #extConfig matches what the deploy tool
+# stamps on every artifact.
+VERSION = "1.0.32"
 
 CONTAINERS = [
     ("calendarRoot", "Journal", "root", "book", {"datePattern": "{isoDate} - {weekDay}", "iconClass": "bx bx-calendar"}),
@@ -69,13 +92,9 @@ NEXT_ACTION = {"label:nextAction": "promoted,alias=Next action,single,text"}
 
 DAILY_NOTE_CONTENT = (
     "<style>.daily-note h2{margin:1.5rem 0 .55rem}.daily-note h2:first-child{margin-top:0}"
-    ".daily-note .include-note{margin-bottom:1.5rem}.daily-note p{min-height:1.4em}</style>"
+    ".daily-note p{min-height:1.4em}</style>"
     "<div class='daily-note'>"
-    "<h2>Open Tasks</h2>"
-    "<section class='include-note' data-extension-open-tasks='true' "
-    "data-note-id='__OPEN_TASKS_VIEW__' data-box-size='expandable'>&nbsp;</section>"
     "<h2>Notes</h2><p></p>"
-    "<h2>Day start</h2><p></p>"
     "</div>"
 )
 
@@ -844,11 +863,12 @@ def ensure_project_hub_dashboards(api: Etapi) -> int:
                 existing_dashboard = child_id
                 break
         if existing_dashboard:
+            api.set_title(existing_dashboard, f"Dashboard: {hub.get('title', 'Project')}")
             continue
 
         dash_id = api.create_note(
             parent_note_id=hub_id,
-            title="Project Dashboard",
+            title=f"Dashboard: {hub.get('title', 'Project')}",
             note_type="render",
         )
         api.set_relation(dash_id, "renderNote", dashboard_code)
@@ -857,34 +877,44 @@ def ensure_project_hub_dashboards(api: Etapi) -> int:
     return created
 
 
-def ensure_daily_open_tasks_include(api: Etapi) -> int:
-    """Wire Trilium's native interactive Saved Search include into Daily Notes."""
-    dashboards_root = api.find_by_label("dashboardRoot")
+def remove_retired_daily_sections(api: Etapi) -> int:
+    """Remove retired Open Tasks and Day start sections from daily notes."""
+    # A missing #templateRoot only costs us the daily-template pass. The journal
+    # sweep below is keyed off #calendarRoot and must still run.
     templates_root = api.find_by_label("templateRoot")
-    if not dashboards_root or not templates_root:
-        return 0
-
-    open_tasks_id = None
-    for child_id in api.get_note(dashboards_root).get("childNoteIds", []):
-        for attr in api.get_note(child_id).get("attributes", []):
-            if attr.get("noteId") == child_id and attr.get("name") == "extView" and attr.get("value") == "openTasks":
-                open_tasks_id = child_id
-                break
-    if not open_tasks_id:
-        return 0
 
     daily_id = None
-    for child_id in api.get_note(templates_root).get("childNoteIds", []):
-        for attr in api.get_note(child_id).get("attributes", []):
-            if attr.get("noteId") == child_id and attr.get("name") == "extTemplate" and attr.get("value") == "daily":
-                daily_id = child_id
-                break
+    if templates_root:
+        for child_id in api.get_note(templates_root).get("childNoteIds", []):
+            for attr in api.get_note(child_id).get("attributes", []):
+                if attr.get("noteId") == child_id and attr.get("name") == "extTemplate" and attr.get("value") == "daily":
+                    daily_id = child_id
+                    break
+
+    def clean(content: str) -> str:
+        content = re.sub(
+            r"<h2>Open Tasks</h2>\s*<section\b[^>]*data-extension-open-tasks=['\"]true['\"][\s\S]*?</section>",
+            "",
+            content,
+            flags=re.IGNORECASE,
+        )
+        # Only drop the retired heading when its section is provably empty --
+        # nothing but blank paragraphs before the next heading or the end of
+        # the note. Removing it unconditionally would orphan anything a user
+        # had written under "Day start" into the preceding section.
+        return re.sub(
+            r"<h2>Day start</h2>\s*(?:<p>(?:\s|&nbsp;|<br\s*/?>)*</p>\s*)*(?=<h[1-6]\b|\Z)",
+            "",
+            content,
+            flags=re.IGNORECASE,
+        )
 
     updated = 0
     if daily_id:
         content = api.get_content(daily_id)
-        if "__OPEN_TASKS_VIEW__" in content:
-            api.set_content(daily_id, content.replace("__OPEN_TASKS_VIEW__", open_tasks_id))
+        cleaned = clean(content)
+        if cleaned != content:
+            api.set_content(daily_id, cleaned)
             updated += 1
 
     journal_id = api.find_by_label("calendarRoot")
@@ -892,8 +922,9 @@ def ensure_daily_open_tasks_include(api: Etapi) -> int:
         for result in api.search("#dateNote", ancestor_note_id=journal_id, include_archived=True):
             note_id = result["noteId"]
             content = api.get_content(note_id)
-            if "__OPEN_TASKS_VIEW__" in content:
-                api.set_content(note_id, content.replace("__OPEN_TASKS_VIEW__", open_tasks_id))
+            cleaned = clean(content)
+            if cleaned != content:
+                api.set_content(note_id, cleaned)
                 updated += 1
     return updated
 
@@ -1114,9 +1145,9 @@ def run_full_reconciliation_and_repairs(api: Etapi) -> list[str]:
     if dashboards:
         results.append(f"created {dashboards} missing Project Hub Dashboard(s)")
 
-    open_tasks = ensure_daily_open_tasks_include(api)
-    if open_tasks:
-        results.append(f"wired {open_tasks} Daily Note open tasks include(s)")
+    retired_sections = remove_retired_daily_sections(api)
+    if retired_sections:
+        results.append(f"removed retired daily-note sections from {retired_sections} note(s)")
 
     converted, overridden = migrate_legacy_entity_labels(api)
     if converted or overridden:
@@ -1347,4 +1378,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

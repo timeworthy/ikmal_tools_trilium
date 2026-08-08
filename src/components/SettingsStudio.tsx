@@ -61,12 +61,12 @@ export function renderSettingsStudio(
             <div class="ns-row-desc mb-2">You are using <strong>Ikmal Tools Core Package</strong>. You can install companion tools individually or get the full suite:</div>
             <div class="d-flex flex-wrap gap-2">
                 <span class="badge bg-primary-subtle text-primary border p-2"><i class="bx bx-check-circle me-1"></i> Ikmal Tools Full Suite (Installed)</span>
-                <span class="badge bg-secondary-subtle text-body border p-2"><i class="bx bx-text me-1"></i> Ikmal Editor & Word Count</span>
+                <span class="badge bg-secondary-subtle text-body border p-2"><i class="bx bx-text me-1"></i> Ikmal Editor (companion)</span>
                 <span class="badge bg-secondary-subtle text-body border p-2"><i class="bx bx-keyboard me-1"></i> Ikmal Shortcuts & Command Palette</span>
                 <span class="badge bg-secondary-subtle text-body border p-2"><i class="bx bx-layout me-1"></i> Ikmal Standalone Kanban Board</span>
             </div>
             <div class="mt-2 text-end">
-                <a href="https://github.com/iansherr/trilium_plugins" target="_blank" class="btn btn-micro btn-outline-primary">
+                <a href="https://github.com/iansherr/ikmal_editor_trilium" target="_blank" class="btn btn-micro btn-outline-primary">
                     <i class="bx bx-store-alt me-1"></i> Complete Your Bundle on GitHub
                 </a>
             </div>
@@ -507,12 +507,13 @@ export function renderSettingsStudio(
             statusBox.className = 'alert alert-info';
             statusBox.textContent = 'Executing workspace repair and schema alignment...';
             try {
-                if (typeof window !== 'undefined' && typeof (window as any).__ikmal_workspace_bootstrap_started !== 'undefined') {
-                    (window as any).__ikmal_workspace_bootstrap_started = false;
+                const repair = typeof window !== 'undefined' ? (window as any).__ikmal_workspace_repair : null;
+                if (typeof repair !== 'function') {
+                    throw new Error('Workspace repair is not loaded. Reload the Trilium frontend and try again.');
                 }
-                // Reload bootstrap or trigger repair
+                await repair();
                 statusBox.className = 'alert alert-success';
-                statusBox.textContent = '🛠️ Workspace repair initiated! Containers, templates, saved search views, and backend event hooks have been aligned.';
+                statusBox.textContent = '🛠️ Workspace repair completed. Containers, templates, saved search views, and backend event hooks have been aligned.';
             } catch (err: any) {
                 statusBox.className = 'alert alert-danger';
                 statusBox.textContent = `Repair error: ${err?.message || String(err)}`;
@@ -522,4 +523,3 @@ export function renderSettingsStudio(
 
     render();
 }
-

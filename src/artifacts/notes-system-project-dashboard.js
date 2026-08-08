@@ -107,7 +107,30 @@
         else if (api.openNote) api.openNote(noteId);
     };
     const setAttribute = async (noteId, type, name, value) => {
+        if (typeof api !== 'undefined' && typeof api.runOnBackend === 'function') {
+            try {
+                // The closure reports whether it wrote anything. Returning
+                // unconditionally would silently drop any attribute type the
+                // backend path does not handle -- the `project` relation on a
+                // new task, for one, leaving it invisible to searchRelated().
+                const applied = await api.runOnBackend((nId, aType, aName, aVal) => {
+                    const note = api.getNote(nId);
+                    if (!note) return false;
+                    if (aType === 'label') {
+                        note.setLabel(aName, aVal || '');
+                        return true;
+                    }
+                    if (aType === 'relation' && aVal) {
+                        note.setRelation(aName, aVal);
+                        return true;
+                    }
+                    return false;
+                }, [noteId, type, name, value || '']);
+                if (applied) return;
+            } catch {}
+        }
         const glob = window.glob;
+        if (!glob) throw new Error('Trilium session context is unavailable.');
         const headers = {
             'x-csrf-token': glob.csrfToken,
             'trilium-component-id': glob.componentId,
@@ -377,59 +400,116 @@
     });
 
     panel.querySelector('[data-project-action="archive"]')?.addEventListener('click', async () => {
+        const previousStatus = labelValue(hub, 'status') || 'active';
+        const previousDoneDate = labelValue(hub, 'doneDate') || '';
+        const today = new Date().toISOString().slice(0, 10);
+        let archived = false;
         try {
-            await setLabel(hub.noteId, 'status', 'complete');
-            await setLabel(hub.noteId, 'doneDate', new Date().toISOString().slice(0, 10));
-            const archiveRoot = (await api.searchForNotes('#archiveProjectRoot'))?.[0];
-            const activeRoot = (await api.searchForNotes('#activeProjectRoot'))?.[0];
-            const glob = window.glob;
-            if (glob && archiveRoot?.noteId) {
-                await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/clone-to-note/${archiveRoot.noteId}`, {
+            if (typeof api !== 'undefined' && typeof api.runOnBackend === 'function') {
+                await api.runOnBackend((hubId, todayDate) => {
+                    const hubNote = api.getNote(hubId);
+                    const archiveRoot = api.getNoteWithLabel('archiveProjectRoot');
+                    const activeRoot = api.getNoteWithLabel('activeProjectRoot');
+                    if (!hubNote || !archiveRoot) throw new Error('Archive root folder (#archiveProjectRoot) is not available.');
+                    hubNote.setLabel('status', 'complete');
+                    hubNote.setLabel('doneDate', todayDate);
+                    api.ensureNoteIsPresentInParent(hubId, archiveRoot.noteId, '');
+                    if (activeRoot) api.ensureNoteIsAbsentFromParent(hubId, activeRoot.noteId);
+                }, [hub.noteId, today]);
+            } else {
+                const archiveRoot = (await api.searchForNotes('#archiveProjectRoot'))?.[0];
+                const activeRoot = (await api.searchForNotes('#activeProjectRoot'))?.[0];
+                if (!archiveRoot?.noteId) throw new Error('Archive root folder (#archiveProjectRoot) is not available.');
+                const glob = window.glob;
+                if (!glob) throw new Error('Trilium session context is unavailable.');
+
+                await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/toggle-in-parent/${archiveRoot.noteId}/true`, {
                     method: 'PUT', credentials: 'same-origin',
                     headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId, 'content-type': 'application/json' },
+                    body: JSON.stringify({}),
                 });
+                if (activeRoot?.noteId) {
+                    try {
+                        await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/toggle-in-parent/${activeRoot.noteId}/false`, {
+                            method: 'PUT', credentials: 'same-origin',
+                            headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId, 'content-type': 'application/json' },
+                            body: JSON.stringify({}),
+                        });
+                    } catch {}
+                }
+                await setLabel(hub.noteId, 'status', 'complete');
+                await setLabel(hub.noteId, 'doneDate', today);
             }
-            if (glob && activeRoot?.noteId) {
-                try {
-                    await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/remove-from-parent/${activeRoot.noteId}`, {
-                        method: 'DELETE', credentials: 'same-origin',
-                        headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId },
-                    });
-                } catch {}
-            }
+            archived = true;
             statusLine.textContent = 'Project archived successfully.';
             panel.querySelector('[data-project-status]').textContent = 'complete';
-            await loadDashboard();
         } catch (error) {
+            // Atomic rollback. Only the move itself is covered: once the hub is
+            // filed under Archive, rolling `status` back would leave the label
+            // contradicting the note's real parent, so the refresh below stays
+            // outside the try.
+            try {
+                await setLabel(hub.noteId, 'status', previousStatus);
+                await setLabel(hub.noteId, 'doneDate', previousDoneDate);
+            } catch {}
             statusLine.textContent = `Could not archive project: ${error.message}`;
+        }
+        if (archived) {
+            await loadDashboard().catch((error) => {
+                statusLine.textContent = `Project archived, but the view could not refresh: ${error.message}`;
+            });
         }
     });
 
     panel.querySelector('[data-project-action="reopen"]')?.addEventListener('click', async () => {
+        const previousStatus = labelValue(hub, 'status') || 'complete';
+        let reopened = false;
         try {
-            await setLabel(hub.noteId, 'status', 'active');
-            const activeRoot = (await api.searchForNotes('#activeProjectRoot'))?.[0];
-            const archiveRoot = (await api.searchForNotes('#archiveProjectRoot'))?.[0];
-            const glob = window.glob;
-            if (glob && activeRoot?.noteId) {
-                await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/clone-to-note/${activeRoot.noteId}`, {
+            if (typeof api !== 'undefined' && typeof api.runOnBackend === 'function') {
+                await api.runOnBackend((hubId) => {
+                    const hubNote = api.getNote(hubId);
+                    const activeRoot = api.getNoteWithLabel('activeProjectRoot');
+                    const archiveRoot = api.getNoteWithLabel('archiveProjectRoot');
+                    if (!hubNote || !activeRoot) throw new Error('Active root folder (#activeProjectRoot) is not available.');
+                    hubNote.setLabel('status', 'active');
+                    api.ensureNoteIsPresentInParent(hubId, activeRoot.noteId, '');
+                    if (archiveRoot) api.ensureNoteIsAbsentFromParent(hubId, archiveRoot.noteId);
+                }, [hub.noteId]);
+            } else {
+                const activeRoot = (await api.searchForNotes('#activeProjectRoot'))?.[0];
+                const archiveRoot = (await api.searchForNotes('#archiveProjectRoot'))?.[0];
+                if (!activeRoot?.noteId) throw new Error('Active root folder (#activeProjectRoot) is not available.');
+                const glob = window.glob;
+                if (!glob) throw new Error('Trilium session context is unavailable.');
+
+                await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/toggle-in-parent/${activeRoot.noteId}/true`, {
                     method: 'PUT', credentials: 'same-origin',
                     headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId, 'content-type': 'application/json' },
+                    body: JSON.stringify({}),
                 });
+                if (archiveRoot?.noteId) {
+                    try {
+                        await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/toggle-in-parent/${archiveRoot.noteId}/false`, {
+                            method: 'PUT', credentials: 'same-origin',
+                            headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId, 'content-type': 'application/json' },
+                            body: JSON.stringify({}),
+                        });
+                    } catch {}
+                }
+                await setLabel(hub.noteId, 'status', 'active');
             }
-            if (glob && archiveRoot?.noteId) {
-                try {
-                    await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/remove-from-parent/${archiveRoot.noteId}`, {
-                        method: 'DELETE', credentials: 'same-origin',
-                        headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId },
-                    });
-                } catch {}
-            }
+            reopened = true;
             statusLine.textContent = 'Project reopened and set active.';
             panel.querySelector('[data-project-status]').textContent = 'active';
-            await loadDashboard();
         } catch (error) {
+            // Atomic rollback, covering the move only -- see the archive handler.
+            try { await setLabel(hub.noteId, 'status', previousStatus); } catch {}
             statusLine.textContent = `Could not reopen project: ${error.message}`;
+        }
+        if (reopened) {
+            await loadDashboard().catch((error) => {
+                statusLine.textContent = `Project reopened, but the view could not refresh: ${error.message}`;
+            });
         }
     });
 

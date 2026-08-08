@@ -141,9 +141,51 @@ export function parseWeatherResponse(data: any): WeatherReport {
 }
 
 export async function fetchWeather(weather: WeatherConfig, signal?: AbortSignal): Promise<WeatherReport> {
-    const response = await fetch(buildWeatherUrl(weather), { signal });
-    if (!response.ok) {
-        throw new Error(`Weather service returned ${response.status}`);
+    if (signal?.aborted) {
+        // Nothing to clean up yet, and the fetch below would otherwise ignore
+        // an already-aborted caller signal and run to completion.
+        throw signal.reason instanceof Error ? signal.reason : new DOMException('Aborted', 'AbortError');
     }
-    return parseWeatherResponse(await response.json());
+
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    // Distinguishes our own 5s deadline from a caller-initiated cancel, which
+    // must stay an AbortError so callers can still recognise it.
+    let timedOut = false;
+    const timeoutId = controller
+        ? setTimeout(() => {
+              timedOut = true;
+              controller.abort();
+          }, 5000)
+        : null;
+
+    const forwardAbort = () => controller?.abort();
+    if (signal && controller) {
+        signal.addEventListener('abort', forwardAbort);
+    }
+
+    const cleanup = () => {
+        if (timeoutId) clearTimeout(timeoutId);
+        // A long-lived caller signal reused across calls would otherwise
+        // accumulate one listener per request.
+        signal?.removeEventListener('abort', forwardAbort);
+    };
+
+    try {
+        const response = await fetch(buildWeatherUrl(weather), {
+            signal: controller?.signal || signal
+        });
+        cleanup();
+        if (!response.ok) {
+            throw new Error(`Weather service returned ${response.status}`);
+        }
+        return parseWeatherResponse(await response.json());
+    } catch (err: any) {
+        cleanup();
+        // Only our own deadline becomes a timeout message; a caller's cancel
+        // propagates unchanged so `err.name === 'AbortError'` stays meaningful.
+        if (timedOut && err?.name === 'AbortError') {
+            throw new Error('Weather request timed out after 5 seconds');
+        }
+        throw err;
+    }
 }

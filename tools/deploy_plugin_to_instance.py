@@ -4,6 +4,7 @@ Target root: Community Packages (hVY3hYDoODHc) or root container.
 """
 
 import sys
+import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -35,11 +36,33 @@ def manifest_tree_notes(api: Etapi, manifest_note_id: str) -> list[dict]:
     return result
 
 
+def community_package_tree_notes(api: Etapi) -> list[dict]:
+    """Walk the hidden package root because normal search omits it."""
+    return manifest_tree_notes(api, COMMUNITY_PACKAGES_ROOT_ID)
+
+
 def owned_artifacts(api: Etapi, owner: str, artifact_id: str) -> list[dict]:
     """Return only this package's artifacts; packageArtifact is not globally unique."""
     # Search by owner first. Hidden package notes are not consistently returned
     # by artifact-only searches in every Trilium frontend/cache state.
     candidates = api.search(f'#packageOwner="{owner}"')
+    if not candidates:
+        candidates = api.search(
+            f'#packageOwner="{owner}"',
+            include_archived=True,
+            ancestor_note_id=COMMUNITY_PACKAGES_ROOT_ID,
+        )
+    if not candidates:
+        candidates = community_package_tree_notes(api)
+        candidates = [
+            note for note in candidates
+            if any(
+                attribute.get("noteId") == note.get("noteId")
+                and attribute.get("name") == "packageOwner"
+                and attribute.get("value") == owner
+                for attribute in note.get("attributes", [])
+            )
+        ]
     if not candidates and owner == "iansherr/ikmal_tools_trilium":
         candidates = manifest_tree_notes(api, PACKAGE_MANIFEST_NOTE_ID)
     return [
@@ -56,24 +79,141 @@ def owned_artifacts(api: Etapi, owner: str, artifact_id: str) -> list[dict]:
 def current_artifact(api: Etapi, owner: str, artifact_id: str) -> dict | None:
     candidates = [
         note for note in owned_artifacts(api, owner, artifact_id)
-        if not any(a.get("name") == "archived" and a.get("noteId") == note["noteId"]
-                   for a in note.get("attributes", []))
+        if not note_is_archived(note)
     ]
     return candidates[0] if candidates else None
+
+
+def note_is_archived(note: dict) -> bool:
+    return any(
+        attribute.get("name") == "archived" and attribute.get("noteId") == note.get("noteId")
+        for attribute in note.get("attributes", [])
+    )
+
+
+# Every label that can make an artifact execute. Both archive paths must strip
+# the same set: an artifact that migrated to `#widget` activation and was then
+# retired would otherwise stay instantiable by the frontend after archiving.
+ACTIVATION_LABELS = {"run", "appCss", "widget", "customRequestHandler"}
+
+
+def delete_owned_labels(api: Etapi, note: dict, names: set[str]) -> None:
+    """Remove activation labels before archiving a stale artifact."""
+    for attribute in note.get("attributes", []):
+        if (
+            attribute.get("noteId") == note.get("noteId")
+            and attribute.get("type") in {"label", "relation"}
+            and attribute.get("name") in names
+        ):
+            api.delete_attribute(attribute["attributeId"])
+
+
+def archive_stale_artifacts(api: Etapi, owner: str, declared_ids: set[str]) -> None:
+    """Archive artifacts removed from a newer manifest without deleting them."""
+    allowed_ids = set(declared_ids)
+    for artifact_id in declared_ids:
+        allowed_ids.add(f"{artifact_id}-script")
+
+    for note in active_owned_notes(api, owner):
+        artifact_id = next(
+            (
+                attribute.get("value")
+                for attribute in note.get("attributes", [])
+                if attribute.get("noteId") == note.get("noteId")
+                and attribute.get("name") == "packageArtifact"
+            ),
+            None,
+        )
+        if not artifact_id or artifact_id == "manifest" or artifact_id in allowed_ids:
+            continue
+        api.set_label(note["noteId"], "packageEnabled", "false")
+        delete_owned_labels(api, note, ACTIVATION_LABELS)
+        api.set_label(note["noteId"], "archived", "")
+        print(f"  ~ Archived stale artifact '{artifact_id}' ({note['noteId']})")
 
 
 def active_owned_notes(api: Etapi, owner: str) -> list[dict]:
     """Return active package notes without silently creating a second tree."""
     candidates = api.search(f'#packageOwner="{owner}"')
+    if not candidates:
+        candidates = api.search(
+            f'#packageOwner="{owner}"',
+            include_archived=True,
+            ancestor_note_id=COMMUNITY_PACKAGES_ROOT_ID,
+        )
+    if not candidates:
+        candidates = community_package_tree_notes(api)
+        candidates = [
+            note for note in candidates
+            if any(
+                attribute.get("noteId") == note.get("noteId")
+                and attribute.get("name") == "packageOwner"
+                and attribute.get("value") == owner
+                for attribute in note.get("attributes", [])
+            )
+        ]
     if not candidates and owner == "iansherr/ikmal_tools_trilium":
         candidates = manifest_tree_notes(api, PACKAGE_MANIFEST_NOTE_ID)
     return [
         note for note in candidates
-        if not any(a.get("name") == "archived" and a.get("noteId") == note["noteId"]
-                   for a in note.get("attributes", []))
+        if not note_is_archived(note)
         and not any(a.get("name") == "transaction" and a.get("noteId") == note["noteId"]
                     for a in note.get("attributes", []))
     ]
+
+
+def package_artifact_id(note: dict) -> str | None:
+    """Return an owned package artifact marker, excluding inherited labels."""
+    note_id = note.get("noteId")
+    for attribute in note.get("attributes", []):
+        if (
+            attribute.get("noteId") == note_id
+            and attribute.get("name") == "packageArtifact"
+        ):
+            return attribute.get("value")
+    return None
+
+
+def archive_duplicate_artifacts(
+    api: Etapi,
+    owner: str,
+    preserved_note_ids: dict[str, str] | None = None,
+) -> None:
+    """Converge one package owner to one active note per artifact.
+
+    Older installers could create a new hidden package tree when a search did
+    not return the existing tree. Those copies are safe to retain for
+    recovery, but leaving them active makes package discovery and frontend tree
+    loading increasingly expensive. Archive duplicates instead of deleting
+    them, and remove all execution labels before doing so.
+    """
+    preserved_note_ids = preserved_note_ids or {}
+    grouped: dict[str, list[dict]] = {}
+    for note in active_owned_notes(api, owner):
+        artifact_id = package_artifact_id(note)
+        if not artifact_id:
+            continue
+        grouped.setdefault(artifact_id, []).append(note)
+
+    for artifact_id, notes in grouped.items():
+        notes.sort(
+            key=lambda note: (
+                note.get("utcDateModified") or note.get("dateModified") or "",
+                note.get("noteId") or "",
+            ),
+            reverse=True,
+        )
+        preferred_id = preserved_note_ids.get(artifact_id)
+        keep = next((note for note in notes if note.get("noteId") == preferred_id), notes[0])
+
+        for note in notes:
+            if note.get("noteId") == keep.get("noteId"):
+                continue
+            note_id = note["noteId"]
+            api.set_label(note_id, "packageEnabled", "false")
+            delete_owned_labels(api, note, ACTIVATION_LABELS)
+            api.set_label(note_id, "archived", "")
+            print(f"  ~ Archived duplicate '{artifact_id}' ({note_id}); kept {keep['noteId']}")
 
 def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_path_str: str | None = None) -> None:
     api = Etapi(url, token)
@@ -98,7 +238,10 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
 
     # 2. Check for existing package manifest note
     pkg_owner = manifest["id"]
-    existing_pkg_notes = owned_artifacts(api, pkg_owner, "manifest")
+    existing_pkg_notes = [
+        note for note in owned_artifacts(api, pkg_owner, "manifest")
+        if not note_is_archived(note)
+    ]
     
     pkg_manifest_note_id = None
     for note in existing_pkg_notes:
@@ -124,6 +267,11 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
         print(f"  + Created package manifest note: {pkg_manifest_note_id}")
     else:
         print(f"  ✓ Found package manifest note: {pkg_manifest_note_id}")
+
+    # Collapse legacy duplicate trees before updating this package. The
+    # selected manifest is authoritative; all other active copies are kept
+    # recoverably but made inert so they cannot execute or burden the host.
+    archive_duplicate_artifacts(api, pkg_owner, {"manifest": pkg_manifest_note_id})
 
     # Set package manifest labels
     api.set_label(pkg_manifest_note_id, "packageManaged", "")
@@ -210,12 +358,15 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
             elif artifact_type == "frontend":
                 note_type = "code"
                 mime = "application/javascript;env=frontend"
-            elif artifact_type == "backend":
+            elif artifact_type in ("backend", "endpoint"):
                 note_type = "code"
                 mime = "application/javascript;env=backend"
-            elif artifact_type in ("endpoint", "widget", "launcher"):
+            elif artifact_type == "widget":
                 note_type = "code"
-                mime = "application/javascript"
+                mime = "application/javascript;env=frontend"
+            elif artifact_type == "launcher":
+                note_type = "code"
+                mime = "application/javascript;env=frontend"
             else:
                 note_type = "code"
                 mime = "text/plain"
@@ -243,12 +394,23 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
             api.set_label(art_note_id, "packageArtifact", artifact_id)
             api.set_label(art_note_id, "packageEnabled", "true")
 
+            # A package update may change an artifact's activation model (for
+            # example, the Ikmal Editor moved from a startup script to a
+            # context-aware widget). Remove managed activation labels first so
+            # the old execution path cannot remain active alongside the new one.
+            delete_owned_labels(api, existing_artifact or {"noteId": art_note_id, "attributes": []},
+                                {"run", "widget", "appCss", "customRequestHandler"})
+
             if artifact_type == "css":
                 api.set_label(art_note_id, "appCss", "")
+            elif artifact_type == "widget":
+                api.set_label(art_note_id, "widget", "")
             elif artifact_type == "frontend" and artifact.get("activation") == "startup":
                 api.set_label(art_note_id, "run", "frontendStartup")
             elif artifact_type == "backend" and artifact.get("activation") == "startup":
                 api.set_label(art_note_id, "run", "backendStartup")
+            elif artifact_type == "endpoint" and artifact.get("route"):
+                api.set_label(art_note_id, "customRequestHandler", str(artifact["route"]).strip("/"))
 
             # Wire backend hook relations on container roots
             if artifact_id == "notes-system-project-metadata-sync":
@@ -274,6 +436,8 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
             elif artifact_id == "notes-system-create-note-api":
                 api.set_label(art_note_id, "customRequestHandler", "create-note")
                 print(f"  ✓ Wired Custom Request Handler 'create-note' on API note")
+
+    archive_stale_artifacts(api, pkg_owner, {artifact["id"] for artifact in manifest["artifacts"]})
 
     print("\n🎉 Plugin deployed successfully into Trilium instance with manifest label!")
 

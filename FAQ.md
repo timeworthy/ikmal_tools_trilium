@@ -74,8 +74,8 @@ browser; no API key required.
 
 No. Every write this plugin makes — settings, the YAML specification, note
 creation, filing a note under a second parent — goes through either the
-frontend script API directly or the same authenticated-fetch convention the
-sibling `../trilium_plugins` package manager uses, both of which work
+frontend script API directly or the same authenticated ETAPI convention the
+Community Packages manager uses, both of which work
 regardless of that instance option. It's specifically avoided because that
 option is commonly off — see `README.md` → Persistence and Creating notes.
 
@@ -97,7 +97,9 @@ python3 tools/deploy_plugin_to_instance.py
 The deploy script is idempotent: it finds the existing manifest/artifact
 notes by their `packageArtifact` label and updates their content in place,
 or creates them if they don't exist yet. Needs an ETAPI token for the target
-instance — see `tools/etapi.py`.
+instance — see `tools/etapi.py`. For a substantial package reorganization,
+run `tools/cleanup_plugin_artifacts.py` first; it archives old package notes
+and clears activation labels without deleting user-authored notes.
 
 ## Where do the built-in templates and categories come from?
 

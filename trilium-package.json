@@ -1,6 +1,6 @@
 {
   "id": "iansherr/ikmal_tools_trilium",
-  "version": "1.0.29",
+  "version": "1.0.32",
   "name": "Ikmal Tools for Trilium",
   "description": "Component-driven, editable, and organizable notes system layer for Trilium Notes with Today Homepage, Template Studio, and If/Then Automation Rules.",
   "author": "Ian Sherr",
@@ -74,7 +74,7 @@
       "id": "notes-system-today-page",
       "type": "render",
       "source": "dist/artifacts/notes-system-today-page.js",
-      "integrity": "sha256-EzsN/zOk8Ctt3LGyNABFzeES5Gp4ub769WUd/KphpsI=",
+      "integrity": "sha256-1fdS4h+3u+szChR+sw8avvYBdpdsEBe66mHacbg3vdY=",
       "title": "Ikmal Tools for Trilium: Today",
       "activation": "manual"
     },
@@ -82,7 +82,7 @@
       "id": "notes-system-dashboard",
       "type": "render",
       "source": "dist/artifacts/notes-system-dashboard.js",
-      "integrity": "sha256-LD2aynopJy72lEntcPppO60xuakes7/MVqayQCVNabk=",
+      "integrity": "sha256-fFgQunHTRyQYviY+FEHS6hjOhNdIythviJQ/JkqRmQc=",
       "title": "Ikmal Tools for Trilium: Today Homepage & Workspace Dashboard",
       "activation": "manual"
     },
@@ -90,7 +90,7 @@
       "id": "notes-system-project-dashboard",
       "type": "render",
       "source": "dist/artifacts/notes-system-project-dashboard.js",
-      "integrity": "sha256-Fj1CbXA46UjtQ38PY0YL1WsaKiYvTpeBnzn6DG76Jyw=",
+      "integrity": "sha256-jm/n2FG3FX4Od4+7jGOKqpfo+3o1n4swUfHpoD1eplc=",
       "title": "Ikmal Tools for Trilium: Project Dashboard",
       "activation": "manual"
     },
@@ -114,7 +114,7 @@
       "id": "notes-system-quick-capture",
       "type": "render",
       "source": "dist/artifacts/notes-system-quick-capture.js",
-      "integrity": "sha256-jPMIKQxuswwQ7PtEzCkHwnDlmxcSyyyOndor1YQO+xg=",
+      "integrity": "sha256-cVio6bnACyB3205w/2ky88+r6hQHZ8+U4FNIVpuTdyU=",
       "title": "Ikmal Tools for Trilium: Standalone Quick Capture Toolbar",
       "activation": "manual"
     },
@@ -154,23 +154,15 @@
       "id": "notes-system-launcher",
       "type": "frontend",
       "source": "dist/artifacts/notes-system-launcher.js",
-      "integrity": "sha256-yWf7Go+IiIxcGx11PfDq6uov3p7COFANnM1VN9e1Z6g=",
+      "integrity": "sha256-kSYZVSFjNUrjw00CYOw/i3DCfVsGTyQ0H+X9fP2mFmk=",
       "title": "Ikmal Tools for Trilium: Header Launcher Bar & Hotkey",
-      "activation": "startup"
-    },
-    {
-      "id": "notes-system-word-count",
-      "type": "frontend",
-      "source": "dist/artifacts/notes-system-word-count.js",
-      "integrity": "sha256-M8n+iJH8GmEqYdggNia5eFMoa1udjImFHG9bic1V7Kw=",
-      "title": "Ikmal Tools for Trilium: Live Editor Status Bar Word Count",
       "activation": "startup"
     },
     {
       "id": "notes-system-css",
       "type": "css",
       "source": "dist/artifacts/notes-system.css",
-      "integrity": "sha256-YvzqntEo/7eHjkAY+xbVW99wUqwJaZuR07khaBS813s=",
+      "integrity": "sha256-gvkV88AxYWg8MWjGWIrXX7FxevWPH7gIyqglTUFmmrU=",
       "title": "Ikmal Tools for Trilium: Theme & Stylesheet",
       "activation": "startup"
     },
@@ -178,7 +170,7 @@
       "id": "notes-system-workspace-bootstrap",
       "type": "frontend",
       "source": "dist/artifacts/notes-system-workspace-bootstrap.js",
-      "integrity": "sha256-kVjxyu83DnFEcs7mvJ+3UWlyiPHyL9LWKeYUHVz06NA=",
+      "integrity": "sha256-cXzcvfmXYJqEF5CPOApaDQJF8nFKbUqm6gMuSbWk56I=",
       "title": "Ikmal Tools for Trilium: Workspace Setup & Repair",
       "activation": "startup"
     },
@@ -194,7 +186,7 @@
       "id": "notes-system-daily-note-repair",
       "type": "backend",
       "source": "dist/backend/daily-note-repair.backend.js",
-      "integrity": "sha256-OI1jO4rzfyZBYXidMT3OYbAF+AwL2RzyPxvb5yCp6Fo=",
+      "integrity": "sha256-Zx0Hq7ozoGPnRfrez1tpqcbrfQYxh8mZGdJeh3DMUC4=",
       "title": "Ikmal Tools for Trilium: Daily Note Repair (Backend)",
       "activation": "startup"
     },
@@ -212,7 +204,7 @@
       "source": "dist/backend/create-note-api.backend.js",
       "title": "Ikmal Tools for Trilium: Create Note API & HTTP Custom Handler (Backend)",
       "activation": "startup",
-      "integrity": "sha256-z31WDRkf+jtJzfauAI7/0m/F0HNi0drPI0K7MUpTU1E="
+      "integrity": "sha256-KS8Bue1+/+sH4EUXdlxg4oOyBxlL3mGe7+DdK2UIVaQ="
     }
   ]
 }

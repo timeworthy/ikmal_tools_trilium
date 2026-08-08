@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import cli_maintenance as cli
+import export_package
 from etapi import Etapi
 
 
@@ -158,37 +160,60 @@ class CliMaintenanceTest(unittest.TestCase):
         self.assertEqual(created, 1)
         self.api.create_note.assert_called_once_with(
             parent_note_id="hub_1",
-            title="Project Dashboard",
+            title="Dashboard: Hub 1",
             note_type="render",
         )
         self.api.set_relation.assert_called_once_with("hub_dash_1", "renderNote", "dash_code")
 
-    def test_ensure_daily_open_tasks_include_replaces_placeholder(self):
+    def test_remove_retired_daily_sections(self):
         self.api.find_by_label.side_effect = lambda marker: {
-            "dashboardRoot": "dash_root",
             "templateRoot": "tpl_root",
             "calendarRoot": "cal_root",
         }.get(marker)
 
         self.api.get_note.side_effect = lambda note_id: {
-            "dash_root": {"childNoteIds": ["ot_search"]},
-            "ot_search": {"attributes": [{"noteId": "ot_search", "name": "extView", "value": "openTasks"}]},
             "tpl_root": {"childNoteIds": ["daily_tpl"]},
             "daily_tpl": {"attributes": [{"noteId": "daily_tpl", "name": "extTemplate", "value": "daily"}]},
         }.get(note_id)
 
-        self.api.get_content.side_effect = lambda note_id: "__OPEN_TASKS_VIEW__"
+        self.api.get_content.side_effect = lambda note_id: (
+            "<h2>Open Tasks</h2><section data-extension-open-tasks='true'>old</section>"
+            "<h2>Notes</h2><p></p><h2>Day start</h2><p></p>"
+        )
         self.api.search.return_value = [{"noteId": "day_1"}]
         self.api.set_content = Mock()
 
-        updated = cli.ensure_daily_open_tasks_include(self.api)
+        updated = cli.remove_retired_daily_sections(self.api)
         self.assertEqual(updated, 2)
         self.api.set_content.assert_has_calls([
-            call("daily_tpl", "ot_search"),
-            call("day_1", "ot_search"),
+            call("daily_tpl", "<h2>Notes</h2><p></p>"),
+            call("day_1", "<h2>Notes</h2><p></p>"),
         ])
+
+    def test_remove_retired_daily_sections_sweeps_journal_without_template_root(self):
+        """A missing #templateRoot must not skip the #calendarRoot journal sweep."""
+        self.api.find_by_label.side_effect = lambda marker: {
+            "calendarRoot": "cal_root",
+        }.get(marker)
+        self.api.get_note.side_effect = lambda note_id: {}.get(note_id)
+        self.api.get_content.side_effect = lambda note_id: (
+            "<h2>Open Tasks</h2><section data-extension-open-tasks='true'>old</section>"
+            "<h2>Notes</h2><p></p>"
+        )
+        self.api.search.return_value = [{"noteId": "day_1"}]
+        self.api.set_content = Mock()
+
+        updated = cli.remove_retired_daily_sections(self.api)
+        self.assertEqual(updated, 1)
+        self.api.set_content.assert_called_once_with("day_1", "<h2>Notes</h2><p></p>")
+
+    def test_version_matches_package_manifest(self):
+        manifest = json.loads(
+            (Path(__file__).resolve().parents[1] / "trilium-package.json").read_text()
+        )
+        self.assertEqual(cli.VERSION, manifest["version"])
+        self.assertEqual(export_package.VERSION, manifest["version"])
 
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

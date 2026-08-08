@@ -33,6 +33,7 @@ interface KanbanTask {
 
 interface ActiveProject {
     id: string;
+    dashboardId?: string;
     title: string;
     kind: string;
     status: string;
@@ -76,6 +77,11 @@ const TODAY_QUICK_CAPTURE_ACTIONS = [
 ] as const;
 
 import { SettingsEngine } from '../engine/settingsEngine.js';
+
+// Trilium injects `api` as a scoped variable into backend script execution; it
+// is not a property of `globalThis` there. Closures passed to `runOnBackend`
+// must reference this bare identifier so the bundler leaves it unresolved.
+declare const api: any;
 
 export function renderTodayHomepage(
     container: HTMLElement,
@@ -670,6 +676,44 @@ export function renderTodayHomepage(
         return value === undefined || value === null ? null : value;
     }
 
+    function isProjectDashboard(note: any): boolean {
+        return noteMarker(note, 'extProjectDashboard') === 'projectHub'
+            || noteMarker(note, 'extHubDashboard') === 'projectHub';
+    }
+
+    async function loadProjectDashboardIds(api: any): Promise<Map<string, string>> {
+        const dashboards = new Map<string, any>();
+        for (const query of ['#extProjectDashboard', '#extHubDashboard']) {
+            try {
+                for (const dashboard of await api.searchForNotes(query)) {
+                    if (dashboard?.noteId && isProjectDashboard(dashboard)) {
+                        dashboards.set(dashboard.noteId, dashboard);
+                    }
+                }
+            } catch {
+                // A missing legacy marker must not hide the project list.
+            }
+        }
+
+        const projectDashboardIds = new Map<string, string>();
+        for (const dashboard of dashboards.values()) {
+            let parentIds: string[] = [];
+            if (typeof dashboard.getParentNoteIds === 'function') {
+                try {
+                    parentIds = await Promise.resolve(dashboard.getParentNoteIds());
+                } catch {
+                    parentIds = [];
+                }
+            }
+            for (const parentId of parentIds || []) {
+                if (!projectDashboardIds.has(parentId)) {
+                    projectDashboardIds.set(parentId, dashboard.noteId);
+                }
+            }
+        }
+        return projectDashboardIds;
+    }
+
     async function loadActiveProjects(): Promise<ActiveProject[]> {
         const api = triliumApi();
         if (!api) return SAMPLE_ACTIVE_PROJECTS;
@@ -691,7 +735,7 @@ export function renderTodayHomepage(
             }
         }
 
-        return [...notes.values()]
+        const projectNotes = [...notes.values()]
             .filter((note) => {
                 const isProject = noteMarker(note, 'extProjectHub') !== null
                     || noteMarker(note, 'extTemplate') === 'projectHub'
@@ -700,13 +744,23 @@ export function renderTodayHomepage(
                     && noteLabel(note, 'status') === 'active'
                     && !noteLabel(note, 'projectArchive');
             })
-            .map((note) => ({
+            .sort((a, b) => parseTriliumTimestamp(noteLabel(b, 'startDate') || b.dateModified)
+                - parseTriliumTimestamp(noteLabel(a, 'startDate') || a.dateModified));
+
+        const projectDashboardIds = await loadProjectDashboardIds(api);
+        const projectsWithDashboards = await Promise.all(projectNotes.map(async (note) => {
+            const dashboardId = projectDashboardIds.get(note.noteId);
+            return {
                 id: note.noteId,
+                dashboardId,
                 title: note.title,
                 kind: noteLabel(note, 'kind') || 'project',
                 status: noteLabel(note, 'status') || 'active',
                 startDate: parseTriliumTimestamp(noteLabel(note, 'startDate') || note.dateModified),
-            }))
+            };
+        }));
+
+        return projectsWithDashboards
             .sort((a, b) => (Number.isFinite(b.startDate) ? b.startDate : 0)
                 - (Number.isFinite(a.startDate) ? a.startDate : 0));
     }
@@ -737,9 +791,9 @@ export function renderTodayHomepage(
         for (const project of activeProjectCache!.slice(0, 8)) {
             const actions = api?.openTabWithNote
                 ? [iconAction({
-                    icon: 'bx-right-arrow-alt',
-                    title: `Open ${project.title}`,
-                    onClick: () => api.openTabWithNote(project.id, true),
+                        icon: 'bx-right-arrow-alt',
+                        title: `Open ${project.title}`,
+                        onClick: () => api.openTabWithNote(project.dashboardId || project.id, true),
                 })]
                 : undefined;
             card.appendChild(listItem({
@@ -869,10 +923,15 @@ export function renderTodayHomepage(
                         icon: 'bx-check-double',
                         title: 'Mark Touched',
                         onClick: () => {
-                            const api = (globalThis as any).api;
-                            if (api?.runOnBackend) {
-                                api.runOnBackend((id: string) => {
-                                    const n = (api as any).getNote(id);
+                            const frontendApi = (globalThis as any).api;
+                            if (frontendApi?.runOnBackend) {
+                                // The closure is serialised and re-parsed on the
+                                // backend, where `api` is an injected scoped
+                                // variable. Capturing the frontend handle here
+                                // would bundle to a renamed local that does not
+                                // exist backend-side.
+                                frontendApi.runOnBackend((id: string) => {
+                                    const n = api.getNote?.(id);
                                     if (n) n.touch?.();
                                 }, [entry.noteId]);
                             }

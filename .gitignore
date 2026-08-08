@@ -1,9 +1,19 @@
 # macOS
 .DS_Store
 
+# Node
+node_modules/
+
 # Python
 __pycache__/
 *.pyc
+
+# Playwright MCP session logs and traces
+.playwright-mcp/
+
+# Local diagnostic screenshots from manual UI checks
+diagnostics-*.png
+ikmal-editor-indicator-fixed.png
 
 # Generated compiler output
 dist/*

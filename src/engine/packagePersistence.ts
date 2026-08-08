@@ -1,9 +1,8 @@
 /**
  * Reads and writes this package's Automation settings as `packageSetting:<key>`
  * labels on its own manifest note — the same label name and note (found via
- * `#packageOwner`/`#packageArtifact=manifest`) that the sibling package-manager
- * project (`../trilium_plugins`, see `docs/settings-integration.md`) already
- * uses for "Configure" on any installed package, and that this repo's own
+ * `#packageOwner`/`#packageArtifact=manifest`) that Trilium's Community
+ * Packages manager uses for "Configure" on any installed package, and that this repo's own
  * `tools/deploy_plugin_to_instance.py` tags every deployed note with. Settings
  * saved from inside this dashboard and from that external manager's Configure
  * screen land on the same labels, so neither overwrites the other.
@@ -41,44 +40,10 @@ async function findManifestNote(): Promise<TriliumFNote | null> {
     return notes[0] ?? null;
 }
 
-/**
- * Mirrors `attributeRequest` in `../trilium_plugins/scripts/community-packages.tsx`:
- * a direct fetch to the authenticated note-attribute endpoint with a CSRF
- * retry, since the frontend script API has no write method of its own.
- */
+import { TriliumApiBridge } from './triliumApiBridge.js';
+
 async function writeLabel(note: TriliumFNote, name: string, value: string): Promise<void> {
-    const glob = (globalThis as any).glob;
-    if (!glob) return;
-
-    const headers: Record<string, string> = {
-        'x-csrf-token': glob.csrfToken,
-        'trilium-component-id': glob.componentId,
-        'content-type': 'application/json',
-    };
-    const body = JSON.stringify({ type: 'label', name, value, isInheritable: false });
-    const path = `${glob.baseApiUrl}notes/${note.noteId}/set-attribute`;
-    const send = () => (globalThis as any).fetch(path, {
-        method: 'PUT',
-        credentials: 'same-origin',
-        headers,
-        body,
-    });
-
-    let response = await send();
-    if (response.status === 403) {
-        const bootstrapUrl = `./bootstrap${(globalThis as any).location?.search ?? ''}`;
-        const bootstrap = await (globalThis as any).fetch(bootstrapUrl, { credentials: 'same-origin', cache: 'no-store' });
-        if (bootstrap.ok) {
-            const refreshed = await bootstrap.json();
-            glob.csrfToken = refreshed.csrfToken;
-            headers['x-csrf-token'] = refreshed.csrfToken;
-            response = await send();
-        }
-    }
-
-    if (!response.ok) {
-        throw new Error(`Failed to save setting '${name}' (HTTP ${response.status})`);
-    }
+    return TriliumApiBridge.setNoteAttribute(note.noteId, 'label', name, value);
 }
 
 function parseStoredBoolean(raw: string, fallback: boolean): boolean {

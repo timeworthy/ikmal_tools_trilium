@@ -1260,6 +1260,20 @@ ${content}`;
     }
   }
   async function cloneNoteToParentNote(childNoteId, parentNoteId) {
+    const frontendApi = globalThis.api;
+    if (frontendApi && typeof frontendApi.runOnBackend === "function") {
+      try {
+        const applied = await frontendApi.runOnBackend((cId, pId) => {
+          if (typeof api === "undefined" || typeof api.ensureNoteIsPresentInParent !== "function") {
+            return false;
+          }
+          api.ensureNoteIsPresentInParent(cId, pId, "");
+          return true;
+        }, [childNoteId, parentNoteId]);
+        if (applied) return;
+      } catch {
+      }
+    }
     const glob = globalThis.glob;
     if (!glob) throw new Error("Not running inside Trilium.");
     const headers = {
@@ -1267,7 +1281,7 @@ ${content}`;
       "trilium-component-id": glob.componentId,
       "content-type": "application/json"
     };
-    const path = `${glob.baseApiUrl}notes/${childNoteId}/clone-to-note/${parentNoteId}`;
+    const path = `${glob.baseApiUrl}notes/${childNoteId}/toggle-in-parent/${parentNoteId}/true`;
     const send = () => globalThis.fetch(path, {
       method: "PUT",
       credentials: "same-origin",
@@ -1344,8 +1358,9 @@ ${content}`;
       return note.type === "code" && !note.isArchived && note.getOwnedLabelValue?.("packageOwner") === "iansherr/ikmal_tools_trilium" && ["notes-system-project-dashboard", "notes-system-project-dashboard-script"].includes(artifact || "");
     });
     if (!dashboardCode) return;
+    const project = typeof api2.getNote === "function" ? await api2.getNote(noteId) : null;
     const { note: dashboard } = await api2.createNote(noteId, {
-      title: "Project Dashboard",
+      title: project?.title ? `Dashboard: ${project.title}` : "Project Dashboard",
       type: "render",
       activate: false
     });
@@ -1548,6 +1563,20 @@ ${content}`;
     return { noteId: note.noteId, title: note.title, clonedUnder, childNoteIds };
   }
   async function removeNoteFromParentNote(childNoteId, parentNoteId) {
+    const frontendApi = globalThis.api;
+    if (frontendApi && typeof frontendApi.runOnBackend === "function") {
+      try {
+        const applied = await frontendApi.runOnBackend((cId, pId) => {
+          if (typeof api === "undefined" || typeof api.ensureNoteIsAbsentFromParent !== "function") {
+            return false;
+          }
+          api.ensureNoteIsAbsentFromParent(cId, pId);
+          return true;
+        }, [childNoteId, parentNoteId]);
+        if (applied) return;
+      } catch {
+      }
+    }
     const glob = globalThis.glob;
     if (!glob) return;
     const headers = {
@@ -1555,11 +1584,12 @@ ${content}`;
       "trilium-component-id": glob.componentId,
       "content-type": "application/json"
     };
-    const path = `${glob.baseApiUrl}notes/${childNoteId}/remove-from-parent/${parentNoteId}`;
+    const path = `${glob.baseApiUrl}notes/${childNoteId}/toggle-in-parent/${parentNoteId}/false`;
     const send = () => globalThis.fetch(path, {
-      method: "DELETE",
+      method: "PUT",
       credentials: "same-origin",
-      headers
+      headers,
+      body: JSON.stringify({})
     });
     let response = await send();
     if (response.status === 403) {

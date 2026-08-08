@@ -17,6 +17,12 @@ import { renderTemplateStudio } from '../components/TemplateStudio.js';
 import { renderSettingsStudio } from '../components/SettingsStudio.js';
 import { showQuickCaptureModal } from '../components/QuickCaptureModal.js';
 
+// Render errors can carry note-derived text (a title echoed into a thrown
+// message), and the error card writes them through innerHTML.
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[char]));
+
 export function initNotesSystemDashboard(containerEl) {
     const templateEngine = new TemplateEngine();
     const relationshipEngine = new RelationshipEngine(templateEngine);
@@ -67,35 +73,44 @@ export function initNotesSystemDashboard(containerEl) {
         const contentArea = document.createElement('div');
         contentArea.className = 'notes-system-content';
 
-        if (activeTab === 'today') {
-            renderTodayHomepage(contentArea, todayEngine, templateEngine, (templateId) => {
-                showQuickCaptureModal(templateId, templateEngine, noteCreationEngine, ({ plan, result }) => {
-                    if (result) {
-                        // The modal already showed a Trilium toast; re-render so
-                        // search-driven Today widgets (Open Tasks, etc.) pick up
-                        // the note that was just created.
-                        renderMain();
-                    } else {
-                        // Outside Trilium (static preview, no `api`) there's nothing
-                        // to create against, so fall back to describing the plan.
-                        const cloneTarget = plan.autoCloneContainers.length
-                            ? plan.autoCloneContainers.join(', ')
-                            : (plan.journalClone ? "Today's Journal" : 'None');
-                        alert(`Preview only (no Trilium api present).\n\nFormatted Title: ${plan.formattedTitle}\nLabels: ${plan.labelsToCreate.map(l => '#' + l.name + '=' + l.value).join(', ')}\nAuto-Clone Target: ${cloneTarget}`);
-                    }
+        try {
+            if (activeTab === 'today') {
+                renderTodayHomepage(contentArea, todayEngine, templateEngine, (templateId) => {
+                    showQuickCaptureModal(templateId, templateEngine, noteCreationEngine, ({ plan, result }) => {
+                        if (result) {
+                            renderMain();
+                        } else {
+                            const cloneTarget = plan.autoCloneContainers.length
+                                ? plan.autoCloneContainers.join(', ')
+                                : (plan.journalClone ? "Today's Journal" : 'None');
+                            alert(`Preview only (no Trilium api present).\n\nFormatted Title: ${plan.formattedTitle}\nLabels: ${plan.labelsToCreate.map(l => '#' + l.name + '=' + l.value).join(', ')}\nAuto-Clone Target: ${cloneTarget}`);
+                        }
+                    });
+                }, settingsEngine, { api: typeof api !== 'undefined' ? api : null });
+            } else if (activeTab === 'templates') {
+                renderTemplateStudio(contentArea, templateEngine, ifThenRuleEngine, () => {
+                    console.log('Templates & Automations updated!');
                 });
-            }, settingsEngine, { api: typeof api !== 'undefined' ? api : null });
-        } else if (activeTab === 'templates') {
-            renderTemplateStudio(contentArea, templateEngine, ifThenRuleEngine, () => {
-                console.log('Templates & Automations updated!');
-            });
-
-        } else if (activeTab === 'settings') {
-            renderSettingsStudio(contentArea, todayEngine, templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine, (yamlSpec) => {
-                return saveYamlSpecification(yamlSpec);
-            });
+            } else if (activeTab === 'settings') {
+                renderSettingsStudio(contentArea, todayEngine, templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine, (yamlSpec) => {
+                    return saveYamlSpecification(yamlSpec);
+                });
+            }
+        } catch (renderError) {
+            contentArea.innerHTML = `
+                <div class="card p-4 my-3 text-center border-danger">
+                    <div class="card-body">
+                        <i class="bx bx-error-circle text-danger display-4 mb-2"></i>
+                        <h4 class="card-title text-danger">Widget Render Issue</h4>
+                        <p class="card-text text-muted">${escapeHtml(renderError?.message || 'An unexpected rendering error occurred in this view.')}</p>
+                        <button type="button" class="btn btn-outline-primary btn-sm mt-2" data-action="reload-widget">
+                            <i class="bx bx-refresh"></i> Reload View
+                        </button>
+                    </div>
+                </div>
+            `;
+            contentArea.querySelector('[data-action="reload-widget"]')?.addEventListener('click', () => renderMain());
         }
-
 
         shell.appendChild(contentArea);
         containerEl.appendChild(shell);

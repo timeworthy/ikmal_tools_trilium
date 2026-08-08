@@ -1,6 +1,6 @@
 # Architecture Overview — Ikmal Tools for Trilium
 
-**Ikmal Tools for Trilium** (`iansherr/ikmal_tools_trilium`) is engineered with a strict separation between pure TypeScript engine logic and browser UI render artifacts. It is also separate from the Trilium host: the package manager, Plugins settings tab, and host-side tests live in the experimental [`integration/plugins` branch](https://github.com/iansherr/Trilium/tree/integration/plugins).
+**Ikmal Tools for Trilium** (`iansherr/ikmal_tools_trilium`) is engineered with a strict separation between pure TypeScript engine logic and browser UI render artifacts. It is also separate from the Trilium host: the package manager, Plugins settings tab, and host-side tests live in the Trilium fork's `integration/plugins` branch.
 
 ---
 
@@ -35,7 +35,6 @@ src/
     ├── notes-system-stale-notes.jsx  # Build input for stale notes reviewer
     ├── notes-system-canvas.jsx       # Build input for interactive canvas (Beta)
     ├── notes-system-launcher.js      # Build input for global header bar & hotkey
-    ├── notes-system-word-count.js    # Build input for editor status bar counter
     └── notes-system.css              # Build input for theme & UI stylesheet
 ```
 
@@ -46,4 +45,4 @@ the paths referenced by `trilium-package.json` and verified with SRI.
 
 ## Manifest & SRI Integrity
 
-`trilium-package.json` declares all 11 package artifacts. When running `npm run build`, `tools/build.mjs` automatically computes the Subresource Integrity (`sha256-...`) hash for every compiled JS/CSS file and updates `trilium-package.json` automatically.
+`trilium-package.json` declares the core package artifacts. When running `npm run build`, `tools/build.mjs` automatically computes the Subresource Integrity (`sha256-...`) hash for every compiled JS/CSS file and updates `trilium-package.json` automatically. Editor behavior is maintained in the standalone `ikmal_editor_trilium` package.

@@ -163,7 +163,7 @@ function ensureHubDashboard(hub) {
     }
     const { note } = api.createNewNote({
         parentNoteId: hub.noteId,
-        title: 'Project Dashboard',
+        title: `Dashboard: ${hub.title}`,
         content: '',
         type: 'render',
     });
@@ -746,60 +746,93 @@ function isAuthorized(req) {
     return { ok: true };
 }
 
-const { req, res } = api;
-const auth = isAuthorized(req);
-
-if (!auth.ok) {
-    res.status(auth.status).json({ error: auth.error });
-} else if (req.method !== 'POST') {
-    res.status(405).json({ error: 'POST only' });
-} else {
-    const body = req.body || {};
-    let result;
+/*
+ * The single dispatch point for every note-creation action. Both entry points
+ * -- the HTTP handler below and the in-process global registered after it --
+ * route through this, so they cannot drift apart.
+ */
+function dispatchAction(body = {}) {
     const title = typeof body.title === 'string' ? body.title.trim() : '';
     if (body.action === 'ensureLaunchers') {
-        result = inTransaction(ensureLaunchers);
-    } else if (body.action === 'startStory') {
-        result = title
+        return inTransaction(ensureLaunchers);
+    }
+    if (body.action === 'startStory') {
+        return title
             ? inTransaction(() => startStory(title, body.mode))
             : { error: 'title is required' };
-    } else if (body.action === 'scratch') {
-        result = title
+    }
+    if (body.action === 'scratch') {
+        return title
             ? inTransaction(() => createScratch(title, body.projectId))
             : { error: 'title is required' };
-    } else if (body.action === 'syncHub') {
-        result = inTransaction(() => syncProjectHub(body.hubId));
-    } else if (body.action === 'reconcileProjects') {
-        result = inTransaction(reconcileAllProjects);
-    } else if (body.action === 'archiveProject' || body.action === 'reopenProject') {
-        result = inTransaction(() => updateProjectArea(body.noteId, body.action));
-    } else if (body.action === 'createOrganization') {
-        result = inTransaction(() => createOrganizationFor(
+    }
+    if (body.action === 'syncHub') {
+        return inTransaction(() => syncProjectHub(body.hubId));
+    }
+    if (body.action === 'reconcileProjects') {
+        return inTransaction(reconcileAllProjects);
+    }
+    if (body.action === 'archiveProject' || body.action === 'reopenProject') {
+        return inTransaction(() => updateProjectArea(body.noteId, body.action));
+    }
+    if (body.action === 'createOrganization') {
+        return inTransaction(() => createOrganizationFor(
             body.noteId, body.title, body.relationName,
         ));
-    } else if (body.action === 'createEntity') {
-        result = inTransaction(() => createEntityFor(
+    }
+    if (body.action === 'createEntity') {
+        return inTransaction(() => createEntityFor(
             body.noteId, body.title, body.relationName, body.entityType,
         ));
-    } else if (body.action) {
-        result = inTransaction(() => updateEditorialState(body.noteId, body.action, {
+    }
+    if (body.action) {
+        return inTransaction(() => updateEditorialState(body.noteId, body.action, {
             waitingOn: body.waitingOn,
             followUpDate: body.followUpDate,
             lastSentDate: body.lastSentDate,
         }));
-    } else {
-        result = title
-            ? inTransaction(() => createNote(body.type, title, {
-                projectId: body.projectId,
-                round: body.round,
-                status: body.status,
-                kind: body.kind,
-                workflow: body.workflow,
-                waitingOn: body.waitingOn,
-                followUpDate: body.followUpDate,
-                lastSentDate: body.lastSentDate,
-            }))
-            : { error: 'title is required' };
     }
-    res.status(result.error ? 400 : 200).json(result);
+    return title
+        ? inTransaction(() => createNote(body.type, title, {
+            projectId: body.projectId,
+            round: body.round,
+            status: body.status,
+            kind: body.kind,
+            workflow: body.workflow,
+            waitingOn: body.waitingOn,
+            followUpDate: body.followUpDate,
+            lastSentDate: body.lastSentDate,
+        }))
+        : { error: 'title is required' };
+}
+
+// In-process entry point for frontend callers that already hold `runOnBackend`.
+// Reaching the HTTP handler from the frontend means pulling #createNoteSecret
+// into page JS, where any other script sharing the window can read it; calling
+// this instead keeps the secret on the server. Registered on every load of this
+// script, including the request-less startup load below.
+globalThis.__ikmalCreateNote = dispatchAction;
+
+const { req, res } = api || {};
+
+// Trilium loads custom request handlers once during startup without a request
+// object. Do not execute the request path until the handler is invoked.
+if (req && res) {
+    const auth = isAuthorized(req);
+
+    if (!auth.ok) {
+        res.status(auth.status).json({ error: auth.error });
+    } else if (req.method !== 'POST') {
+        res.status(405).json({ error: 'POST only' });
+    } else {
+        try {
+            const result = dispatchAction(req.body || {});
+            res.status(result.error ? 400 : 200).json(result);
+        } catch (handlerErr) {
+            if (typeof api.log === 'function') {
+                api.log(`create-note-api handler error: ${handlerErr?.message || handlerErr}`);
+            }
+            res.status(500).json({ error: handlerErr?.message || 'Internal server error' });
+        }
+    }
 }

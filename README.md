@@ -29,17 +29,17 @@ The integration branch is experimental and is not a production Trilium release.
 The `src/artifacts` files are build inputs. The committed `dist/artifacts` files are the
 bundled payloads referenced by the package manifest and downloaded by Trilium.
 
-The current manifest is still the compatibility package for the existing DEV vault.
-The build also generates staged App Store-style metadata under `manifests/`: an
-independently installable `Ikmal Editor` component and an `Ikmal Tools` bundle
-index. Those staged manifests are intentionally not registered or deployed until
-the package manager's ownership-transfer migration is ready, so development never
-creates a duplicate package tree.
+The current manifest is the compatibility package for the existing DEV vault.
+Ikmal Editor is now maintained as a separate package in
+`../ikmal_editor_trilium`; the bundle metadata records that optional relationship
+without copying its artifacts or creating a second package tree.
 
 ## What this is
 
 `trilium-package.json` declares one installable package (`iansherr/ikmal_tools_trilium`)
-made of a main workspace dashboard, visible workspace setup/repair, project dashboards, global launcher, live editor status bar word counter, and standalone micro-tool render artifacts:
+made of a main workspace dashboard, visible workspace setup/repair, project dashboards, global
+launcher, and standalone micro-tool render artifacts. The separate `Ikmal Editor`
+package owns editor statistics, LanguageTool integration, and editor diagnostics:
 
 | Artifact | Type | Source | Description |
 |---|---|---|---|
@@ -52,8 +52,7 @@ made of a main workspace dashboard, visible workspace setup/repair, project dash
 | `notes-system-weather` | render note | `dist/artifacts/notes-system-weather.js` | Ikmal Standalone Weather & Climate Card |
 | `notes-system-on-this-day` | render note | `dist/artifacts/notes-system-on-this-day.js` | Ikmal Standalone Time Machine (On This Day) |
 | `notes-system-stale-notes` | render note | `dist/artifacts/notes-system-stale-notes.js` | Ikmal Standalone Stale Notes Reviewer |
-| `notes-system-launcher` | frontend startup script | `dist/artifacts/notes-system-launcher.js` | Native, configurable launchbar entries for the ten creation actions plus the `Cmd/Ctrl+Shift+K` quick capture shortcut |
-| `notes-system-word-count` | frontend startup script | `dist/artifacts/notes-system-word-count.js` | Per-editor word, character, reading-time, and selection-details footer |
+| `notes-system-launcher` | frontend startup script | `dist/artifacts/notes-system-launcher.js` | Native, configurable launchbar entries for the ten creation actions plus the `Cmd/Ctrl+Shift+K` quick capture and `Cmd/Ctrl+?` shortcuts |
 | `notes-system-css` | stylesheet | `dist/artifacts/notes-system.css` | Theme & UI Stylesheet |
 | `notes-system-workspace-bootstrap` | frontend startup script | `dist/artifacts/notes-system-workspace-bootstrap.js` | Idempotently creates/repairs the visible Today entry and Project Hub dashboard links |
 
@@ -63,16 +62,9 @@ The visible Today page and the workspace dashboard share the same widget rendere
 
 The launcher artifact registers the ten creation actions as native Trilium script
 launchers, so Configure Launchbar can reorder them or move them to Available
-Launchers. The word-count artifact remains a frontend startup script; it is not
-a custom-widget launcher. It renders a compact Ikmal Editor word/character/read-
-time indicator shown only while editing and pinned to the bottom of the note
-window, including split panes and panes created later, instead of adding a
-second row to Trilium's global status bar. Its local editor layer highlights
-adjacent duplicate words without changing saved note content. With text
-selected, right-clicking in an editor adds selection statistics and
-paragraph-level local Ikmal Editor checks beside Trilium's existing context
-menu. This editor layer is self-contained; it does not send note text to a
-server. The separate LanguageTool package is optional and is not required.
+Launchers. Editor behavior is provided by the separately installable Ikmal Editor
+package, which delegates grammar/style analysis to the standalone LanguageTool
+package and keeps local editor diagnostics independent.
 
 The Today grid is container-responsive rather than window-responsive. Its auto-fit minimum is clamped to the available note-pane width, and the task board collapses to one column before a narrow split can create horizontal overflow. Quick-capture controls retain one-line labels and full-width touch targets in narrow panes.
 
@@ -116,8 +108,8 @@ option (commonly off), so it can't be relied on for routine saves. Instead,
 this plugin persists everything as labels on its own manifest note — the note
 tagged `#packageOwner="iansherr/ikmal_tools_trilium" #packageArtifact="manifest"`,
 found via `api.searchForNotes` and written with a direct authenticated
-`fetch` to `notes/{id}/set-attribute` (same CSRF/session convention the
-sibling `../trilium_plugins` package manager uses). See
+`fetch` to `notes/{id}/set-attribute` (the authenticated ETAPI convention used
+by Trilium's Community Packages manager). See
 `src/engine/packagePersistence.ts`:
 
 - The four `settings` entries declared in `trilium-package.json` persist as
@@ -160,7 +152,7 @@ resolving to nothing.
 npm run check    # tsc --noEmit
 npm run build    # compile src/ to dist/, bundle artifacts, recompute SRI hashes
 npm test          # compile then run tests/*.test.mjs (node --test)
-npm run register  # add/update this package's entry in the local ../trilium_plugins registry
+npm run register  # update standalone package metadata, when applicable
 ```
 
 `tests/run_all.sh` runs the Node suite plus the small offline Python
@@ -175,10 +167,21 @@ python3 tools/deploy_plugin_to_instance.py
 Finds or creates the package's manifest note (searched by
 `#packageOwner`/`#packageArtifact="manifest"`), then creates or updates each
 declared artifact note under it, tagging everything with `packageOwner`,
-`packageVersion`, and `packageArtifact` labels. Idempotent — safe to re-run
-after every build. Requires an ETAPI token for the target instance (see
-`tools/etapi.py`); pass a different `url`/`token` to `deploy()` for a non-default
-instance.
+`packageVersion`, and `packageArtifact` labels. It also archives duplicate or
+removed artifacts and clears their activation labels, so old startup scripts,
+widgets, CSS, and handlers cannot run beside a new version. Requires an ETAPI
+token for the target instance (see `tools/etapi.py`).
+
+For a deliberate clean refresh after substantial plugin changes, archive the
+old package artifacts before redeploying the current standalone manifest:
+
+```sh
+python3 tools/cleanup_plugin_artifacts.py http://127.0.0.1:37840 ETAPI_TOKEN
+python3 tools/deploy_plugin_to_instance.py http://127.0.0.1:37840 ETAPI_TOKEN trilium-package.json
+```
+
+Cleanup is recoverable: it archives package notes in the hidden Community
+Packages tree instead of deleting user-authored notes.
 
 ## Requirements
 

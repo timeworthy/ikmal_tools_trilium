@@ -6,10 +6,79 @@
     if (window.__ikmal_workspace_bootstrap_started) return;
     window.__ikmal_workspace_bootstrap_started = true;
     const PACKAGE_ID = "iansherr/ikmal_tools_trilium";
+    const PACKAGE_VERSION = "1.0.32";
+    let extConfigNoteId = null;
+    const LEGACY_STARTUP_TITLES = /* @__PURE__ */ new Set([
+      "Note Creation Buttons",
+      "Topic Controls",
+      "Topic Index",
+      "Dashboard Filters",
+      "Project Hub Dashboard",
+      "Today Dashboard",
+      "Ikmal Tools for Trilium: Live Editor Status Bar Word Count"
+    ]);
+    const LEGACY_BODY_SIGNATURE = /Ikmal|todayRoot|projectRoot|extTemplate|extTodayDashboard/;
+    async function isLegacyIkmalScript(candidate) {
+      if (!LEGACY_STARTUP_TITLES.has(candidate.title)) return false;
+      if (candidate.getOwnedLabelValue?.("packageOwner")) return false;
+      if (candidate.type !== "code") return false;
+      const content = await getNoteContent(candidate.noteId);
+      if (typeof content !== "string") return false;
+      return LEGACY_BODY_SIGNATURE.test(content);
+    }
+    async function disableLegacyStartupScripts() {
+      const candidates = await searchIncludingHidden("#run");
+      for (const candidate of candidates) {
+        if (!await isLegacyIkmalScript(candidate)) continue;
+        console.info(`[Ikmal Tools] Disabling legacy startup script "${candidate.title}" (${candidate.noteId}).`);
+        if (typeof api.runOnBackend === "function") {
+          try {
+            await api.runOnBackend((noteId) => {
+              const note = api.getNote(noteId);
+              if (!note || note.getOwnedLabelValue("packageOwner")) return false;
+              const run = note.getOwnedLabelValue("run");
+              if (!run) return false;
+              note.removeLabel("run");
+              return true;
+            }, [candidate.noteId]);
+            continue;
+          } catch {
+          }
+        }
+        await setAttribute(candidate.noteId, "label", "run", "");
+      }
+    }
     function packageCode(artifactId, notes) {
       return notes.find((note) => note.type === "code" && [artifactId, `${artifactId}-script`].includes(note.getOwnedLabelValue("packageArtifact")) && !note.isArchived);
     }
+    async function ensureTodayAlignment({ allowCreate = false } = {}) {
+      const packageNotes = await searchIncludingHidden("#packageArtifact");
+      const todayNotes = packageNotes.filter((note) => [
+        "notes-system-today-page",
+        "notes-system-today-page-script",
+        "notes-system-dashboard",
+        "notes-system-dashboard-script"
+      ].includes(note.getOwnedLabelValue?.("packageArtifact")));
+      const todayCode = packageCode("notes-system-today-page", todayNotes) || packageCode("notes-system-dashboard", todayNotes);
+      if (!todayCode) {
+        console.warn("[Ikmal Tools] Today alignment is waiting for the package artifact.");
+        return false;
+      }
+      return await findOrCreateVisibleToday(todayCode, { allowCreate });
+    }
     async function setAttribute(noteId, type, name, value) {
+      if (type === "label" && typeof api !== "undefined" && typeof api.runOnBackend === "function") {
+        try {
+          const applied = await api.runOnBackend((nId, aType, aName, aVal) => {
+            const note = api.getNote(nId);
+            if (!note || aType !== "label") return false;
+            note.setLabel(aName, aVal || "");
+            return true;
+          }, [noteId, type, name, value || ""]);
+          if (applied) return;
+        } catch {
+        }
+      }
       const glob = window.glob;
       if (!glob) throw new Error("Trilium session context is unavailable.");
       const headers = {
@@ -78,6 +147,69 @@
       const body = await response.json();
       return typeof body.content === "string" ? body.content : null;
     }
+    async function setNoteTitle(noteId, title) {
+      if (typeof api !== "undefined" && typeof api.runOnBackend === "function") {
+        try {
+          const applied = await api.runOnBackend((nId, newTitle) => {
+            const note = api.getNote(nId);
+            if (!note) return false;
+            note.title = newTitle;
+            note.save();
+            return true;
+          }, [noteId, title]);
+          if (applied) return;
+        } catch {
+        }
+      }
+      const glob = window.glob;
+      if (!glob) throw new Error("Trilium session context is unavailable.");
+      const headers = {
+        "x-csrf-token": glob.csrfToken,
+        "trilium-component-id": glob.componentId,
+        "content-type": "application/json"
+      };
+      const path = `${glob.baseApiUrl}notes/${noteId}/title`;
+      const send = () => fetch(path, {
+        method: "PUT",
+        credentials: "same-origin",
+        headers,
+        body: JSON.stringify({ title })
+      });
+      let response = await send();
+      if (response.status === 403) {
+        const bootstrap = await fetch(`./bootstrap${window.location.search || ""}`, {
+          credentials: "same-origin",
+          cache: "no-store"
+        });
+        if (bootstrap.ok) {
+          const refreshed = await bootstrap.json();
+          glob.csrfToken = refreshed.csrfToken;
+          headers["x-csrf-token"] = refreshed.csrfToken;
+          response = await send();
+        }
+      }
+      if (!response.ok) throw new Error(`Could not update title (HTTP ${response.status}).`);
+    }
+    async function removeFromParentIfPresent(note, parentNoteId) {
+      const parentIds = note?.getParentNoteIds?.();
+      if (!Array.isArray(parentIds)) return "unavailable";
+      if (!parentIds.includes(parentNoteId)) return "absent";
+      const glob = window.glob;
+      if (!glob) return "unavailable";
+      const response = await fetch(`${glob.baseApiUrl}notes/${note.noteId}/toggle-in-parent/${parentNoteId}/false`, {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: {
+          "x-csrf-token": glob.csrfToken,
+          "trilium-component-id": glob.componentId,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({})
+      });
+      if (!response.ok) throw new Error(`Could not remove stale parent branch (HTTP ${response.status}).`);
+      const result = await response.json().catch(() => null);
+      return result?.success === false ? "refused" : "removed";
+    }
     async function searchMany(searches) {
       const notes = /* @__PURE__ */ new Map();
       for (const search of searches) {
@@ -101,6 +233,21 @@
       const result = await response.json();
       return await api.getNotes(result.searchResultNoteIds || [], true);
     }
+    async function getFreshOwnedRelationTarget(noteId, name) {
+      const glob = window.glob;
+      if (!glob?.baseApiUrl) return { available: false, target: null };
+      try {
+        const response = await fetch(`${glob.baseApiUrl}notes/${noteId}/attributes`, {
+          credentials: "same-origin"
+        });
+        if (!response.ok) return { available: false, target: null };
+        const attributes = await response.json();
+        const relation = (attributes || []).find((attribute) => attribute.noteId === noteId && attribute.type === "relation" && attribute.name === name && !attribute.isDeleted);
+        return { available: true, target: relation?.value || null };
+      } catch {
+        return { available: false, target: null };
+      }
+    }
     function markerValue(note, name) {
       return note?.getOwnedLabelValue?.(name) ?? note?.labels?.find?.((label) => label.name === name)?.value ?? note?.attributes?.find?.((attribute) => attribute.type === "label" && attribute.name === name)?.value;
     }
@@ -110,6 +257,17 @@
       return marker !== void 0 && marker !== null && (value === void 0 || marker === value);
     }
     async function cloneNoteToParent(noteId, parentNoteId) {
+      if (typeof api !== "undefined" && typeof api.runOnBackend === "function") {
+        try {
+          const applied = await api.runOnBackend((nId, pId) => {
+            if (typeof api.ensureNoteIsPresentInParent !== "function") return false;
+            api.ensureNoteIsPresentInParent(nId, pId, "");
+            return true;
+          }, [noteId, parentNoteId]);
+          if (applied) return;
+        } catch {
+        }
+      }
       const glob = window.glob;
       if (!glob) throw new Error("Trilium session context is unavailable.");
       const headers = {
@@ -117,7 +275,7 @@
         "trilium-component-id": glob.componentId,
         "content-type": "application/json"
       };
-      const path = `${glob.baseApiUrl}notes/${noteId}/clone-to-note/${parentNoteId}`;
+      const path = `${glob.baseApiUrl}notes/${noteId}/toggle-in-parent/${parentNoteId}/true`;
       const send = () => fetch(path, {
         method: "PUT",
         credentials: "same-origin",
@@ -139,9 +297,10 @@
       }
       if (!response.ok) throw new Error(`Could not file note under ${parentNoteId} (HTTP ${response.status}).`);
     }
-    async function findOrCreateVisibleToday(todayCode) {
+    async function findOrCreateVisibleToday(todayCode, { allowCreate = true } = {}) {
       const candidates = await api.searchForNotes("#todayRoot");
       let today = candidates.find((note) => note.getParentNoteIds?.().includes("root")) || candidates.find((note) => !note.isArchived);
+      if (!today && !allowCreate) return false;
       if (!today) {
         const result = await api.createNote("root", {
           title: "Today",
@@ -154,8 +313,9 @@
         await setAttribute(today.noteId, "label", "iconClass", "bx bx-sun");
       }
       const renderNote = today.getRelations?.("renderNote")?.[0];
-      const currentTarget = renderNote?.value || renderNote?.targetNoteId;
-      if (currentTarget !== todayCode.noteId) {
+      const freshRelation = await getFreshOwnedRelationTarget(today.noteId, "renderNote");
+      const currentTarget = freshRelation.available ? freshRelation.target : renderNote?.value || renderNote?.targetNoteId;
+      if (!freshRelation.available || currentTarget !== todayCode.noteId) {
         await setAttribute(today.noteId, "relation", "renderNote", todayCode.noteId);
       }
       if (today.getOwnedLabelValue("extTodayDashboard") !== "today") {
@@ -169,8 +329,6 @@
       const sources = [
         ["extTask"],
         ["extMeeting"],
-        ["extStoryDraft"],
-        ["extReportingNotes"],
         ["extEmailDraft"],
         ["extScratch"],
         ["noteGroup", "people"],
@@ -200,7 +358,15 @@
       return repaired;
     }
     function isDailyNote(note) {
-      return hasMarker(note, "extTemplate", "daily") || hasMarker(note, "noteType", "daily") || /^\d{4}-\d{2}-\d{2}\s+-/.test(note?.title || "");
+      const dateNote = markerValue(note, "dateNote");
+      const template = markerValue(note, "extTemplate");
+      const noteType = markerValue(note, "noteType");
+      return dateNote !== void 0 || template === "daily" || noteType === "daily" || /^\d{4}-\d{2}-\d{2}\s+-\s+(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)$/.test(note?.title || "");
+    }
+    function isProjectHubCandidate(note) {
+      if (!note || note.isArchived || isDailyNote(note)) return false;
+      const template = markerValue(note, "extTemplate") || markerValue(note, "noteType");
+      return markerValue(note, "extProjectHub") !== void 0 || template === "projectHub";
     }
     function cleanDailyContent(content) {
       if (typeof content !== "string" || typeof DOMParser === "undefined") return content;
@@ -278,15 +444,44 @@
       }
       return removed;
     }
+    async function removeStrayReportingNotesFromDailyNotes() {
+      const dailyNotes = (await searchMany(["#dateNote", "#extTemplate"])).filter((note) => !note.isArchived && isDailyNote(note));
+      let removed = 0;
+      for (const dailyNote of dailyNotes) {
+        const hydrated = typeof api.getNote === "function" ? await api.getNote(dailyNote.noteId) : dailyNote;
+        const children = hydrated?.getChildNotes ? await hydrated.getChildNotes() : [];
+        for (const child of children) {
+          if (child.isArchived || !hasMarker(child, "extReportingNotes")) continue;
+          const project = child.getRelations?.("project")?.[0];
+          const projectId = project?.value || project?.targetNoteId;
+          if (projectId !== dailyNote.noteId) continue;
+          try {
+            const outcome = await removeFromParentIfPresent(child, dailyNote.noteId);
+            if (outcome === "removed") {
+              removed += 1;
+            } else if (outcome === "refused") {
+              await setAttribute(child.noteId, "label", "archived", "");
+            }
+          } catch (error) {
+            console.warn(`[Ikmal Tools] Could not remove stray Reporting Notes branch: ${error.message}`);
+          }
+        }
+      }
+      return removed;
+    }
     async function attachProjectDashboards(dashboardCode) {
-      const projects = (await searchMany(["#extProjectHub", "#extTemplate"])).filter((project) => hasMarker(project, "extProjectHub") || hasMarker(project, "extTemplate", "projectHub"));
+      const projects = (await searchMany(["#extProjectHub", "#extTemplate"])).filter((project) => isProjectHubCandidate(project));
       let attached = 0;
       for (const project of projects) {
         if (project.isArchived) continue;
         const hydratedProject = typeof api.getNote === "function" ? await api.getNote(project.noteId) : project;
         const children = hydratedProject?.getChildNotes ? await hydratedProject.getChildNotes() : [];
         const existing = children.find((child) => child.getOwnedLabelValue?.("extProjectDashboard") === "projectHub" || child.getOwnedLabelValue?.("extHubDashboard") === "projectHub");
+        const expectedTitle = `Dashboard: ${project.title}`;
         if (existing) {
+          if (existing.title !== expectedTitle) {
+            await setNoteTitle(existing.noteId, expectedTitle);
+          }
           const relation = existing.getRelations?.("renderNote")?.[0];
           const target = relation?.value || relation?.targetNoteId;
           if (target !== dashboardCode.noteId) {
@@ -298,7 +493,7 @@
           continue;
         }
         const result = await api.createNote(project.noteId, {
-          title: "Project Dashboard",
+          title: expectedTitle,
           type: "render",
           activate: false
         });
@@ -325,11 +520,14 @@
         { marker: "orgRoot", title: "Organizations", icon: "bx bx-buildings", parent: "root" },
         { marker: "topicRoot", title: "Topics", icon: "bx bx-purchase-tag", parent: "root" },
         { marker: "templateRoot", title: "Templates", icon: "bx bx-copy", parent: "_userHidden", type: "book", labels: [{ name: "subtreeHidden", value: "" }] },
-        { marker: "extConfig", title: "Config", icon: "bx bx-cog", parent: "_userHidden", type: "text", labels: [{ name: "extensionVersion", value: "1.0.22" }] }
+        { marker: "extConfig", title: "Config", icon: "bx bx-cog", parent: "_userHidden", type: "text", labels: [{ name: "extensionVersion", value: PACKAGE_VERSION }] }
       ];
       for (const c of containers) {
         const existing = await api.searchForNotes(`#${c.marker}`);
-        if (existing && existing.length > 0) continue;
+        if (existing && existing.length > 0) {
+          if (c.marker === "extConfig") extConfigNoteId = existing[0].noteId;
+          continue;
+        }
         let parentId = "root";
         if (c.parent !== "root") {
           const parentCandidate = await api.searchForNotes(`#${c.parent}`);
@@ -352,12 +550,13 @@
           }
         }
         try {
-          await api.createNote(parentId, {
+          const created = await api.createNote(parentId, {
             title: c.title,
             type: c.type || "book",
             activate: false,
             attributes
           });
+          if (c.marker === "extConfig" && created?.note) extConfigNoteId = created.note.noteId;
         } catch (err) {
           console.warn(`[Ikmal Tools] Could not provision ${c.title} container: ${err.message}`);
         }
@@ -451,7 +650,7 @@
       return migrated;
     }
     async function ensureProjectReportingNotes() {
-      const hubs = (await searchMany(["#extProjectHub", "#extTemplate"])).filter((n) => !n.isArchived && (hasMarker(n, "extProjectHub") || hasMarker(n, "extTemplate", "projectHub")));
+      const hubs = (await searchMany(["#extProjectHub", "#extTemplate"])).filter((n) => isProjectHubCandidate(n));
       const reportingTpl = (await searchIncludingHidden("#extTemplate")).find((n) => markerValue(n, "extTemplate") === "reportingNotes" || n.title === "Reporting Notes");
       let createdCount = 0;
       const reportingContent = `<h2>LINKS</h2><ul><li></li></ul><h2>OPEN QUESTIONS</h2><ul><li></li></ul><h2>IDEA / ANGLE</h2><p></p><h2>REPORTING NOTES</h2><p></p><div class='reporting-note-actions-placeholder' data-reporting-note-actions='true'></div>`;
@@ -506,7 +705,7 @@
       return repaired;
     }
     async function reconcileProjectHubStatuses() {
-      const hubs = (await searchMany(["#extProjectHub", "#extTemplate"])).filter((project) => hasMarker(project, "extProjectHub") || hasMarker(project, "extTemplate", "projectHub"));
+      const hubs = (await searchMany(["#extProjectHub", "#extTemplate"])).filter((project) => isProjectHubCandidate(project));
       const archiveRoot = (await api.searchForNotes("#archiveProjectRoot"))?.[0];
       const activeRoot = (await api.searchForNotes("#activeProjectRoot"))?.[0];
       let reconciled = 0;
@@ -530,14 +729,7 @@
           }
           if (activeRoot?.noteId) {
             try {
-              const glob = window.glob;
-              if (glob) {
-                fetch(`${glob.baseApiUrl}notes/${hub.noteId}/remove-from-parent/${activeRoot.noteId}`, {
-                  method: "DELETE",
-                  credentials: "same-origin",
-                  headers: { "x-csrf-token": glob.csrfToken, "trilium-component-id": glob.componentId }
-                });
-              }
+              await removeFromParentIfPresent(hub, activeRoot.noteId);
             } catch {
             }
           }
@@ -552,14 +744,7 @@
           }
           if (archiveRoot?.noteId) {
             try {
-              const glob = window.glob;
-              if (glob) {
-                fetch(`${glob.baseApiUrl}notes/${hub.noteId}/remove-from-parent/${archiveRoot.noteId}`, {
-                  method: "DELETE",
-                  credentials: "same-origin",
-                  headers: { "x-csrf-token": glob.csrfToken, "trilium-component-id": glob.componentId }
-                });
-              }
+              await removeFromParentIfPresent(hub, archiveRoot.noteId);
             } catch {
             }
           }
@@ -618,7 +803,7 @@
       }
     }
     async function syncProjectMetadata() {
-      const hubs = (await searchMany(["#extProjectHub", "#extTemplate"])).filter((project) => hasMarker(project, "extProjectHub") || hasMarker(project, "extTemplate", "projectHub"));
+      const hubs = (await searchMany(["#extProjectHub", "#extTemplate"])).filter((project) => isProjectHubCandidate(project));
       let synced = 0;
       for (const hub of hubs) {
         if (hub.isArchived) continue;
@@ -631,15 +816,7 @@
           const expectedTitle = `${hub.title} \u2014 Reporting Notes`;
           if (reporting.title !== expectedTitle) {
             try {
-              const glob = window.glob;
-              if (glob) {
-                await fetch(`${glob.baseApiUrl}notes/${reporting.noteId}/data`, {
-                  method: "PUT",
-                  credentials: "same-origin",
-                  headers: { "x-csrf-token": glob.csrfToken, "trilium-component-id": glob.componentId, "content-type": "application/json" },
-                  body: JSON.stringify({ title: expectedTitle })
-                });
-              }
+              await setNoteTitle(reporting.noteId, expectedTitle);
             } catch {
             }
           }
@@ -819,6 +996,7 @@ ${entry}`);
       }
     }
     async function repair() {
+      await disableLegacyStartupScripts();
       await ensureSkeletonContainers();
       const packageNotes = await searchIncludingHidden("#packageArtifact");
       const todayPageNotes = packageNotes.filter((note) => [
@@ -844,6 +1022,7 @@ ${entry}`);
       await cleanDailyTemplate();
       await cleanDailyNotes();
       await removeProjectDashboardsFromDailyNotes();
+      await removeStrayReportingNotesFromDailyNotes();
       await repairTodayBranches();
       await reattachExistingTemplates();
       await migrateLegacyEntityLabels();
@@ -856,24 +1035,42 @@ ${entry}`);
       await ensureBackendEventWiring();
       await runSystemVerification();
       await recordMigrationLog("repair", "Workspace repair completed successfully with 100% schema alignment.");
-      if (typeof window !== "undefined" && !window.__ikmal_reconciliation_timer) {
-        const runBackgroundSync = () => {
-          reconcileProjectHubStatuses().catch(() => {
-          });
-          syncProjectMetadata().catch(() => {
-          });
-          repairTodayBranches().catch(() => {
-          });
-        };
-        window.__ikmal_reconciliation_timer = setInterval(runBackgroundSync, 15e3);
-        window.addEventListener("focus", runBackgroundSync);
-        document.addEventListener("visibilitychange", () => {
-          if (document.visibilityState === "visible") runBackgroundSync();
-        });
+      const configNoteId = extConfigNoteId || (await searchIncludingHidden("#extConfig"))?.[0]?.noteId;
+      if (configNoteId) {
+        await setAttribute(configNoteId, "label", "extBootstrapped", PACKAGE_VERSION);
+      } else {
+        console.warn("[Ikmal Tools] Config note not found; first-run marker was not written.");
       }
     }
-    repair().catch((error) => {
-      console.warn(`[Ikmal Tools] Workspace bootstrap could not complete: ${error.message}`);
+    let repairPromise = null;
+    window.__ikmal_workspace_repair = () => {
+      if (!repairPromise) {
+        repairPromise = repair().catch((error) => {
+          console.warn(`[Ikmal Tools] Workspace repair could not complete: ${error.message}`);
+          throw error;
+        }).finally(() => {
+          repairPromise = null;
+        });
+      }
+      return repairPromise;
+    };
+    async function runFirstRunBootstrapIfNeeded() {
+      const bootstrapped = await searchIncludingHidden("#extBootstrapped");
+      if (bootstrapped && bootstrapped.length > 0) return;
+      console.log("[Ikmal Tools] First run detected; provisioning the workspace.");
+      await window.__ikmal_workspace_repair();
+    }
+    let todayAlignmentPromise = null;
+    const checkTodayAlignment = () => {
+      if (document.visibilityState === "hidden" || todayAlignmentPromise) return;
+      todayAlignmentPromise = ensureTodayAlignment({ allowCreate: false }).catch((error) => console.warn(`[Ikmal Tools] Today alignment skipped: ${error.message}`)).finally(() => {
+        todayAlignmentPromise = null;
+      });
+    };
+    runFirstRunBootstrapIfNeeded().catch((error) => console.warn(`[Ikmal Tools] First-run workspace setup could not complete: ${error.message}`)).finally(() => {
+      checkTodayAlignment();
+      window.addEventListener("focus", checkTodayAlignment, { passive: true });
+      window.setInterval(checkTodayAlignment, 6e4);
     });
   })();
 })();

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { TriliumApiBridge } from '../dist/engine/triliumApiBridge.js';
+import { archiveProjectNote } from '../dist/engine/noteMaterializer.js';
 
 // Trilium serialises the closure and re-parses it on the backend, where `api`
 // is an injected scoped variable. Running the closure for real (rather than
@@ -143,6 +144,60 @@ test('TriliumApiBridge falls back to REST fetch with CSRF refresh on HTTP 403', 
     assert.equal(requests[2].opts.headers['x-csrf-token'], 'fresh-token-456');
     assert.equal(globalThis.glob.csrfToken, 'fresh-token-456');
 
+    delete globalThis.glob;
+    delete globalThis.fetch;
+});
+
+test('TriliumApiBridge rejects a refused parent removal returned in a 200 body', async () => {
+    globalThis.glob = {
+        baseApiUrl: 'http://mock-trilium/api/',
+        csrfToken: 'token-1',
+        componentId: 'comp-1'
+    };
+    globalThis.fetch = async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ success: false })
+    });
+
+    await assert.rejects(
+        TriliumApiBridge.ensureNoteAbsentFromParent('childX', 'parentY'),
+        /refused to remove note childX from parentY/
+    );
+
+    delete globalThis.glob;
+    delete globalThis.fetch;
+});
+
+test('project archiving does not set complete after a refused parent removal', async () => {
+    const requests = [];
+    globalThis.api = {
+        createNote() {},
+        searchForNote: async (query) => ({
+            '#archiveProjectRoot': { noteId: 'archiveRoot' },
+            '#activeProjectRoot': { noteId: 'activeRoot' },
+        }[query] || null),
+    };
+    globalThis.glob = {
+        baseApiUrl: 'http://mock-trilium/api/',
+        csrfToken: 'token-1',
+        componentId: 'comp-1'
+    };
+    globalThis.fetch = async (url) => {
+        requests.push(url);
+        if (url.endsWith('/activeRoot/false')) {
+            return { ok: true, status: 200, json: async () => ({ success: false }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ success: true }) };
+    };
+
+    await assert.rejects(
+        archiveProjectNote('hub1'),
+        /refused to remove note hub1 from activeRoot/
+    );
+    assert.equal(requests.some((url) => url.includes('/set-attribute')), false);
+
+    delete globalThis.api;
     delete globalThis.glob;
     delete globalThis.fetch;
 });

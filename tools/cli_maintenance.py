@@ -52,7 +52,7 @@ def _descendants(api: Etapi, root_id: str) -> list[str]:
 # Kept in lockstep with `trilium-package.json` by a package manifest test, so
 # the version this tool stamps on #extConfig matches what the deploy tool
 # stamps on every artifact.
-VERSION = "1.0.32"
+VERSION = "1.0.33"
 
 CONTAINERS = [
     ("calendarRoot", "Journal", "root", "book", {"datePattern": "{isoDate} - {weekDay}", "iconClass": "bx bx-calendar"}),
@@ -614,7 +614,7 @@ def ensure_event_hooks(api: Etapi) -> int:
         project_root = api.find_by_label("projectRoot")
         if project_root:
             note = api.get_note(project_root)
-            for rel in ("runOnNoteChange", "runOnAttributeChange", "runOnAttributeCreation"):
+            for rel in ("runOnNoteCreation", "runOnNoteChange", "runOnAttributeChange", "runOnAttributeCreation"):
                 for attr in note.get("attributes", []):
                     if (
                         attr.get("noteId") == project_root
@@ -903,7 +903,7 @@ def remove_retired_daily_sections(api: Etapi) -> int:
         # the note. Removing it unconditionally would orphan anything a user
         # had written under "Day start" into the preceding section.
         return re.sub(
-            r"<h2>Day start</h2>\s*(?:<p>(?:\s|&nbsp;|<br\s*/?>)*</p>\s*)*(?=<h[1-6]\b|\Z)",
+            r"<h2>Day start</h2>\s*(?:<p>(?:\s|&nbsp;|<br\s*/?>)*</p>\s*)*(?=<h[1-6]\b|</div>\s*\Z|\Z)",
             "",
             content,
             flags=re.IGNORECASE,

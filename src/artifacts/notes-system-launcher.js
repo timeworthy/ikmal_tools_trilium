@@ -12,8 +12,10 @@ import { RelationshipEngine } from '../engine/relationshipEngine.js';
 import { IfThenRuleEngine } from '../engine/ifThenRuleEngine.js';
 import { NoteCreationEngine } from '../engine/noteCreationEngine.js';
 import { SettingsEngine } from '../engine/settingsEngine.js';
+import { TodayEngine } from '../engine/todayEngine.js';
 import { showQuickCaptureModal } from '../components/QuickCaptureModal.js';
 import { openModal } from '../components/nativeUi.js';
+import { loadRuntimeModel } from '../engine/runtimeModel.js';
 
 (function initLauncherBar() {
     if (typeof document === 'undefined') return;
@@ -36,10 +38,14 @@ import { openModal } from '../components/nativeUi.js';
     const ifThenRuleEngine = new IfThenRuleEngine();
     const settingsEngine = new SettingsEngine();
     const noteCreationEngine = new NoteCreationEngine(templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine);
+    const frontendApi = typeof api !== 'undefined' ? api : null;
+    const modelReady = loadRuntimeModel(templateEngine, new TodayEngine(), ifThenRuleEngine, settingsEngine, frontendApi);
 
-    function triggerQuickCapture(templateId, initialRelations) {
+    function triggerQuickCapture(templateId, initialRelations, onCreated) {
         const targetTpl = templateId || settingsEngine.get('defaultQuickCaptureTemplate') || 'task';
-        showQuickCaptureModal(targetTpl, templateEngine, noteCreationEngine, undefined, initialRelations)
+        return modelReady.then(() => showQuickCaptureModal(targetTpl, templateEngine, noteCreationEngine, onCreated, initialRelations, {
+            api: frontendApi,
+        }))
             .catch((error) => {
                 if (typeof api !== 'undefined' && api.showError) {
                     api.showError(`Could not open quick capture: ${error.message || error}`);
@@ -165,6 +171,8 @@ import { openModal } from '../components/nativeUi.js';
     }
 
     // In-editor Story Draft Actions Bar & Breadcrumb Navigation Renderer
+    const storyDraftEditorUIInFlight = new WeakSet();
+
     function initStoryDraftEditorUI() {
         if (typeof api === 'undefined' || !api.currentNote) return;
         const current = api.currentNote;
@@ -175,8 +183,10 @@ import { openModal } from '../components/nativeUi.js';
         const container = jqueryContainer && (jqueryContainer[0] || jqueryContainer);
         if (!container || typeof container.querySelector !== 'function') return;
         if (container.querySelector('.extension-round-actions')) return;
+        if (storyDraftEditorUIInFlight.has(container)) return;
+        storyDraftEditorUIInFlight.add(container);
 
-        api.runOnBackend((noteId) => {
+        Promise.resolve().then(() => api.runOnBackend((noteId) => {
             const round = api.getNote(noteId);
             const hubRel = round.getRelations('project')[0];
             const hub = hubRel ? api.getNote(hubRel.value) : null;
@@ -205,8 +215,11 @@ import { openModal } from '../components/nativeUi.js';
                 defaultTitle: `${baseTitle} — ${suffix}`,
                 roundTitle: round.title,
             };
-        }, [current.noteId]).then((context) => {
+        }, [current.noteId])).then((context) => {
             if (!context) return;
+            // The container may have been populated while the backend lookup
+            // was in flight. Re-check before inserting the affordances.
+            if (container.querySelector('.extension-round-actions')) return;
 
             const nav = document.createElement('nav');
             nav.className = 'extension-project-breadcrumbs small text-muted mb-2 d-flex align-items-center gap-1.5';
@@ -261,7 +274,7 @@ import { openModal } from '../components/nativeUi.js';
                         relations: { project: context.hubId },
                         mode: context.hubKind === 'edit' ? 'edit' : 'project',
                     });
-                    materializeNoteCreation(plan).then((res) => {
+                    materializeNoteCreation(plan, { api: typeof api !== 'undefined' ? api : null }).then((res) => {
                         if (res?.noteId && api.activateNote) api.activateNote(res.noteId);
                     });
                     return true;
@@ -366,7 +379,10 @@ import { openModal } from '../components/nativeUi.js';
 
             container.prepend(bar);
             container.prepend(nav);
-        });
+        }).catch(() => {
+            // A transient note change can invalidate the backend lookup. The
+            // next mutation will retry rendering for the same container.
+        }).finally(() => storyDraftEditorUIInFlight.delete(container));
     }
 
     // Render editor affordances for the current note and after Trilium replaces

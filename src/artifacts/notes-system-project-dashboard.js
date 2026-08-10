@@ -1,27 +1,43 @@
 /* A compact, native-looking dashboard attached to each Ikmal Project Hub. */
 
 (async function initProjectDashboard() {
-    if (typeof api === 'undefined' || !api.getActiveContextNote) return;
-    const container = api.$container && (api.$container[0] || api.$container);
-    if (!container) return;
-
     const isProjectHub = (note) => note && (
         note.hasLabel?.('extProjectHub')
         || note.hasLabel?.('extTemplate', 'projectHub')
         || note.hasLabel?.('noteType', 'projectHub')
     );
-    const context = api.getActiveContextNote();
-    let hub = context;
-    if (!isProjectHub(hub)) {
-        const directParents = await Promise.resolve(context?.getParentNotes?.() || []);
-        hub = directParents.find((parent) => isProjectHub(parent));
-        if (!hub && context?.getParentNoteIds && api.getNote) {
-            const parentIds = await Promise.resolve(context.getParentNoteIds());
-            const parents = await Promise.all((parentIds || []).map((parentId) => api.getNote(parentId)));
-            hub = parents.find((parent) => isProjectHub(parent));
+    let hub;
+    let container;
+    let context;
+
+    // Trilium can invoke a render artifact before the active context's parent
+    // branches have finished arriving in the frontend cache. A one-shot lookup
+    // loses the dashboard until the user hard-refreshes the page, so retry the
+    // bounded context discovery while the note is settling.
+    for (let attempt = 0; attempt < 20 && !hub; attempt += 1) {
+        try {
+            if (typeof api !== 'undefined' && api.getActiveContextNote) {
+                container = api.$container && (api.$container[0] || api.$container);
+                context = api.getActiveContextNote();
+                hub = isProjectHub(context) ? context : null;
+                if (!hub && context) {
+                    const directParents = await Promise.resolve(context.getParentNotes?.() || []);
+                    hub = directParents.find((parent) => isProjectHub(parent));
+                    if (!hub && context.getParentNoteIds && api.getNote) {
+                        const parentIds = await Promise.resolve(context.getParentNoteIds());
+                        const parents = await Promise.all((parentIds || []).map((parentId) => api.getNote(parentId)));
+                        hub = parents.find((parent) => isProjectHub(parent));
+                    }
+                }
+            }
+        } catch {
+            // The context is still being assembled; the next attempt can use
+            // the now-populated frontend cache.
         }
+        if (!hub) await new Promise((resolve) => window.setTimeout(resolve, 100));
     }
-    if (!isProjectHub(hub)) return;
+    if (!container || !hub) return;
+
     const isProjectHubContext = hub && (
         hub.hasLabel?.('extProjectHub')
         || hub.hasLabel?.('extTemplate', 'projectHub')
@@ -53,6 +69,9 @@
             .ikmal-project-dashboard table { width: 100%; table-layout: fixed; }
             .ikmal-project-dashboard th, .ikmal-project-dashboard td { overflow-wrap: anywhere; vertical-align: top; }
             .ikmal-project-dashboard th:first-child, .ikmal-project-dashboard td:first-child { width: 55%; }
+            .ikmal-project-dashboard .ikmal-rounds-table th:first-child, .ikmal-project-dashboard .ikmal-rounds-table td:first-child { width: 14%; }
+            .ikmal-project-dashboard .ikmal-rounds-table th:nth-child(2), .ikmal-project-dashboard .ikmal-rounds-table td:nth-child(2) { width: 66%; }
+            .ikmal-project-dashboard .ikmal-rounds-table th:nth-child(3), .ikmal-project-dashboard .ikmal-rounds-table td:nth-child(3) { width: 20%; }
             .ikmal-project-dashboard .ikmal-project-status { color: var(--muted-text-color); }
             .ikmal-project-dashboard .ikmal-project-status-badge { background: var(--accented-background-color); border: 1px solid var(--main-border-color); border-radius: 999px; display: inline-block; font-size: .8rem; line-height: 1.25; padding: .12rem .45rem; text-transform: capitalize; }
             .ikmal-project-dashboard .ikmal-project-date { white-space: nowrap; }
@@ -195,7 +214,7 @@
         cell.textContent = value || '—';
         return cell;
     };
-    const makeTable = (headers, rows) => {
+    const makeTable = (headers, rows, className = '') => {
         if (!rows.length) {
             const empty = document.createElement('p');
             empty.className = 'ikmal-project-empty';
@@ -203,7 +222,7 @@
             return empty;
         }
         const table = document.createElement('table');
-        table.className = 'table table-sm';
+        table.className = `table table-sm${className ? ` ${className}` : ''}`;
         const head = table.createTHead().insertRow();
         headers.forEach((header) => {
             const cell = document.createElement('th');
@@ -225,8 +244,11 @@
         if (hasItems) list.replaceChildren(content);
     };
 
+    let dashboardLoadSequence = 0;
     const loadDashboard = async () => {
+        const loadSequence = ++dashboardLoadSequence;
         const notes = await searchRelated();
+        if (loadSequence !== dashboardLoadSequence) return;
         const rounds = notes.filter((note) => noteKind(note) === 'round')
             .sort((a, b) => Number(labelValue(a, 'round') || 0) - Number(labelValue(b, 'round') || 0));
         const allTasks = notes.filter((note) => noteKind(note) === 'task');
@@ -309,7 +331,7 @@
 
         renderSection('rounds', makeTable(['Round', 'Story', 'Status'], [...rounds].reverse().map((note) => [
             labelValue(note, 'round'), makeLink(note), makeStatus(labelValue(note, 'status')),
-        ])), rounds.length > 0);
+        ]), 'ikmal-rounds-table'), rounds.length > 0);
         renderSection('tasks', makeTable(['Task', 'Status'], openTasks.map((note) => [
             makeLink(note), makeStatus(labelValue(note, 'status')),
         ])), openTasks.length > 0);
@@ -342,7 +364,13 @@
 
     panel.querySelector('[data-project-action="round"]')?.addEventListener('click', () => {
         if (window.__ikmalQuickCapture) {
-            window.__ikmalQuickCapture(kind === 'edit' ? 'edit' : 'story');
+            Promise.resolve(window.__ikmalQuickCapture(
+                kind === 'edit' ? 'edit' : 'story',
+                { project: hub.noteId },
+                () => loadDashboard(),
+            )).catch((error) => {
+                statusLine.textContent = `Could not open new round: ${error.message || error}`;
+            });
         } else {
             statusLine.textContent = 'Quick Capture modal is unavailable.';
         }
@@ -402,7 +430,8 @@
     panel.querySelector('[data-project-action="archive"]')?.addEventListener('click', async () => {
         const previousStatus = labelValue(hub, 'status') || 'active';
         const previousDoneDate = labelValue(hub, 'doneDate') || '';
-        const today = new Date().toISOString().slice(0, 10);
+        const now = new Date();
+        const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
         let archived = false;
         try {
             if (typeof api !== 'undefined' && typeof api.runOnBackend === 'function') {
@@ -423,19 +452,24 @@
                 const glob = window.glob;
                 if (!glob) throw new Error('Trilium session context is unavailable.');
 
-                await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/toggle-in-parent/${archiveRoot.noteId}/true`, {
-                    method: 'PUT', credentials: 'same-origin',
-                    headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId, 'content-type': 'application/json' },
-                    body: JSON.stringify({}),
-                });
+                const toggleInParent = async (parentNoteId, present) => {
+                    const response = await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/toggle-in-parent/${parentNoteId}/${present}`, {
+                        method: 'PUT', credentials: 'same-origin',
+                        headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId, 'content-type': 'application/json' },
+                        body: JSON.stringify({}),
+                    });
+                    if (!response.ok) {
+                        throw new Error(`Could not ${present ? 'add' : 'remove'} project branch (HTTP ${response.status}).`);
+                    }
+                    const result = await response.json().catch(() => null);
+                    if (result?.success === false) {
+                        throw new Error(`Trilium refused to ${present ? 'add' : 'remove'} the project branch.`);
+                    }
+                };
+
+                await toggleInParent(archiveRoot.noteId, true);
                 if (activeRoot?.noteId) {
-                    try {
-                        await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/toggle-in-parent/${activeRoot.noteId}/false`, {
-                            method: 'PUT', credentials: 'same-origin',
-                            headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId, 'content-type': 'application/json' },
-                            body: JSON.stringify({}),
-                        });
-                    } catch {}
+                    await toggleInParent(activeRoot.noteId, false);
                 }
                 await setLabel(hub.noteId, 'status', 'complete');
                 await setLabel(hub.noteId, 'doneDate', today);
@@ -482,19 +516,24 @@
                 const glob = window.glob;
                 if (!glob) throw new Error('Trilium session context is unavailable.');
 
-                await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/toggle-in-parent/${activeRoot.noteId}/true`, {
-                    method: 'PUT', credentials: 'same-origin',
-                    headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId, 'content-type': 'application/json' },
-                    body: JSON.stringify({}),
-                });
+                const toggleInParent = async (parentNoteId, present) => {
+                    const response = await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/toggle-in-parent/${parentNoteId}/${present}`, {
+                        method: 'PUT', credentials: 'same-origin',
+                        headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId, 'content-type': 'application/json' },
+                        body: JSON.stringify({}),
+                    });
+                    if (!response.ok) {
+                        throw new Error(`Could not ${present ? 'add' : 'remove'} project branch (HTTP ${response.status}).`);
+                    }
+                    const result = await response.json().catch(() => null);
+                    if (result?.success === false) {
+                        throw new Error(`Trilium refused to ${present ? 'add' : 'remove'} the project branch.`);
+                    }
+                };
+
+                await toggleInParent(activeRoot.noteId, true);
                 if (archiveRoot?.noteId) {
-                    try {
-                        await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/toggle-in-parent/${archiveRoot.noteId}/false`, {
-                            method: 'PUT', credentials: 'same-origin',
-                            headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId, 'content-type': 'application/json' },
-                            body: JSON.stringify({}),
-                        });
-                    } catch {}
+                    await toggleInParent(archiveRoot.noteId, false);
                 }
                 await setLabel(hub.noteId, 'status', 'active');
             }

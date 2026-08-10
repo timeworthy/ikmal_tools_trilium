@@ -252,7 +252,19 @@ export interface ButtonOptions {
     size?: 'normal' | 'small' | 'micro';
     title?: string;
     className?: string;
-    onClick?: () => void;
+    onClick?: () => void | Promise<void>;
+}
+
+function bindAsyncClick(button: HTMLButtonElement, onClick: () => void | Promise<void>): void {
+    button.addEventListener('click', () => {
+        try {
+            Promise.resolve(onClick()).catch((error: any) => {
+                console.warn(`[Ikmal Tools] Button action failed: ${error?.message || error}`);
+            });
+        } catch (error: any) {
+            console.warn(`[Ikmal Tools] Button action failed: ${error?.message || error}`);
+        }
+    });
 }
 
 /** A button using Trilium's own button classes and size scale. */
@@ -263,7 +275,7 @@ export function button({ text, icon, kind = 'secondary', size = 'small', title, 
     btn.className = `btn btn-${kind}${sizeClass}${className ? ` ${className}` : ''}`;
     if (title) btn.title = title;
     btn.innerHTML = `${icon ? `<span class="bx ${escapeHtml(icon)}"></span> ` : ''}${escapeHtml(text)}`;
-    if (onClick) btn.addEventListener('click', onClick);
+    if (onClick) bindAsyncClick(btn, onClick);
     return btn;
 }
 
@@ -272,7 +284,7 @@ export interface IconActionOptions {
     icon: string;
     /** Tooltip and accessible name — an icon action carries no visible label. */
     title: string;
-    onClick: () => void;
+    onClick: () => void | Promise<void>;
 }
 
 /**
@@ -287,7 +299,7 @@ export function iconAction({ icon, title, onClick }: IconActionOptions): HTMLBut
     btn.title = title;
     btn.setAttribute('aria-label', title);
     btn.innerHTML = `<span class="bx ${escapeHtml(icon)}"></span>`;
-    btn.addEventListener('click', onClick);
+    bindAsyncClick(btn, onClick);
     return btn;
 }
 

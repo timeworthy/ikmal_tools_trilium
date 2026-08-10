@@ -24,8 +24,8 @@ export class TriliumApiBridge {
         return (globalThis as any).glob || (typeof window !== 'undefined' ? (window as any).glob : null);
     }
 
-    private static getFrontendApi(): any {
-        return (globalThis as any).api || (typeof window !== 'undefined' ? (window as any).api : null);
+    private static getFrontendApi(explicitApi?: any): any {
+        return explicitApi || (globalThis as any).api || (typeof window !== 'undefined' ? (window as any).api : null);
     }
 
     private static async authenticatedFetch(pathRelative: string, options: RequestInit = {}): Promise<Response> {
@@ -76,10 +76,10 @@ export class TriliumApiBridge {
     /**
      * Ensures a child note is attached/cloned under a parent note.
      */
-    static async ensureNotePresentInParent(childNoteId: string, parentNoteId: string): Promise<void> {
+    static async ensureNotePresentInParent(childNoteId: string, parentNoteId: string, explicitApi?: any): Promise<void> {
         if (!childNoteId || !parentNoteId) return;
 
-        const frontendApi = this.getFrontendApi();
+        const frontendApi = this.getFrontendApi(explicitApi);
         if (frontendApi && typeof frontendApi.runOnBackend === 'function') {
             try {
                 const applied = await frontendApi.runOnBackend((cId: string, pId: string) => {
@@ -103,15 +103,19 @@ export class TriliumApiBridge {
         if (!response.ok) {
             throw new Error(`Failed to clone note ${childNoteId} under ${parentNoteId} (HTTP ${response.status})`);
         }
+        const result = await response.json().catch(() => null);
+        if (result?.success === false) {
+            throw new Error(`Trilium refused to clone note ${childNoteId} under ${parentNoteId}`);
+        }
     }
 
     /**
      * Ensures a child note is removed/unlinked from a parent note.
      */
-    static async ensureNoteAbsentFromParent(childNoteId: string, parentNoteId: string): Promise<void> {
+    static async ensureNoteAbsentFromParent(childNoteId: string, parentNoteId: string, explicitApi?: any): Promise<void> {
         if (!childNoteId || !parentNoteId) return;
 
-        const frontendApi = this.getFrontendApi();
+        const frontendApi = this.getFrontendApi(explicitApi);
         if (frontendApi && typeof frontendApi.runOnBackend === 'function') {
             try {
                 const applied = await frontendApi.runOnBackend((cId: string, pId: string) => {
@@ -135,6 +139,12 @@ export class TriliumApiBridge {
         if (!response.ok && response.status !== 404) {
             throw new Error(`Failed to remove note ${childNoteId} from ${parentNoteId} (HTTP ${response.status})`);
         }
+        if (response.ok) {
+            const result = await response.json().catch(() => null);
+            if (result?.success === false) {
+                throw new Error(`Trilium refused to remove note ${childNoteId} from ${parentNoteId}`);
+            }
+        }
     }
 
     /**
@@ -145,11 +155,12 @@ export class TriliumApiBridge {
         type: 'label' | 'relation',
         name: string,
         value?: string,
-        targetNoteId?: string
+        targetNoteId?: string,
+        explicitApi?: any,
     ): Promise<void> {
         if (!noteId || !name) return;
 
-        const frontendApi = this.getFrontendApi();
+        const frontendApi = this.getFrontendApi(explicitApi);
         if (frontendApi && typeof frontendApi.runOnBackend === 'function') {
             try {
                 const applied = await frontendApi.runOnBackend(
@@ -187,15 +198,19 @@ export class TriliumApiBridge {
         if (!response.ok) {
             throw new Error(`Failed to set attribute '${name}' on note ${noteId} (HTTP ${response.status})`);
         }
+        const result = await response.json().catch(() => null);
+        if (result?.success === false) {
+            throw new Error(`Trilium refused to set attribute '${name}' on note ${noteId}`);
+        }
     }
 
     /**
      * Sets a note title.
      */
-    static async setNoteTitle(noteId: string, title: string): Promise<void> {
+    static async setNoteTitle(noteId: string, title: string, explicitApi?: any): Promise<void> {
         if (!noteId) return;
 
-        const frontendApi = this.getFrontendApi();
+        const frontendApi = this.getFrontendApi(explicitApi);
         if (frontendApi && typeof frontendApi.runOnBackend === 'function') {
             try {
                 const applied = await frontendApi.runOnBackend((nId: string, newTitle: string) => {
@@ -220,6 +235,10 @@ export class TriliumApiBridge {
 
         if (!response.ok) {
             throw new Error(`Failed to set title on note ${noteId} (HTTP ${response.status})`);
+        }
+        const result = await response.json().catch(() => null);
+        if (result?.success === false) {
+            throw new Error(`Trilium refused to set the title on note ${noteId}`);
         }
     }
 }

@@ -68,7 +68,10 @@ export const BUILTIN_IF_THEN_RULES: IfThenRuleDef[] = [
         },
         conditions: [],
         actions: [
-            { type: 'setLabel', params: { labelName: 'round', labelValue: 'Round 1 Review' } },
+            // `round` is a numeric workflow key used for ordering and for
+            // calculating the next round. A display phrase here silently made
+            // Number(#round) become NaN, so keep review state in its own label.
+            { type: 'setLabel', params: { labelName: 'reviewState', labelValue: 'review' } },
         ],
     },
     {
@@ -114,6 +117,8 @@ export interface NoteContext {
     title: string;
     templateId: string;
     category?: string;
+    /** The primary container marker used when the note is created. */
+    containerMarker?: string;
     attributes: Record<string, any>;
     /** A relation may hold one target or several. */
     relations: Record<string, string | string[]>;
@@ -180,7 +185,14 @@ export class IfThenRuleEngine {
                 continue;
             }
 
-            if (rule.trigger.targetCategory && context.category && rule.trigger.targetCategory !== context.category) {
+            // A scoped rule must not run when the caller omitted the scope. The
+            // old truthy guard made a missing category behave like a wildcard.
+            if (rule.trigger.targetCategory && rule.trigger.targetCategory !== context.category) {
+                continue;
+            }
+
+            if (rule.trigger.targetContainerMarker
+                && rule.trigger.targetContainerMarker !== context.containerMarker) {
                 continue;
             }
 
@@ -206,7 +218,8 @@ export class IfThenRuleEngine {
     /** Substitutes the placeholders an action's params may carry. */
     private processActionTemplates(action: IfThenAction, context: NoteContext): IfThenAction {
         const copy: IfThenAction = JSON.parse(JSON.stringify(action));
-        const today = new Date().toISOString().split('T')[0];
+        const now = new Date();
+        const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
         for (const key of Object.keys(copy.params)) {
             const value = copy.params[key];
@@ -223,7 +236,14 @@ export class IfThenRuleEngine {
 
     private checkConditions(conditions: IfThenCondition[], context: NoteContext): boolean {
         for (const cond of conditions) {
-            const val = context.attributes[cond.field] ?? context.relations[cond.field];
+            const val = context.attributes[cond.field]
+                ?? context.relations[cond.field]
+                ?? ({
+                    title: context.title,
+                    templateId: context.templateId,
+                    category: context.category,
+                    containerMarker: context.containerMarker,
+                } as Record<string, any>)[cond.field];
 
             switch (cond.operator) {
                 case 'equals':
@@ -233,8 +253,22 @@ export class IfThenRuleEngine {
                     if (val === cond.value) return false;
                     break;
                 case 'contains':
-                    if (typeof val === 'string' && !val.includes(String(cond.value))) return false;
-                    if (Array.isArray(val) && !val.includes(cond.value)) return false;
+                    if (typeof val === 'string') {
+                        if (!val.includes(String(cond.value))) return false;
+                    } else if (Array.isArray(val)) {
+                        if (!val.includes(cond.value)) return false;
+                    } else {
+                        return false;
+                    }
+                    break;
+                case 'isEmpty':
+                    if (!(val === undefined || val === null || val === '')) return false;
+                    break;
+                case 'greaterThan':
+                    if (Number.isNaN(Number(val)) || Number(val) <= Number(cond.value)) return false;
+                    break;
+                case 'lessThan':
+                    if (Number.isNaN(Number(val)) || Number(val) >= Number(cond.value)) return false;
                     break;
                 case 'isSet':
                     if (cond.value && (val === undefined || val === null || val === '')) return false;

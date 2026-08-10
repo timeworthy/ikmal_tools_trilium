@@ -8,7 +8,7 @@
 
 import { TemplateEngine } from '../engine/templateEngine.js';
 import { NoteCreationEngine, NoteCreationPlan } from '../engine/noteCreationEngine.js';
-import { materializeNoteCreation, MaterializeResult } from '../engine/noteMaterializer.js';
+import { materializeNoteCreation, MaterializeResult, TriliumFrontendApi } from '../engine/noteMaterializer.js';
 import { escapeHtml, searchableSelect, ComboboxHandle } from './nativeUi.js';
 
 interface TriliumFNote {
@@ -45,9 +45,13 @@ function formatOptionLabel(attrName: string, opt: string): string {
     return map[opt] || opt.charAt(0).toUpperCase() + opt.slice(1).replace(/_/g, ' ');
 }
 
-function triliumApi(): { searchForNotes(q: string): Promise<TriliumFNote[]>; showMessage?(msg: string): void } | null {
-    const a = (globalThis as any).api;
+function triliumApi(explicitApi?: TriliumFrontendApi | null): TriliumFrontendApi | null {
+    const a = explicitApi || (globalThis as any).api;
     return a && typeof a.searchForNotes === 'function' ? a : null;
+}
+
+export interface QuickCaptureOptions {
+    api?: TriliumFrontendApi | null;
 }
 
 export interface QuickCaptureOutcome {
@@ -61,7 +65,8 @@ export async function showQuickCaptureModal(
     templateEngine: TemplateEngine,
     noteCreationEngine: NoteCreationEngine,
     onCreated?: (outcome: QuickCaptureOutcome) => void,
-    initialRelations?: Record<string, string | string[]>
+    initialRelations?: Record<string, string | string[]>,
+    options?: QuickCaptureOptions,
 ): Promise<void> {
     const isStoryOrEdit = templateId === 'story' || templateId === 'edit';
     const activeTplId = isStoryOrEdit ? 'story' : templateId;
@@ -88,11 +93,21 @@ export async function showQuickCaptureModal(
     // fetched up front so the modal renders with real options rather than a
     // spinner. Outside Trilium (no api) relationships render with no
     // candidates, same as the rest of this modal's preview-only fallback.
-    const api = triliumApi();
+    const api = triliumApi(options?.api);
     const relationCandidates = new Map<string, TriliumFNote[]>();
+    const candidateTemplateIds = new Map<string, string>();
     for (const rel of template.relationships) {
-        if (!api) { relationCandidates.set(rel.relationName, []); continue; }
-        const targetTpl = templateEngine.getTemplate(rel.targetTemplateId);
+        candidateTemplateIds.set(rel.relationName, rel.targetTemplateId);
+    }
+    for (const attr of template.attributes) {
+        if (attr.dataType === 'relation' && attr.targetTemplateId) {
+            candidateTemplateIds.set(attr.name, attr.targetTemplateId);
+        }
+    }
+
+    for (const [fieldName, targetTemplateId] of candidateTemplateIds) {
+        if (!api) { relationCandidates.set(fieldName, []); continue; }
+        const targetTpl = templateEngine.getTemplate(targetTemplateId);
         let notes: TriliumFNote[] = [];
         if (targetTpl) {
             notes = await api.searchForNotes(`#${targetTpl.marker}`);
@@ -105,7 +120,7 @@ export async function showQuickCaptureModal(
                 }
             }
         }
-        relationCandidates.set(rel.relationName, notes);
+        relationCandidates.set(fieldName, notes);
     }
 
     // Modal overlay container
@@ -160,13 +175,15 @@ export async function showQuickCaptureModal(
                         <input type="text" class="form-control title-input" placeholder="e.g. ${isEditMode ? 'Round 1 Edit Package' : 'Investigative Report Title'}" value="">
                     </div>
 
-                    ${template.attributes.length > 0 ? `
+                    ${template.attributes.filter((a) => !(a.dataType === 'relation' && template.relationships.some((rel) => rel.relationName === a.name))).length > 0 ? `
                         <div class="border-top pt-3">
                             <label class="form-label small font-weight-bold d-flex align-items-center gap-1 mb-2">
                                 <i class="bx bx-slider-alt text-success"></i> Promoted Form Attributes
                             </label>
                             <div class="row g-2 attr-form">
-                                ${template.attributes.map(a => {
+                                ${template.attributes
+                                    .filter((a) => !(a.dataType === 'relation' && template.relationships.some((rel) => rel.relationName === a.name)))
+                                    .map(a => {
                                     const opts = a.options || (
                                         a.name === 'priority' ? ['medium', 'high', 'low'] :
                                         a.name === 'complexity' ? ['simple', 'multi'] :
@@ -178,15 +195,17 @@ export async function showQuickCaptureModal(
                                             ['todo', 'in_progress', 'done', 'cancelled']
                                         ) : undefined
                                     );
+                                    const isRelationPicker = a.dataType === 'relation' && Boolean(a.targetTemplateId);
+                                    const isOptionPicker = isRelationPicker || a.dataType === 'select' || Boolean(opts);
+                                    const relationOptions = isRelationPicker ? (relationCandidates.get(a.name) || []) : [];
+                                    const targetTpl = a.targetTemplateId ? templateEngine.getTemplate(a.targetTemplateId) : undefined;
                                     return `
                                     <div class="col-md-6">
                                         <label class="form-label tiny text-muted font-weight-bold">#${a.name}</label>
-                                        ${opts ? `
-                                            <select class="form-select form-select-sm attr-input" data-attr="${a.name}">
-                                                ${opts.map(opt => `<option value="${opt}" ${opt === a.defaultValue ? 'selected' : ''}>${escapeHtml(formatOptionLabel(a.name, opt))}</option>`).join('')}
-                                            </select>
+                                        ${isOptionPicker ? `
+                                            <div class="attr-picker" data-attr-picker="${escapeHtml(a.name)}"></div>
                                         ` : `
-                                            <input type="text" class="form-control form-control-sm attr-input" data-attr="${a.name}" value="${a.defaultValue ?? ''}" placeholder="Value...">
+                                            <input type="${a.dataType === 'date' ? 'date' : 'text'}" class="form-control form-control-sm attr-input" data-attr="${escapeHtml(a.name)}" value="${escapeHtml(String(a.defaultValue ?? ''))}" placeholder="Value...">
                                         `}
                                     </div>
                                     `;
@@ -230,7 +249,7 @@ export async function showQuickCaptureModal(
             const targetTpl = (e.currentTarget as HTMLElement).dataset.tpl;
             if (targetTpl && targetTpl !== templateId) {
                 closeModal();
-                showQuickCaptureModal(targetTpl, templateEngine, noteCreationEngine, onCreated, initialRelations);
+                showQuickCaptureModal(targetTpl, templateEngine, noteCreationEngine, onCreated, initialRelations, options);
             }
         });
     });
@@ -262,7 +281,45 @@ export async function showQuickCaptureModal(
 
     // Relation pickers are real controls, not markup, so they carry their own
     // state the same way nativeUi's other composite fields do.
+    const attrPickers = new Map<string, ComboboxHandle<any>>();
     const relPickers = new Map<string, ComboboxHandle<any>>();
+    modal.querySelectorAll<HTMLElement>('.attr-picker').forEach((placeholder) => {
+        const attrName = placeholder.dataset.attrPicker;
+        const attrDef = template.attributes.find((candidate) => candidate.name === attrName);
+        if (!attrName || !attrDef) return;
+
+        const isRelationPicker = attrDef.dataType === 'relation' && Boolean(attrDef.targetTemplateId);
+        const fallbackOptions = attrDef.name === 'priority' ? ['medium', 'high', 'low']
+            : attrDef.name === 'complexity' ? ['simple', 'multi']
+                : attrDef.name === 'kind' ? ['project', 'edit', 'client', 'internal']
+                    : attrDef.name === 'status' ? (
+                        templateId === 'story' ? ['drafting', 'review', 'published']
+                            : templateId === 'edit' ? ['editing', 'approved', 'returned']
+                                : templateId === 'projectHub' ? ['active', 'on_hold', 'complete', 'archived']
+                                    : ['todo', 'in_progress', 'done', 'cancelled']
+                    ) : [];
+        const options = isRelationPicker
+            ? (relationCandidates.get(attrName) || []).map((note) => ({
+                value: note.noteId,
+                label: note.title,
+                icon: attrDef.targetTemplateId ? `bx-${templateEngine.getTemplate(attrDef.targetTemplateId)?.icon || 'file'}` : 'bx-file',
+            }))
+            : (attrDef.options || fallbackOptions).map((option) => ({
+                value: option,
+                label: formatOptionLabel(attrName, option),
+            }));
+        const picker = searchableSelect({
+            id: `attr-${attrName}`,
+            value: String(attrDef.defaultValue ?? ''),
+            placeholder: isRelationPicker
+                ? (options.length ? `Search ${templateEngine.getTemplate(attrDef.targetTemplateId!)?.title || 'notes'}…` : 'No matching notes found')
+                : 'Choose or search…',
+            options,
+        });
+        placeholder.replaceWith(picker.el);
+        attrPickers.set(attrName, picker);
+    });
+
     const relForm = modal.querySelector('.rel-form');
     for (const rel of template.relationships) {
         const candidates = relationCandidates.get(rel.relationName) ?? [];
@@ -292,7 +349,7 @@ export async function showQuickCaptureModal(
                     title: newTitle.trim(),
                 });
                 try {
-                    const res = api ? await materializeNoteCreation(plan) : undefined;
+                    const res = api ? await materializeNoteCreation(plan, { api }) : undefined;
                     const createdId = res ? res.noteId : `preview_${Date.now()}`;
                     candidates.push({ noteId: createdId, title: newTitle.trim() });
                     picker.setOptions?.(candidates.map((n) => ({ value: n.noteId, label: n.title })));
@@ -369,6 +426,12 @@ export async function showQuickCaptureModal(
             const attrName = input.dataset.attr;
             if (attrName) attributes[attrName] = input.value;
         });
+        for (const [attrName, picker] of attrPickers) {
+            const value = picker.getValue();
+            if (value && (Array.isArray(value) ? value.length > 0 : true)) {
+                attributes[attrName] = value;
+            }
+        }
 
         const relations: Record<string, string | string[]> = {};
         for (const [relationName, picker] of relPickers) {
@@ -391,7 +454,7 @@ export async function showQuickCaptureModal(
         createBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Creating…';
 
         try {
-            const result = api ? await materializeNoteCreation(plan) : undefined;
+            const result = api ? await materializeNoteCreation(plan, { api }) : undefined;
             if (result) api?.showMessage?.(`Created "${result.title}".`);
             closeModal();
             onCreated?.({ plan, result });

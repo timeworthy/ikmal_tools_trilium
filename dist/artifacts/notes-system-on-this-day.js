@@ -69,6 +69,17 @@
     el.textContent = text;
     return el;
   }
+  function bindAsyncClick(button, onClick) {
+    button.addEventListener("click", () => {
+      try {
+        Promise.resolve(onClick()).catch((error) => {
+          console.warn(`[Ikmal Tools] Button action failed: ${error?.message || error}`);
+        });
+      } catch (error) {
+        console.warn(`[Ikmal Tools] Button action failed: ${error?.message || error}`);
+      }
+    });
+  }
   function iconAction({ icon, title, onClick }) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -76,7 +87,7 @@
     btn.title = title;
     btn.setAttribute("aria-label", title);
     btn.innerHTML = `<span class="bx ${escapeHtml(icon)}"></span>`;
-    btn.addEventListener("click", onClick);
+    bindAsyncClick(btn, onClick);
     return btn;
   }
   function showToast(opts, typeArg, durationArg) {
@@ -147,6 +158,17 @@
   var KNOWN_NEW_MOON_MS = Date.UTC(2e3, 0, 6, 18, 14);
 
   // src/artifacts/notes-system-on-this-day.jsx
+  var WORK_NOTE_QUERY = "#extTask OR #extStoryDraft OR #extMeeting OR #extEmailDraft OR #extScratch OR #extReportingNotes OR #extProjectHub OR #extPerson OR #extOrganization OR #extTopic";
+  function labelValue(note, name) {
+    return note?.getOwnedLabelValue?.(name) ?? note?.getLabelValue?.(name) ?? note?.labels?.find?.((label) => label.name === name)?.value ?? note?.attributes?.find?.((attribute) => attribute.type === "label" && attribute.name === name)?.value ?? "";
+  }
+  function timestamp(note, field, label) {
+    const raw = labelValue(note, label) || note?.[field];
+    if (typeof raw === "number") return raw;
+    if (typeof raw !== "string") return NaN;
+    const parsed = Date.parse(raw.replace(" ", "T").replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
+    return Number.isNaN(parsed) ? NaN : parsed;
+  }
   function initIkmalOnThisDay(containerEl) {
     const shell = document.createElement("div");
     shell.className = "notes-system-shell p-3";
@@ -163,11 +185,12 @@
         renderList(sample);
         return;
       }
-      api.searchForNotes("#extTask, #story, #meeting, #scratch").then((notes) => {
+      api.searchForNotes(WORK_NOTE_QUERY).then((notes) => {
         const summaries = (notes || []).map((n) => ({
-          id: n.noteId,
+          noteId: n.noteId,
           title: n.title || "Untitled",
-          utcDateCreated: (n.labels || []).find((l) => l.name === "utcDateCreated")?.value || (/* @__PURE__ */ new Date()).toISOString()
+          dateCreated: timestamp(n, "dateCreated", "utcDateCreated"),
+          dateModified: timestamp(n, "dateModified", "utcDateModified")
         }));
         const results = findOnThisDay(summaries, /* @__PURE__ */ new Date());
         renderList(results);
@@ -188,7 +211,7 @@
           actions: typeof api !== "undefined" && api.openNote ? [{
             icon: "bx-link-external",
             title: `Open ${entry.title}`,
-            onClick: () => api.openNote(entry.id)
+            onClick: () => api.openNote(entry.noteId)
           }] : []
         }));
       }

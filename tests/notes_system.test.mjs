@@ -5,10 +5,11 @@ import { RelationshipEngine } from '../dist/engine/relationshipEngine.js';
 import { IfThenRuleEngine } from '../dist/engine/ifThenRuleEngine.js';
 import { TodayEngine } from '../dist/engine/todayEngine.js';
 import { NoteCreationEngine } from '../dist/engine/noteCreationEngine.js';
-import { buildAttributeRows, applyDerivedTopics } from '../dist/engine/noteMaterializer.js';
+import { buildAttributeRows, applyDerivedTopics, materializeNoteCreation } from '../dist/engine/noteMaterializer.js';
 import { SettingsEngine, DEFAULT_AUTOMATION_SETTINGS } from '../dist/engine/settingsEngine.js';
 import { loadAutomationSettings, saveAutomationSetting, loadYamlSpecification, saveYamlSpecification } from '../dist/engine/packagePersistence.js';
-import { dumpYamlSpec, parseAndApplyYamlSpec, exportTemplateToYaml, importTemplateFromYaml } from '../dist/engine/yamlSpec.js';
+import { TriliumApiBridge } from '../dist/engine/triliumApiBridge.js';
+import { DEFAULT_STARTER_YAML_SPEC, dumpYamlSpec, parseAndApplyYamlSpec, exportTemplateToYaml, importTemplateFromYaml } from '../dist/engine/yamlSpec.js';
 import { YamlParser } from '../dist/engine/yamlParser.js';
 import { describeWeatherCode, hasLocation, parseWeatherResponse } from '../dist/engine/weatherEngine.js';
 import {
@@ -66,6 +67,8 @@ test('IfThenRuleEngine evaluates triggers, conditions, and action pipelines', ()
         noteId: 'note_99',
         title: 'Complete audit',
         templateId: 'task',
+        category: 'work',
+        containerMarker: 'taskRoot',
         attributes: { status: 'done' },
         relations: {},
     };
@@ -81,6 +84,71 @@ test('IfThenRuleEngine evaluates triggers, conditions, and action pipelines', ()
 
     // A rule scoped to another attribute must not fire on this change.
     assert.equal(results.some(r => r.ruleId === 'rule_task_done_date'), false);
+});
+
+test('IfThenRuleEngine dispatch contract covers every declared trigger type', () => {
+    const engine = new IfThenRuleEngine([
+        {
+            id: 'created', name: 'created', description: '', enabled: true,
+            trigger: { type: 'onNoteCreated' }, conditions: [], actions: [{ type: 'setLabel', params: { labelName: 'created', labelValue: 'true' } }],
+        },
+        {
+            id: 'changed', name: 'changed', description: '', enabled: true,
+            trigger: { type: 'onAttributeChanged', attributeName: 'status' }, conditions: [], actions: [{ type: 'setLabel', params: { labelName: 'changed', labelValue: 'true' } }],
+        },
+        {
+            id: 'manual', name: 'manual', description: '', enabled: true,
+            trigger: { type: 'onManualAction' }, conditions: [], actions: [{ type: 'setLabel', params: { labelName: 'manual', labelValue: 'true' } }],
+        },
+        {
+            id: 'scheduled', name: 'scheduled', description: '', enabled: true,
+            trigger: { type: 'onScheduledCheck' }, conditions: [], actions: [{ type: 'setLabel', params: { labelName: 'scheduled', labelValue: 'true' } }],
+        },
+    ]);
+    const context = {
+        noteId: 'note_trigger_matrix', title: 'Trigger matrix', templateId: 'task', category: 'work',
+        attributes: { status: 'done' }, relations: {},
+    };
+
+    assert.equal(engine.evaluateEvent('onNoteCreated', context).map((result) => result.ruleId).join(','), 'created');
+    assert.equal(engine.evaluateEvent('onAttributeChanged', context, 'status').map((result) => result.ruleId).join(','), 'changed');
+    assert.equal(engine.evaluateEvent('onManualAction', context).map((result) => result.ruleId).join(','), 'manual');
+    assert.equal(engine.evaluateEvent('onScheduledCheck', context).map((result) => result.ruleId).join(','), 'scheduled');
+    assert.equal(engine.evaluateEvent('onAttributeChanged', context, 'priority').length, 0);
+});
+
+test('IfThenRuleEngine honors category/container scopes and every declared condition operator', () => {
+    const rules = new IfThenRuleEngine([]);
+    rules.registerRule({
+        id: 'scoped',
+        name: 'Scoped rule',
+        description: '',
+        enabled: true,
+        isBuiltin: false,
+        trigger: { type: 'onNoteCreated', targetCategory: 'work', targetContainerMarker: 'taskRoot' },
+        conditions: [{ field: 'score', operator: 'greaterThan', value: 5 }],
+        actions: [{ type: 'setLabel', params: { labelName: 'matched', labelValue: 'true' } }],
+    });
+    rules.registerRule({
+        id: 'empty',
+        name: 'Empty rule',
+        description: '',
+        enabled: true,
+        isBuiltin: false,
+        trigger: { type: 'onNoteCreated' },
+        conditions: [{ field: 'missing', operator: 'isEmpty', value: true }],
+        actions: [{ type: 'setLabel', params: { labelName: 'empty', labelValue: 'true' } }],
+    });
+
+    const base = {
+        noteId: 'n1', title: 'A note', templateId: 'task',
+        category: 'work', containerMarker: 'taskRoot',
+        attributes: { score: 8 }, relations: {},
+    };
+    assert.deepEqual(rules.evaluateEvent('onNoteCreated', base).map((r) => r.ruleId), ['scoped', 'empty']);
+    assert.deepEqual(rules.evaluateEvent('onNoteCreated', { ...base, category: 'people' }).map((r) => r.ruleId), ['empty']);
+    assert.deepEqual(rules.evaluateEvent('onNoteCreated', { ...base, containerMarker: 'meetingRoot' }).map((r) => r.ruleId), ['empty']);
+    assert.deepEqual(rules.evaluateEvent('onNoteCreated', { ...base, attributes: { score: 2, missing: 'present' } }).map((r) => r.ruleId), []);
 });
 
 test('TodayEngine handles layout toggling and reordering', () => {
@@ -111,7 +179,18 @@ test('NoteCreationEngine plans note creation with if/then automation', () => {
     assert.equal(plan.templateId, 'task');
     assert.equal(plan.formattedTitle, 'Submit quarterly report');
     assert.deepEqual(plan.autoCloneContainers, ['proj_beta']);
+    assert.equal(plan.journalClone, true, 'project work should also appear in today\'s journal');
     assert.ok(plan.labelsToCreate.some(l => l.name === 'extTask'));
+
+    const categoryScoped = new IfThenRuleEngine([]);
+    categoryScoped.registerRule({
+        id: 'only-work', name: 'Only work', description: '', enabled: true, isBuiltin: false,
+        trigger: { type: 'onNoteCreated', targetCategory: 'work' }, conditions: [],
+        actions: [{ type: 'setLabel', params: { labelName: 'workOnly', labelValue: 'true' } }],
+    });
+    const scopedPlan = new NoteCreationEngine(tplEngine, relEngine, categoryScoped)
+        .planNoteCreation({ type: 'person', title: 'A person' });
+    assert.equal(scopedPlan.labelsToCreate.some((l) => l.name === 'workOnly'), false);
 });
 
 test('buildAttributeRows converts a plan into the label/relation rows api.createNote expects', () => {
@@ -134,6 +213,35 @@ test('buildAttributeRows converts a plan into the label/relation rows api.create
     assert.ok(rows.some(r => r.type === 'relation' && r.name === 'project' && r.value === 'proj_beta'));
     // Every row is one or the other, never anything api.createNote's attributes array can't take.
     assert.ok(rows.every(r => r.type === 'label' || r.type === 'relation'));
+});
+
+test('materializeNoteCreation honors an explicitly scoped Trilium api when window.api is absent', async () => {
+    const templateEngine = new TemplateEngine();
+    const relationshipEngine = new RelationshipEngine(templateEngine);
+    const creationEngine = new NoteCreationEngine(templateEngine, relationshipEngine, new IfThenRuleEngine(), new SettingsEngine());
+    const created = [];
+    let cloneCalls = 0;
+    const activeRoot = { noteId: 'active-root', title: 'Active' };
+    const today = { noteId: 'today-note', title: 'Today' };
+    const scopedApi = {
+        searchForNote: async (query) => query === '#activeProjectRoot' ? activeRoot : null,
+        searchForNotes: async () => [],
+        createNote: async (parentId, opts) => {
+            const note = { noteId: `created-${created.length + 1}`, title: opts.title };
+            created.push({ parentId, opts, note });
+            return { note };
+        },
+        getTodayNote: async () => today,
+        runOnBackend: async () => { cloneCalls += 1; return true; },
+    };
+    const plan = creationEngine.planNoteCreation({ type: 'story', title: 'Scoped API Story' });
+
+    const result = await materializeNoteCreation(plan, { api: scopedApi });
+
+    assert.equal(result.title, 'Scoped API Story');
+    assert.equal(created[0].parentId, 'active-root');
+    assert.equal(created.length, 3, 'hub plus draft and reporting child notes should be created');
+    assert.equal(cloneCalls, 2, 'child notes should be cloned through the explicitly passed api');
 });
 
 test('TodayEngine defaults and persists responsive layout settings', () => {
@@ -230,6 +338,21 @@ test('parseAndApplyYamlSpec rejects unusable input rather than failing silently'
     assert.equal(parseAndApplyYamlSpec('unrelated: true', ...args).success, false);
 });
 
+test('empty YAML reset has a valid mostly-blank starter specification', () => {
+    assert.match(DEFAULT_STARTER_YAML_SPEC, /^version: 1\.1\.0/m);
+    assert.match(DEFAULT_STARTER_YAML_SPEC, /^categories: \[\]/m);
+    assert.match(DEFAULT_STARTER_YAML_SPEC, /^templates: \[\]/m);
+    assert.match(DEFAULT_STARTER_YAML_SPEC, /^ifThenRules: \[\]/m);
+
+    const result = parseAndApplyYamlSpec(
+        DEFAULT_STARTER_YAML_SPEC,
+        new TodayEngine(),
+        new TemplateEngine(),
+        new IfThenRuleEngine()
+    );
+    assert.equal(result.success, true, result.message);
+});
+
 test('weatherEngine maps WMO codes and validates coordinates', () => {
     assert.equal(describeWeatherCode(0).icon, 'sun');
     // A clear night reads as a moon rather than a sun.
@@ -284,17 +407,19 @@ test('NoteCreationEngine gates if/then rule execution on autoRunIfThenRulesOnCre
     const relEngine = new RelationshipEngine(tplEngine);
     const ifThenRuleEngine = new IfThenRuleEngine();
 
-    // rule_drafts_category_editorial_round fires unconditionally for the Drafts
-    // category on creation, so a 'story' note is a reliable always-fires probe.
+    // The Story capture creates a Project Hub plus a Draft child. The category
+    // rule belongs to the Draft child, not the enclosing Project Hub.
     const enabledEngine = new NoteCreationEngine(tplEngine, relEngine, ifThenRuleEngine, new SettingsEngine());
     const enabledPlan = enabledEngine.planNoteCreation({ type: 'story', title: 'A story', mode: 'project' });
-    assert.ok(enabledPlan.labelsToCreate.some((l) => l.name === 'round'));
+    assert.ok(enabledPlan.childNotesToCreate?.[0].labels.some((l) => l.name === 'round'));
+    assert.equal(enabledPlan.childNotesToCreate?.[0].labels.find((l) => l.name === 'round')?.value, '1');
+    assert.equal(enabledPlan.childNotesToCreate?.[0].labels.find((l) => l.name === 'reviewState')?.value, 'review');
     assert.ok(enabledPlan.executedIfThenRules.some((r) => r.ruleId === 'rule_drafts_category_editorial_round'));
 
     const disabledSettings = new SettingsEngine({ autoRunIfThenRulesOnCreation: false });
     const disabledEngine = new NoteCreationEngine(tplEngine, relEngine, ifThenRuleEngine, disabledSettings);
     const disabledPlan = disabledEngine.planNoteCreation({ type: 'story', title: 'A story', mode: 'project' });
-    assert.equal(disabledPlan.labelsToCreate.some((l) => l.name === 'round'), false);
+    assert.equal(disabledPlan.childNotesToCreate?.[0].labels.find((l) => l.name === 'round')?.value, '1');
     assert.deepEqual(disabledPlan.executedIfThenRules, []);
 });
 
@@ -321,7 +446,7 @@ test('NoteCreationEngine gates derived topic inheritance on enableDerivedTopics'
     assert.deepEqual(disabledPlan.autoCloneContainers, ['proj_alpha']);
 });
 
-test('NoteCreationEngine computes journalClone: on by default, off when claimed elsewhere or disabled', () => {
+test('NoteCreationEngine files project work in both project and journal branches', () => {
     const tplEngine = new TemplateEngine();
     const relEngine = new RelationshipEngine(tplEngine);
     const ifThenRuleEngine = new IfThenRuleEngine();
@@ -331,10 +456,10 @@ test('NoteCreationEngine computes journalClone: on by default, off when claimed 
         .planNoteCreation({ type: 'task', title: 'Bare task' });
     assert.equal(bareTaskPlan.journalClone, true);
 
-    // A task already auto-cloned into a project should not also land in the journal.
+    // A task auto-cloned into a project also belongs in the day's work index.
     const projectTaskPlan = new NoteCreationEngine(tplEngine, relEngine, ifThenRuleEngine, new SettingsEngine())
         .planNoteCreation({ type: 'task', title: 'Project task', relations: { project: 'proj_alpha' } });
-    assert.equal(projectTaskPlan.journalClone, false);
+    assert.equal(projectTaskPlan.journalClone, true);
 
     // The global setting overrides everything else.
     const disabledPlan = new NoteCreationEngine(tplEngine, relEngine, ifThenRuleEngine, new SettingsEngine({ autoJournalClone: false }))
@@ -345,6 +470,23 @@ test('NoteCreationEngine computes journalClone: on by default, off when claimed 
     const topicPlan = new NoteCreationEngine(tplEngine, relEngine, ifThenRuleEngine, new SettingsEngine())
         .planNoteCreation({ type: 'topic', title: 'A topic tag' });
     assert.equal(topicPlan.journalClone, false);
+});
+
+test('NoteCreationEngine keeps automation destinations as resolvable IDs or markers', () => {
+    const tplEngine = new TemplateEngine();
+    const relEngine = new RelationshipEngine(tplEngine);
+    const rules = new IfThenRuleEngine([]);
+    rules.registerRule({
+        id: 'archive-on-create', name: 'Archive', description: '', enabled: true, isBuiltin: false,
+        trigger: { type: 'onNoteCreated', targetTemplateId: 'task' }, conditions: [],
+        actions: [{ type: 'archiveNote', params: { containerMarker: 'archiveProjectRoot' } }],
+    });
+    const plan = new NoteCreationEngine(tplEngine, relEngine, rules)
+        .planNoteCreation({ type: 'task', title: 'Archive me' });
+
+    assert.deepEqual(plan.autoCloneContainerMarkers, ['archiveProjectRoot']);
+    assert.equal(plan.autoCloneContainers.includes('archiveProjectRoot'), false);
+    assert.ok(plan.labelsToCreate.some((label) => label.name === 'archived'));
 });
 
 test('packagePersistence falls back to an in-memory store outside Trilium and round-trips settings', async () => {
@@ -366,6 +508,36 @@ test('packagePersistence round-trips the YAML specification and returns null whe
     const yaml = 'homepage:\n  weather:\n    label: "Ian\'s café ☕"\n';
     await saveYamlSpecification(yaml);
     assert.equal(await loadYamlSpecification(), yaml);
+
+    await saveYamlSpecification('');
+    assert.equal(await loadYamlSpecification(), '');
+});
+
+test('package persistence and the API bridge honor an explicitly scoped frontend api', async () => {
+    const calls = [];
+    const manifest = {
+        noteId: 'manifest-scoped',
+        getOwnedLabelValue: () => null,
+    };
+    const scopedApi = {
+        searchForNotes: async () => [manifest],
+        runOnBackend: async () => {
+            calls.push('scoped-backend');
+            return true;
+        },
+    };
+
+    const previousGlobalApi = globalThis.api;
+    delete globalThis.api;
+    try {
+        await saveYamlSpecification('homepage: {}\n', scopedApi);
+        await TriliumApiBridge.setNoteAttribute('manifest-scoped', 'label', 'packageData:test', 'true', undefined, scopedApi);
+    } finally {
+        if (previousGlobalApi === undefined) delete globalThis.api;
+        else globalThis.api = previousGlobalApi;
+    }
+
+    assert.deepEqual(calls, ['scoped-backend', 'scoped-backend']);
 });
 
 // -------------------------------------------------------- noteInsightsEngine
@@ -670,7 +842,7 @@ test('NoteCreationEngine handles archiveNote, removeLabel, and prependContent ru
     const plan = engine.planNoteCreation({ type: 'task', title: 'Legacy Cleanup' });
 
     assert.ok(plan.labelsToCreate.some((l) => l.name === 'archived'));
-    assert.ok(plan.autoCloneContainers.includes('archiveRoot'));
+    assert.deepEqual(plan.autoCloneContainerMarkers, ['archiveRoot']);
     assert.match(plan.content, /<h3>Header Checklist<\/h3>/);
 });
 
@@ -729,7 +901,3 @@ test('reconcileProjectHubStatuses handles uninitialized API gracefully', async (
     const result = await reconcileProjectHubStatuses();
     assert.equal(result, 0);
 });
-
-
-
-

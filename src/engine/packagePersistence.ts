@@ -28,13 +28,13 @@ interface TriliumFrontendApi {
     searchForNotes(searchString: string): Promise<TriliumFNote[]>;
 }
 
-function triliumApi(): TriliumFrontendApi | null {
-    const a = (globalThis as any).api;
+function triliumApi(explicitApi?: TriliumFrontendApi | null): TriliumFrontendApi | null {
+    const a = explicitApi || (globalThis as any).api;
     return a && typeof a.searchForNotes === 'function' ? a : null;
 }
 
-async function findManifestNote(): Promise<TriliumFNote | null> {
-    const api = triliumApi();
+async function findManifestNote(explicitApi?: TriliumFrontendApi | null): Promise<TriliumFNote | null> {
+    const api = triliumApi(explicitApi);
     if (!api) return null;
     const notes = await api.searchForNotes(`#packageOwner="${PACKAGE_ID}" #packageArtifact="manifest"`);
     return notes[0] ?? null;
@@ -42,8 +42,8 @@ async function findManifestNote(): Promise<TriliumFNote | null> {
 
 import { TriliumApiBridge } from './triliumApiBridge.js';
 
-async function writeLabel(note: TriliumFNote, name: string, value: string): Promise<void> {
-    return TriliumApiBridge.setNoteAttribute(note.noteId, 'label', name, value);
+async function writeLabel(note: TriliumFNote, name: string, value: string, explicitApi?: TriliumFrontendApi | null): Promise<void> {
+    return TriliumApiBridge.setNoteAttribute(note.noteId, 'label', name, value, undefined, explicitApi);
 }
 
 function parseStoredBoolean(raw: string, fallback: boolean): boolean {
@@ -69,8 +69,8 @@ const memoryStore = new Map<string, string>();
  */
 const YAML_SPEC_LABEL = 'packageData:yamlSpecification';
 
-export async function loadYamlSpecification(): Promise<string | null> {
-    const note = await findManifestNote();
+export async function loadYamlSpecification(explicitApi?: TriliumFrontendApi | null): Promise<string | null> {
+    const note = await findManifestNote(explicitApi);
     const raw = note ? note.getOwnedLabelValue(YAML_SPEC_LABEL) : memoryStore.get(YAML_SPEC_LABEL) ?? null;
     if (raw === null) return null;
     try {
@@ -81,18 +81,18 @@ export async function loadYamlSpecification(): Promise<string | null> {
     }
 }
 
-export async function saveYamlSpecification(yamlSpec: string): Promise<void> {
+export async function saveYamlSpecification(yamlSpec: string, explicitApi?: TriliumFrontendApi | null): Promise<void> {
     const serialized = JSON.stringify(yamlSpec);
-    const note = await findManifestNote();
+    const note = await findManifestNote(explicitApi);
     if (note) {
-        await writeLabel(note, YAML_SPEC_LABEL, serialized);
+        await writeLabel(note, YAML_SPEC_LABEL, serialized, explicitApi);
     } else {
         memoryStore.set(YAML_SPEC_LABEL, serialized);
     }
 }
 
-export async function loadAutomationSettings(): Promise<AutomationSettings> {
-    const note = await findManifestNote();
+export async function loadAutomationSettings(explicitApi?: TriliumFrontendApi | null): Promise<AutomationSettings> {
+    const note = await findManifestNote(explicitApi);
     const result: AutomationSettings = { ...DEFAULT_AUTOMATION_SETTINGS };
 
     for (const key of Object.keys(DEFAULT_AUTOMATION_SETTINGS) as (keyof AutomationSettings)[]) {
@@ -115,13 +115,14 @@ export async function loadAutomationSettings(): Promise<AutomationSettings> {
 
 export async function saveAutomationSetting<K extends keyof AutomationSettings>(
     key: K,
-    value: AutomationSettings[K]
+    value: AutomationSettings[K],
+    explicitApi?: TriliumFrontendApi | null,
 ): Promise<void> {
     const serialized = typeof value === 'string' ? value : JSON.stringify(value);
-    const note = await findManifestNote();
+    const note = await findManifestNote(explicitApi);
 
     if (note) {
-        await writeLabel(note, settingLabelName(key), serialized);
+        await writeLabel(note, settingLabelName(key), serialized, explicitApi);
     } else {
         memoryStore.set(key, serialized);
     }

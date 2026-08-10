@@ -43,6 +43,17 @@
     parent.appendChild(sectionEl);
     return { section: sectionEl, card };
   }
+  function bindAsyncClick(button, onClick) {
+    button.addEventListener("click", () => {
+      try {
+        Promise.resolve(onClick()).catch((error) => {
+          console.warn(`[Ikmal Tools] Button action failed: ${error?.message || error}`);
+        });
+      } catch (error) {
+        console.warn(`[Ikmal Tools] Button action failed: ${error?.message || error}`);
+      }
+    });
+  }
   function iconAction({ icon, title, onClick }) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -50,7 +61,7 @@
     btn.title = title;
     btn.setAttribute("aria-label", title);
     btn.innerHTML = `<span class="bx ${escapeHtml(icon)}"></span>`;
-    btn.addEventListener("click", onClick);
+    bindAsyncClick(btn, onClick);
     return btn;
   }
   function showToast(opts, typeArg, durationArg) {

@@ -90,7 +90,7 @@ export function renderTodayHomepage(
     onQuickCapture: (templateId: string) => void,
     settingsEngine?: SettingsEngine,
     options: TodayHomepageOptions = {}
-): void {
+): () => void {
     let mode: 'edit' | 'preview' = 'preview';
 
     const showEditor = options.showEditor !== false;
@@ -106,6 +106,7 @@ export function renderTodayHomepage(
     let weatherCache: { key: string; report: WeatherReport } | null = null;
     let weatherError = '';
     let weatherPending = false;
+    let weatherRequestKey = '';
 
     // The activity heatmap, On This Day, and Needs Attention widgets all read
     // from the same note search, fetched once per session and shared between
@@ -122,6 +123,7 @@ export function renderTodayHomepage(
     // Words written today, for the Writing Goal widget.
     let wordsTodayCache: number | null = null;
     let wordsTodayPending = false;
+    let dataGeneration = 0;
 
     function refresh() {
         container.innerHTML = '';
@@ -468,7 +470,7 @@ export function renderTodayHomepage(
             return;
         }
 
-        if (weatherError) {
+        if (weatherError && weatherRequestKey === key) {
             const failed = document.createElement('div');
             failed.className = 'ns-actions';
             const message = document.createElement('span');
@@ -490,14 +492,19 @@ export function renderTodayHomepage(
 
         if (weatherPending) return;
         weatherPending = true;
+        weatherRequestKey = key;
 
         fetchWeather(weather)
             .then((report) => {
-                weatherCache = { key, report };
-                weatherError = '';
+                const currentWeather = todayEngine.getLayout().weather ?? weather;
+                const currentKey = `${currentWeather.latitude},${currentWeather.longitude},${currentWeather.units}`;
+                if (weatherRequestKey === key && currentKey === key) {
+                    weatherCache = { key, report };
+                    weatherError = '';
+                }
             })
             .catch((err: Error) => {
-                weatherError = `Could not load the forecast: ${err.message}`;
+                if (weatherRequestKey === key) weatherError = `Could not load the forecast: ${err.message}`;
             })
             .finally(() => {
                 weatherPending = false;
@@ -556,21 +563,14 @@ export function renderTodayHomepage(
         return runtimeApi && typeof runtimeApi.searchForNotes === 'function' ? runtimeApi : null;
     }
 
-    /**
-     * Trilium's own timestamps are "YYYY-MM-DD HH:mm:ss.SSS±ZZZZ", which is not a
-     * format the Date constructor is required to parse. Extracting the fields by
-     * hand keeps this correct on every engine, not just the ones lenient enough
-     * to accept it.
-     */
+    /** Trilium timestamps carry an explicit offset; preserve it when parsing. */
     function parseTriliumTimestamp(value: unknown): number {
         if (typeof value !== 'string') return NaN;
-        const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(value);
-        if (!match) {
-            const parsed = Date.parse(value);
-            return Number.isNaN(parsed) ? NaN : parsed;
-        }
-        const [, y, mo, d, h, mi, s] = match.map(Number);
-        return new Date(y, mo - 1, d, h, mi, s).getTime();
+        const normalized = value
+            .replace(' ', 'T')
+            .replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
+        const parsed = Date.parse(normalized);
+        return Number.isNaN(parsed) ? NaN : parsed;
     }
 
     /**
@@ -605,7 +605,7 @@ export function renderTodayHomepage(
     }
 
     /** Shared by Activity, On This Day, and Needs Attention so they issue one search between them. */
-    async function loadNoteSummaries(): Promise<NoteSummary[]> {
+    async function loadNoteSummaries(generation = dataGeneration): Promise<NoteSummary[]> {
         if (noteSummaryCache) return noteSummaryCache;
 
         const api = triliumApi();
@@ -623,7 +623,7 @@ export function renderTodayHomepage(
             dateModified: parseTriliumTimestamp(note.dateModified),
             status: typeof note.getLabelValue === 'function' ? (note.getLabelValue('status') ?? undefined) : undefined,
         }));
-        noteSummaryCache = summaries;
+        if (generation === dataGeneration) noteSummaryCache = summaries;
         return summaries;
     }
 
@@ -633,10 +633,16 @@ export function renderTodayHomepage(
 
         card.appendChild(emptyState('Loading…'));
         if (!noteSummaryPending) {
+            const generation = dataGeneration;
             noteSummaryPending = true;
-            loadNoteSummaries().finally(() => {
-                noteSummaryPending = false;
-                if (mode === 'preview') refresh();
+            loadNoteSummaries(generation).catch((error) => {
+                console.warn(`[Ikmal Tools] Activity summary could not load: ${error}`);
+                if (generation === dataGeneration) noteSummaryCache = [];
+            }).finally(() => {
+                if (generation === dataGeneration) {
+                    noteSummaryPending = false;
+                    if (mode === 'preview') refresh();
+                }
             });
         }
         return false;
@@ -718,34 +724,29 @@ export function renderTodayHomepage(
         const api = triliumApi();
         if (!api) return SAMPLE_ACTIVE_PROJECTS;
 
-        const notes = new Map<string, any>();
-        // Keep the old saved-search contract first, then add marker fallbacks
-        // for older hubs that predate the current #kind/#status labels.
-        for (const query of [
-            '#kind AND #status = active AND #!projectArchive orderBy #startDate desc',
-            '#extProjectHub',
-            '#extTemplate',
-        ]) {
-            try {
-                for (const note of await api.searchForNotes(query)) {
-                    if (note?.noteId) notes.set(note.noteId, note);
-                }
-            } catch {
-                // One unsupported legacy query must not hide the other sources.
+        const roots = await api.searchForNotes('#activeProjectRoot').catch(() => []);
+        const projectNotes: any[] = [];
+        const seen = new Set<string>();
+        const pending = [...(roots || [])];
+        while (pending.length) {
+            const current = pending.shift();
+            if (!current?.noteId || seen.has(current.noteId)) continue;
+            seen.add(current.noteId);
+            const isProject = noteMarker(current, 'extProjectHub') !== null
+                || noteMarker(current, 'extTemplate') === 'projectHub'
+                || noteMarker(current, 'noteType') === 'projectHub';
+            if (isProject) projectNotes.push(current);
+            if (typeof current.getChildNotes === 'function') {
+                const children = await Promise.resolve(current.getChildNotes()).catch(() => []);
+                pending.push(...(children || []));
             }
         }
 
-        const projectNotes = [...notes.values()]
-            .filter((note) => {
-                const isProject = noteMarker(note, 'extProjectHub') !== null
-                    || noteMarker(note, 'extTemplate') === 'projectHub'
-                    || noteLabel(note, 'kind') === 'project';
-                return isProject
-                    && noteLabel(note, 'status') === 'active'
-                    && !noteLabel(note, 'projectArchive');
-            })
-            .sort((a, b) => parseTriliumTimestamp(noteLabel(b, 'startDate') || b.dateModified)
-                - parseTriliumTimestamp(noteLabel(a, 'startDate') || a.dateModified));
+        // Membership in the Active branch is authoritative. Status is shown
+        // as metadata, but filtering on it here made the widget disagree with
+        // the project tree whenever a legacy hub's labels lagged its location.
+        projectNotes.sort((a, b) => parseTriliumTimestamp(noteLabel(b, 'startDate') || b.dateModified)
+            - parseTriliumTimestamp(noteLabel(a, 'startDate') || a.dateModified));
 
         const projectDashboardIds = await loadProjectDashboardIds(api);
         const projectsWithDashboards = await Promise.all(projectNotes.map(async (note) => {
@@ -770,12 +771,18 @@ export function renderTodayHomepage(
 
         card.appendChild(emptyState('Loading…'));
         if (!activeProjectPending) {
+            const generation = dataGeneration;
             activeProjectPending = true;
             loadActiveProjects().then((projects) => {
-                activeProjectCache = projects;
+                if (generation === dataGeneration) activeProjectCache = projects;
+            }).catch((error) => {
+                console.warn(`[Ikmal Tools] Active projects could not load: ${error}`);
+                if (generation === dataGeneration) activeProjectCache = [];
             }).finally(() => {
-                activeProjectPending = false;
-                if (mode === 'preview') refresh();
+                if (generation === dataGeneration) {
+                    activeProjectPending = false;
+                    if (mode === 'preview') refresh();
+                }
             });
         }
         return false;
@@ -811,12 +818,18 @@ export function renderTodayHomepage(
 
         card.appendChild(emptyState('Loading…'));
         if (!taskPending) {
+            const generation = dataGeneration;
             taskPending = true;
             loadTasks().then((tasks) => {
-                taskCache = tasks;
+                if (generation === dataGeneration) taskCache = tasks;
+            }).catch((error) => {
+                console.warn(`[Ikmal Tools] Tasks could not load: ${error}`);
+                if (generation === dataGeneration) taskCache = [];
             }).finally(() => {
-                taskPending = false;
-                if (mode === 'preview') refresh();
+                if (generation === dataGeneration) {
+                    taskPending = false;
+                    if (mode === 'preview') refresh();
+                }
             });
         }
         return false;
@@ -952,12 +965,19 @@ export function renderTodayHomepage(
         if (wordsTodayCache === null) {
             card.appendChild(emptyState('Loading progress…'));
             if (!wordsTodayPending) {
+                const generation = dataGeneration;
                 wordsTodayPending = true;
                 loadWordsWrittenToday()
-                    .then((count) => { wordsTodayCache = count; })
+                    .then((count) => { if (generation === dataGeneration) wordsTodayCache = count; })
+                    .catch((error) => {
+                        console.warn(`[Ikmal Tools] Writing progress could not load: ${error}`);
+                        if (generation === dataGeneration) wordsTodayCache = 0;
+                    })
                     .finally(() => {
-                        wordsTodayPending = false;
-                        if (mode === 'preview') refresh();
+                        if (generation === dataGeneration) {
+                            wordsTodayPending = false;
+                            if (mode === 'preview') refresh();
+                        }
                     });
             }
             return;
@@ -1019,9 +1039,17 @@ export function renderTodayHomepage(
         card.appendChild(emptyState('Loading daylight…'));
         if (weatherPending) return;
         weatherPending = true;
+        weatherRequestKey = key;
         fetchWeather(weather)
-            .then((report) => { weatherCache = { key, report }; weatherError = ''; })
-            .catch((err: Error) => { weatherError = `Could not load daylight: ${err.message}`; })
+            .then((report) => {
+                const currentWeather = todayEngine.getLayout().weather ?? weather;
+                const currentKey = `${currentWeather.latitude},${currentWeather.longitude},${currentWeather.units}`;
+                if (weatherRequestKey === key && currentKey === key) {
+                    weatherCache = { key, report };
+                    weatherError = '';
+                }
+            })
+            .catch((err: Error) => { if (weatherRequestKey === key) weatherError = `Could not load daylight: ${err.message}`; })
             .finally(() => {
                 weatherPending = false;
                 if (mode === 'preview') refresh();
@@ -1162,11 +1190,39 @@ export function renderTodayHomepage(
                 onClick: () => openJournalNote(api, note.noteId),
             });
             open.classList.add('ns-journal-open');
-            entry.append(title, hint, open);
+            const actions = document.createElement('div');
+            actions.className = 'ns-actions';
+            actions.appendChild(open);
+            if (api.getDayNote) {
+                actions.appendChild(button({
+                    text: 'Plan for Tomorrow',
+                    icon: 'bx-calendar-plus',
+                    onClick: async () => {
+                        const tomorrow = tomorrowDateIso(api);
+                        const tomorrowNote = await api.getDayNote(tomorrow);
+                        if (!tomorrowNote?.noteId) throw new Error('Trilium did not return tomorrow’s journal note.');
+                        await openJournalNote(api, tomorrowNote.noteId);
+                    },
+                }));
+            }
+            entry.append(title, hint, actions);
             card.appendChild(entry);
         }).catch((error: Error) => {
             loading.textContent = `Today’s journal is unavailable: ${error.message}`;
         });
+    }
+
+    function tomorrowDateIso(api: any): string {
+        if (typeof api?.dayjs === 'function') {
+            return api.dayjs().add(1, 'day').format('YYYY-MM-DD');
+        }
+
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const year = tomorrow.getFullYear();
+        const month = String(tomorrow.getMonth() + 1).padStart(2, '0');
+        const day = String(tomorrow.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
     }
 
     function contextNoteId(context: any): string | null {
@@ -1318,6 +1374,22 @@ export function renderTodayHomepage(
     }
 
     refresh();
+    return () => {
+        // A successful quick capture changes several widgets at once (active
+        // projects, stories, recent activity, and today's journal). Clear the
+        // memoized searches before repainting so the page does not look stale
+        // until the user hard-refreshes Trilium.
+        dataGeneration += 1;
+        noteSummaryPending = false;
+        taskPending = false;
+        activeProjectPending = false;
+        wordsTodayPending = false;
+        noteSummaryCache = null;
+        taskCache = null;
+        activeProjectCache = null;
+        wordsTodayCache = null;
+        refresh();
+    };
 }
 
 export interface TodayHomepageOptions {

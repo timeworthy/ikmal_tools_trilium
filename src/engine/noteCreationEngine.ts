@@ -59,15 +59,17 @@ export interface NoteCreationPlan {
     labelsToCreate: Array<{ name: string; value: string }>;
     relationsToCreate: Array<{ name: string; value: string }>;
     autoCloneContainers: string[];
+    /** Marker-based destinations requested by automation actions. */
+    autoCloneContainerMarkers: string[];
     inheritedTopicSources: string[];
     executedIfThenRules: Array<{ ruleId: string; ruleName: string }>;
     childNotesToCreate?: ChildNoteToCreate[];
     noteType?: string;
     /**
-     * Whether this note should be referenced under today's journal note. True
-     * only when nothing else already claims it (no relation-based auto-clone
-     * container), the template and its category both allow it, and the
-     * "File new notes under today's journal note" setting is on.
+     * Whether this note should also be referenced under today's journal note.
+     * A project relation adds another branch; it does not replace the daily
+     * work index. The template/category and the journal setting still govern
+     * whether this second branch is created.
      */
     journalClone: boolean;
 }
@@ -168,6 +170,7 @@ export class NoteCreationEngine {
         // 2. Process Relationships & Auto-Cloning via RelationshipEngine
         const resolved = this.relationshipEngine.resolveCreationRelations(template.id, relValues);
         const autoCloneContainers = resolved.autoCloneContainers;
+        const autoCloneContainerMarkers: string[] = [];
         // Derived topic propagation is an opt-out: the relation graph is still
         // resolved above (it also drives auto-cloning), but nothing is inherited
         // when the setting is off.
@@ -184,6 +187,8 @@ export class NoteCreationEngine {
             noteId: 'PREVIEW_ID',
             title: formattedTitle,
             templateId: template.id,
+            category: template.category,
+            containerMarker: rootContainerMarker || template.rootContainerMarker,
             attributes: { ...attrValues, ...Object.fromEntries(labelsToCreate.map(l => [l.name, l.value])) },
             relations: relValues,
         };
@@ -214,27 +219,88 @@ export class NoteCreationEngine {
                                 name: action.params.relationName,
                                 value: action.params.targetNoteId,
                             });
+                        } else if (action.type === 'cloneToContainer') {
+                            const relationValue = action.params.relationName
+                                ? relValues[action.params.relationName]
+                                : undefined;
+                            for (const targetId of (Array.isArray(relationValue) ? relationValue : [relationValue])) {
+                                if (targetId && !autoCloneContainers.includes(String(targetId))) {
+                                    autoCloneContainers.push(String(targetId));
+                                }
+                            }
+                            if (action.params.containerMarker
+                                && !autoCloneContainerMarkers.includes(action.params.containerMarker)) {
+                                autoCloneContainerMarkers.push(action.params.containerMarker);
+                            }
                         } else if (action.type === 'archiveNote') {
                             labelsToCreate.push({ name: 'archived', value: '' });
-                            if (action.params.containerMarker && !autoCloneContainers.includes(action.params.containerMarker)) {
-                                autoCloneContainers.push(action.params.containerMarker);
+                            if (action.params.containerMarker
+                                && !autoCloneContainerMarkers.includes(action.params.containerMarker)) {
+                                autoCloneContainerMarkers.push(action.params.containerMarker);
                             }
+                        } else if (action.type === 'setTaskStatus' && action.params.status) {
+                            labelsToCreate.push({ name: 'status', value: action.params.status });
                         } else if (action.type === 'prependContent' && action.params.content) {
                             content = `${action.params.content}\n${content}`;
                         }
                     }
                 }
             }
+
+            // A Story/Edit capture without an existing project creates a hub
+            // plus child notes. The child is the Drafts note, so category and
+            // template rules must be evaluated against it rather than against
+            // the enclosing Project Hub.
+            for (const child of childNotesToCreate) {
+                const childTemplate = this.templateEngine.getTemplate(child.templateId);
+                if (!childTemplate) continue;
+                const childContext = {
+                    noteId: 'PREVIEW_CHILD_ID',
+                    title: child.title,
+                    templateId: childTemplate.id,
+                    category: childTemplate.category,
+                    containerMarker: childTemplate.rootContainerMarker,
+                    attributes: Object.fromEntries(child.labels.map((label) => [label.name, label.value])),
+                    relations: {},
+                };
+                const childResults = this.ifThenRuleEngine.evaluateEvent('onNoteCreated', childContext);
+                for (const res of childResults) {
+                    if (!res.matched) continue;
+                    executedIfThenRules.push({ ruleId: res.ruleId, ruleName: res.ruleName });
+                    for (const action of res.executedActions) {
+                        if (action.type === 'setLabel' && action.params.labelName) {
+                            const existing = child.labels.find((label) => label.name === action.params.labelName);
+                            if (existing) existing.value = action.params.labelValue || '';
+                            else child.labels.push({ name: action.params.labelName, value: action.params.labelValue || '' });
+                        } else if (action.type === 'removeLabel' && action.params.labelName) {
+                            const index = child.labels.findIndex((label) => label.name === action.params.labelName);
+                            if (index !== -1) child.labels.splice(index, 1);
+                        } else if (action.type === 'setTaskStatus' && action.params.status) {
+                            const existing = child.labels.find((label) => label.name === 'status');
+                            if (existing) existing.value = action.params.status;
+                            else child.labels.push({ name: 'status', value: action.params.status });
+                        } else if (action.type === 'archiveNote') {
+                            if (!child.labels.some((label) => label.name === 'archived')) {
+                                child.labels.push({ name: 'archived', value: '' });
+                            }
+                        } else if (action.type === 'prependContent' && action.params.content) {
+                            child.content = `${action.params.content}\n${child.content || ''}`;
+                        }
+                    }
+                }
+            }
         }
 
-        // 4. Journal auto-clone: enabled for non-hub/non-system notes when setting is on and not claimed elsewhere.
+        // 4. Journal auto-clone: a project branch and the daily work index are
+        // independent filing locations. The old backend created both; the
+        // previous `autoCloneContainers.length === 0` guard lost project files
+        // from day notes in the new plugin.
         const category = this.templateEngine.getCategory(template.category);
         const journalClone =
             this.settingsEngine.get('autoJournalClone') &&
             !template.noJournalClone &&
             template.id !== 'projectHub' &&
-            category?.autoJournalClone !== false &&
-            autoCloneContainers.length === 0;
+            category?.autoJournalClone !== false;
 
         return {
             templateId: template.id,
@@ -246,6 +312,7 @@ export class NoteCreationEngine {
             labelsToCreate,
             relationsToCreate,
             autoCloneContainers,
+            autoCloneContainerMarkers,
             inheritedTopicSources,
             executedIfThenRules,
             childNotesToCreate: childNotesToCreate.length > 0 ? childNotesToCreate : undefined,

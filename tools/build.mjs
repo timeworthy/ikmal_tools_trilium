@@ -111,6 +111,9 @@ try {
             }
         }
     }
+
+    console.log('🔨 Bundling YAML if/then runtime dispatcher...');
+    execSync('npx esbuild src/backend/if-then-dispatch.backend.ts --bundle --format=iife --target=es2020 --outfile=dist/backend/if-then-dispatch.backend.js', { stdio: 'inherit' });
 } catch (err) {
     console.error('❌ Bundling failed:', err.message);
     process.exit(1);

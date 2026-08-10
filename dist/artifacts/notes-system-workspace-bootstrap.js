@@ -6,7 +6,7 @@
     if (window.__ikmal_workspace_bootstrap_started) return;
     window.__ikmal_workspace_bootstrap_started = true;
     const PACKAGE_ID = "iansherr/ikmal_tools_trilium";
-    const PACKAGE_VERSION = "1.0.32";
+    const PACKAGE_VERSION = "1.0.33";
     let extConfigNoteId = null;
     const LEGACY_STARTUP_TITLES = /* @__PURE__ */ new Set([
       "Note Creation Buttons",
@@ -33,7 +33,7 @@
         console.info(`[Ikmal Tools] Disabling legacy startup script "${candidate.title}" (${candidate.noteId}).`);
         if (typeof api.runOnBackend === "function") {
           try {
-            await api.runOnBackend((noteId) => {
+            const applied = await api.runOnBackend((noteId) => {
               const note = api.getNote(noteId);
               if (!note || note.getOwnedLabelValue("packageOwner")) return false;
               const run = note.getOwnedLabelValue("run");
@@ -41,7 +41,7 @@
               note.removeLabel("run");
               return true;
             }, [candidate.noteId]);
-            continue;
+            if (applied) continue;
           } catch {
           }
         }
@@ -208,7 +208,17 @@
       });
       if (!response.ok) throw new Error(`Could not remove stale parent branch (HTTP ${response.status}).`);
       const result = await response.json().catch(() => null);
-      return result?.success === false ? "refused" : "removed";
+      if (result?.success === true) return "removed";
+      if (result?.success === false) return "refused";
+      try {
+        const refreshed = typeof api.getNote === "function" ? await api.getNote(note.noteId) : null;
+        const refreshedParents = refreshed?.getParentNoteIds?.();
+        if (Array.isArray(refreshedParents)) {
+          return refreshedParents.includes(parentNoteId) ? "refused" : "removed";
+        }
+      } catch {
+      }
+      return "unavailable";
     }
     async function searchMany(searches) {
       const notes = /* @__PURE__ */ new Map();
@@ -236,17 +246,24 @@
     async function getFreshOwnedRelationTarget(noteId, name) {
       const glob = window.glob;
       if (!glob?.baseApiUrl) return { available: false, target: null };
-      try {
-        const response = await fetch(`${glob.baseApiUrl}notes/${noteId}/attributes`, {
-          credentials: "same-origin"
-        });
-        if (!response.ok) return { available: false, target: null };
-        const attributes = await response.json();
-        const relation = (attributes || []).find((attribute) => attribute.noteId === noteId && attribute.type === "relation" && attribute.name === name && !attribute.isDeleted);
-        return { available: true, target: relation?.value || null };
-      } catch {
-        return { available: false, target: null };
+      const maxAttempts = 3;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        try {
+          const response = await fetch(`${glob.baseApiUrl}notes/${noteId}/attributes`, {
+            credentials: "same-origin"
+          });
+          if (response.ok) {
+            const attributes = await response.json();
+            const relation = (attributes || []).find((attribute) => attribute.noteId === noteId && attribute.type === "relation" && attribute.name === name && !attribute.isDeleted);
+            return { available: true, target: relation?.value || null };
+          }
+        } catch {
+        }
+        if (attempt + 1 < maxAttempts) {
+          await new Promise((resolve) => window.setTimeout(resolve, 100 * (attempt + 1)));
+        }
       }
+      return { available: false, target: null };
     }
     function markerValue(note, name) {
       return note?.getOwnedLabelValue?.(name) ?? note?.labels?.find?.((label) => label.name === name)?.value ?? note?.attributes?.find?.((attribute) => attribute.type === "label" && attribute.name === name)?.value;
@@ -315,7 +332,7 @@
       const renderNote = today.getRelations?.("renderNote")?.[0];
       const freshRelation = await getFreshOwnedRelationTarget(today.noteId, "renderNote");
       const currentTarget = freshRelation.available ? freshRelation.target : renderNote?.value || renderNote?.targetNoteId;
-      if (!freshRelation.available || currentTarget !== todayCode.noteId) {
+      if (freshRelation.available && currentTarget !== todayCode.noteId) {
         await setAttribute(today.noteId, "relation", "renderNote", todayCode.noteId);
       }
       if (today.getOwnedLabelValue("extTodayDashboard") !== "today") {
@@ -329,17 +346,28 @@
       const sources = [
         ["extTask"],
         ["extMeeting"],
+        ["extStoryDraft"],
+        ["extReportingNotes"],
         ["extEmailDraft"],
         ["extScratch"],
+        ["extPerson"],
+        ["extOrganization"],
         ["noteGroup", "people"],
-        ["noteGroup", "organization"]
+        ["noteGroup", "organization"],
+        ["extTemplate", "projectHub"],
+        ["extTemplate", "person"],
+        ["extTemplate", "organization"],
+        ["extTemplate", "topic"],
+        ["extProjectHub"],
+        ["extTopic"],
+        ["noteType", "projectHub"],
+        ["noteType", "topic"]
       ];
       const notes = await searchMany([...new Set(sources.map(([name]) => `#${name}`))]);
-      const now = /* @__PURE__ */ new Date();
-      const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      const today = localDayKey(/* @__PURE__ */ new Date());
       let repaired = 0;
       for (const note of notes) {
-        if (note.isArchived || String(note.dateCreated || "").slice(0, 10) !== today) continue;
+        if (note.isArchived || localDayKey(note.dateCreated) !== today) continue;
         const matches = sources.some(([name, value]) => {
           const marker = note.getOwnedLabelValue?.(name);
           return value === void 0 ? marker !== void 0 && marker !== null : marker === value;
@@ -357,6 +385,11 @@
       }
       return repaired;
     }
+    function localDayKey(value) {
+      const date = value instanceof Date ? value : new Date(value);
+      if (Number.isNaN(date.getTime())) return "";
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    }
     function isDailyNote(note) {
       const dateNote = markerValue(note, "dateNote");
       const template = markerValue(note, "extTemplate");
@@ -367,6 +400,25 @@
       if (!note || note.isArchived || isDailyNote(note)) return false;
       const template = markerValue(note, "extTemplate") || markerValue(note, "noteType");
       return markerValue(note, "extProjectHub") !== void 0 || template === "projectHub";
+    }
+    async function collectTreeDescendants(markers) {
+      const notes = /* @__PURE__ */ new Map();
+      const pending = [];
+      for (const marker of markers) {
+        const roots = await searchIncludingHidden(`#${marker}`);
+        pending.push(...roots || []);
+      }
+      while (pending.length) {
+        const current = pending.shift();
+        if (!current?.noteId || notes.has(current.noteId)) continue;
+        notes.set(current.noteId, current);
+        const children = typeof current.getChildNotes === "function" ? await Promise.resolve(current.getChildNotes()).catch(() => []) : [];
+        pending.push(...children || []);
+      }
+      return [...notes.values()];
+    }
+    async function collectProjectHubDescendants() {
+      return (await collectTreeDescendants(["projectRoot"])).filter((note) => isProjectHubCandidate(note));
     }
     function cleanDailyContent(content) {
       if (typeof content !== "string" || typeof DOMParser === "undefined") return content;
@@ -470,7 +522,7 @@
       return removed;
     }
     async function attachProjectDashboards(dashboardCode) {
-      const projects = (await searchMany(["#extProjectHub", "#extTemplate"])).filter((project) => isProjectHubCandidate(project));
+      const projects = await collectProjectHubDescendants();
       let attached = 0;
       for (const project of projects) {
         if (project.isArchived) continue;
@@ -523,14 +575,17 @@
         { marker: "extConfig", title: "Config", icon: "bx bx-cog", parent: "_userHidden", type: "text", labels: [{ name: "extensionVersion", value: PACKAGE_VERSION }] }
       ];
       for (const c of containers) {
-        const existing = await api.searchForNotes(`#${c.marker}`);
+        const existing = await searchIncludingHidden(`#${c.marker}`);
         if (existing && existing.length > 0) {
           if (c.marker === "extConfig") extConfigNoteId = existing[0].noteId;
           continue;
         }
         let parentId = "root";
         if (c.parent !== "root") {
-          const parentCandidate = await api.searchForNotes(`#${c.parent}`);
+          if (c.parent.startsWith("_")) {
+            parentId = c.parent;
+          }
+          const parentCandidate = c.parent.startsWith("_") ? [] : await searchIncludingHidden(`#${c.parent}`);
           if (parentCandidate && parentCandidate[0]) {
             parentId = parentCandidate[0].noteId;
           }
@@ -574,14 +629,14 @@
       }
     }
     async function migrateLegacyEntityLabels() {
-      const allOrgs = await searchMany(["#extTemplate", "#noteGroup", "#orgRoot"]);
+      const allOrgs = await collectTreeDescendants(["orgRoot"]);
       const orgMap = /* @__PURE__ */ new Map();
       for (const n of allOrgs) {
         if (hasMarker(n, "extTemplate", "organization") || markerValue(n, "noteGroup") === "organization" || hasMarker(n, "orgRoot")) {
           orgMap.set(n.title.trim().toLowerCase(), n.noteId);
         }
       }
-      const workNotes = await searchMany(["#projectRoot", "#storyDraftRoot", "#emailRoot"]);
+      const workNotes = await collectTreeDescendants(["projectRoot", "storyDraftRoot", "emailRoot"]);
       let converted = 0;
       for (const note of workNotes) {
         if (note.isArchived) continue;
@@ -609,7 +664,16 @@
         if (m) tplMap.set(m, tpl.noteId);
       }
       if (tplMap.size === 0) return 0;
-      const workNotes = await searchMany(["#projectRoot", "#meetingRoot", "#taskRoot", "#storyDraftRoot", "#emailRoot", "#peopleRoot", "#orgRoot", "#topicRoot"]);
+      const workNotes = await collectTreeDescendants([
+        "projectRoot",
+        "meetingRoot",
+        "taskRoot",
+        "storyDraftRoot",
+        "emailRoot",
+        "peopleRoot",
+        "orgRoot",
+        "topicRoot"
+      ]);
       let reattached = 0;
       for (const note of workNotes) {
         if (note.isArchived) continue;
@@ -650,7 +714,7 @@
       return migrated;
     }
     async function ensureProjectReportingNotes() {
-      const hubs = (await searchMany(["#extProjectHub", "#extTemplate"])).filter((n) => isProjectHubCandidate(n));
+      const hubs = await collectProjectHubDescendants();
       const reportingTpl = (await searchIncludingHidden("#extTemplate")).find((n) => markerValue(n, "extTemplate") === "reportingNotes" || n.title === "Reporting Notes");
       let createdCount = 0;
       const reportingContent = `<h2>LINKS</h2><ul><li></li></ul><h2>OPEN QUESTIONS</h2><ul><li></li></ul><h2>IDEA / ANGLE</h2><p></p><h2>REPORTING NOTES</h2><p></p><div class='reporting-note-actions-placeholder' data-reporting-note-actions='true'></div>`;
@@ -705,7 +769,7 @@
       return repaired;
     }
     async function reconcileProjectHubStatuses() {
-      const hubs = (await searchMany(["#extProjectHub", "#extTemplate"])).filter((project) => isProjectHubCandidate(project));
+      const hubs = await collectProjectHubDescendants();
       const archiveRoot = (await api.searchForNotes("#archiveProjectRoot"))?.[0];
       const activeRoot = (await api.searchForNotes("#activeProjectRoot"))?.[0];
       let reconciled = 0;
@@ -757,10 +821,11 @@
       const backendMetadataSync = (await searchIncludingHidden("#packageArtifact")).find((n) => n.getOwnedLabelValue?.("packageArtifact") === "notes-system-project-metadata-sync");
       const backendDailyRepair = (await searchIncludingHidden("#packageArtifact")).find((n) => n.getOwnedLabelValue?.("packageArtifact") === "notes-system-daily-note-repair");
       const backendTopicSync = (await searchIncludingHidden("#packageArtifact")).find((n) => n.getOwnedLabelValue?.("packageArtifact") === "notes-system-topic-association-sync");
+      const backendIfThenDispatch = (await searchIncludingHidden("#packageArtifact")).find((n) => n.getOwnedLabelValue?.("packageArtifact") === "notes-system-if-then-dispatch");
       if (backendMetadataSync) {
         const projectRoot = (await api.searchForNotes("#projectRoot"))?.[0];
         if (projectRoot) {
-          for (const relName of ["runOnAttributeCreation", "runOnAttributeChange", "runOnNoteChange"]) {
+          for (const relName of ["runOnNoteCreation", "runOnAttributeCreation", "runOnAttributeChange", "runOnNoteChange"]) {
             const hasRel = projectRoot.getRelations?.(relName)?.some((r) => (r.value || r.targetNoteId) === backendMetadataSync.noteId);
             if (!hasRel) {
               try {
@@ -769,10 +834,30 @@
               }
             }
           }
+          const legacyTargets = (projectRoot.getRelations?.("runOnNoteCreation") || []).map((r) => r.value || r.targetNoteId).filter((id) => id && id !== backendMetadataSync.noteId);
+          for (const legacyId of legacyTargets) {
+            const legacy = typeof api.getNote === "function" ? await api.getNote(legacyId) : null;
+            const marker = legacy?.getOwnedLabelValue?.("extScript");
+            if (!legacy || legacy.getOwnedLabelValue?.("packageOwner") || marker !== "topicAssociationSync" && legacy.title !== "Topic Association Sync") continue;
+            if (typeof api.runOnBackend !== "function") continue;
+            try {
+              await api.runOnBackend((rootId, targetId) => {
+                const root = api.getNote(rootId);
+                const attrs = root?.getOwnedAttributes?.() || [];
+                for (const attr of attrs) {
+                  if (attr.type === "relation" && attr.name === "runOnNoteCreation" && attr.value === targetId) {
+                    api.deleteAttribute(attr.attributeId);
+                  }
+                }
+                return true;
+              }, [projectRoot.noteId, legacyId]);
+            } catch {
+            }
+          }
         }
       }
       if (backendDailyRepair) {
-        const journal = (await api.searchForNotes("#calendarRoot"))?.[0];
+        const journal = (await searchIncludingHidden("#calendarRoot"))?.[0];
         if (journal) {
           for (const relName of ["runOnNoteCreation", "runOnNoteChange"]) {
             const hasRel = journal.getRelations?.(relName)?.some((r) => (r.value || r.targetNoteId) === backendDailyRepair.noteId);
@@ -801,9 +886,23 @@
           }
         }
       }
+      if (backendIfThenDispatch) {
+        const projectRoot = (await api.searchForNotes("#projectRoot"))?.[0];
+        if (projectRoot) {
+          for (const relName of ["runOnAttributeCreation", "runOnAttributeChange"]) {
+            const hasRel = projectRoot.getRelations?.(relName)?.some((r) => (r.value || r.targetNoteId) === backendIfThenDispatch.noteId);
+            if (!hasRel) {
+              try {
+                await setAttribute(projectRoot.noteId, "relation", relName, backendIfThenDispatch.noteId);
+              } catch {
+              }
+            }
+          }
+        }
+      }
     }
     async function syncProjectMetadata() {
-      const hubs = (await searchMany(["#extProjectHub", "#extTemplate"])).filter((project) => isProjectHubCandidate(project));
+      const hubs = await collectProjectHubDescendants();
       let synced = 0;
       for (const hub of hubs) {
         if (hub.isArchived) continue;
@@ -894,7 +993,7 @@
         { title: "Meeting Calendar", marker: "meetingCalendar", search: "#extMeeting AND #startDate", viewType: "calendar", extraLabels: [{ name: "calendar:view", value: "dayGridMonth" }] },
         { title: "Open Tasks", marker: "openTasks", search: "#extTask AND #!doneDate orderBy #dueDate", viewType: "table" },
         { title: "Upcoming Meetings", marker: "upcomingMeetings", search: "#extMeeting AND #startDate orderBy #startDate", viewType: "table" },
-        { title: "Active Projects", marker: "activeProjects", search: "#kind AND #status = active AND #!projectArchive orderBy #startDate desc", viewType: "table" },
+        { title: "Active Projects", marker: "activeProjects", search: "#projectArea = active AND (#extProjectHub OR #extTemplate = projectHub) orderBy #startDate desc", viewType: "table" },
         { title: "Drafts", marker: "openDrafts", search: "#extStoryDraft AND #!doneDate orderBy note.dateModified desc", viewType: "table" },
         { title: "Emails", marker: "openEmails", search: "#extEmailDraft orderBy note.dateModified desc", viewType: "table" },
         { title: "High Priority", marker: "highPriority", search: "#priority = high AND #!doneDate orderBy #dueDate", viewType: "table" },
@@ -938,10 +1037,10 @@
       const checks = [];
       const containers = ["calendarRoot", "todayRoot", "projectRoot", "activeProjectRoot", "archiveProjectRoot", "unassignedRoot", "taskRoot", "meetingRoot", "peopleRoot", "orgRoot", "topicRoot", "templateRoot", "extConfig", "storyDraftRoot", "emailRoot"];
       for (const m of containers) {
-        const found = await api.searchForNotes(`#${m}`);
+        const found = await searchIncludingHidden(`#${m}`);
         if (!found || !found.length) checks.push(`missing container #${m}`);
       }
-      const tplRoot = (await api.searchForNotes("#templateRoot"))?.[0];
+      const tplRoot = (await searchIncludingHidden("#templateRoot"))?.[0];
       if (!tplRoot) {
         checks.push("missing #templateRoot");
       } else {
@@ -953,12 +1052,12 @@
           }
         }
       }
-      const journal = (await api.searchForNotes("#calendarRoot"))?.[0];
+      const journal = (await searchIncludingHidden("#calendarRoot"))?.[0];
       if (journal) {
         const hasDateTpl = journal.getRelations?.("dateTemplate")?.length > 0;
         if (!hasDateTpl) checks.push("journal has no ~dateTemplate");
       }
-      const config = (await api.searchForNotes("#extConfig"))?.[0];
+      const config = (await searchIncludingHidden("#extConfig"))?.[0];
       if (config) {
         const version = markerValue(config, "extensionVersion");
         if (!version) checks.push("extConfig missing #extensionVersion label");
@@ -971,7 +1070,7 @@
     }
     async function recordMigrationLog(action, summary) {
       try {
-        const configRoot = (await api.searchForNotes("#extConfig"))?.[0] || (await api.searchForNotes("#_userHidden"))?.[0];
+        const configRoot = (await searchIncludingHidden("#extConfig"))?.[0] || (await searchIncludingHidden("#_userHidden"))?.[0];
         if (!configRoot) return;
         let logNote = (await api.searchForNotes("#extMigrationLog"))?.[0];
         const timestamp = (/* @__PURE__ */ new Date()).toISOString();
@@ -1042,6 +1141,17 @@ ${entry}`);
         console.warn("[Ikmal Tools] Config note not found; first-run marker was not written.");
       }
     }
+    async function repairCurrentWorkspaceBranches() {
+      const packageNotes = await searchIncludingHidden("#packageArtifact");
+      const projectNotes = packageNotes.filter((note) => [
+        "notes-system-project-dashboard",
+        "notes-system-project-dashboard-script"
+      ].includes(note.getOwnedLabelValue?.("packageArtifact")));
+      const projectCode = packageCode("notes-system-project-dashboard", projectNotes);
+      if (projectCode) await attachProjectDashboards(projectCode);
+      await repairTodayBranches();
+      await ensureBackendEventWiring();
+    }
     let repairPromise = null;
     window.__ikmal_workspace_repair = () => {
       if (!repairPromise) {
@@ -1068,6 +1178,7 @@ ${entry}`);
       });
     };
     runFirstRunBootstrapIfNeeded().catch((error) => console.warn(`[Ikmal Tools] First-run workspace setup could not complete: ${error.message}`)).finally(() => {
+      repairCurrentWorkspaceBranches().catch((error) => console.warn(`[Ikmal Tools] Workspace branch repair skipped: ${error.message}`));
       checkTodayAlignment();
       window.addEventListener("focus", checkTodayAlignment, { passive: true });
       window.setInterval(checkTodayAlignment, 6e4);

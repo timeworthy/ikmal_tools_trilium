@@ -49,6 +49,8 @@ test('launcher registers native configurable launchbar entries', () => {
     assert.match(launcherSource, /\(e\.ctrlKey \|\| e\.metaKey\) && e\.key === '\?' /);
     assert.match(launcherSource, /Cmd \/ Ctrl \+ \?/);
     assert.match(launcherSource, /getParentBranches/);
+    assert.match(launcherSource, /storyDraftEditorUIInFlight/);
+    assert.match(launcherSource, /finally\(\(\) => storyDraftEditorUIInFlight\.delete\(container\)\)/);
     assert.doesNotMatch(launcherSource, /legacyTitles/);
     assert.doesNotMatch(launcherSource, /removeLegacyLaunchers/);
     assert.doesNotMatch(launcherSource, /deleteNote\(\)/);
@@ -77,20 +79,47 @@ test('focused Today page hides the workspace Open Tasks widget and repairs daily
     assert.doesNotMatch(homepageSource, /api\.createNote\(project\.noteId/);
 });
 
-test('daily repair does not pull story projects into newly opened journals', () => {
+test('daily repair restores same-day project files as well as ordinary captures', () => {
     const bootstrapSource = fs.readFileSync(new URL('src/artifacts/notes-system-workspace-bootstrap.js', root), 'utf8');
     const dailyRepairSource = fs.readFileSync(new URL('src/backend/daily-note-repair.backend.js', root), 'utf8');
     const repairBody = bootstrapSource.match(/async function repairTodayBranches\(\) \{([\s\S]*?)\n    \}\n\n    function isDailyNote/)[1];
 
-    assert.doesNotMatch(repairBody, /extStoryDraft|extReportingNotes/);
-    assert.doesNotMatch(dailyRepairSource, /extStoryDraft|extReportingNotes/);
-    assert.match(bootstrapSource, /explicit New Story workflow/);
-    assert.match(dailyRepairSource, /explicit New Story/);
+    assert.match(repairBody, /extStoryDraft|extReportingNotes/);
+    assert.match(dailyRepairSource, /extStoryDraft|extReportingNotes/);
+    assert.match(dailyRepairSource, /extProjectHub|extTopic|extPerson|extOrganization/);
+    assert.match(bootstrapSource, /extProjectHub|extTopic|extPerson|extOrganization/);
+    assert.match(bootstrapSource, /legacy repair/);
+    assert.match(dailyRepairSource, /legacy repair/);
     assert.match(bootstrapSource, /projectId !== dailyNote\.noteId/);
     assert.match(bootstrapSource, /owned markers only/);
     assert.match(bootstrapSource, /Saturday\)\$\/\.test/);
     assert.match(bootstrapSource, /toggle-in-parent\/\$\{parentNoteId\}\/false/);
     assert.match(bootstrapSource, /would orphan\/delete the note/);
+});
+
+test('project dashboard gives the round number less space than the story name', () => {
+    const source = fs.readFileSync(new URL('src/artifacts/notes-system-project-dashboard.js', root), 'utf8');
+
+    assert.match(source, /ikmal-rounds-table/);
+    assert.match(source, /ikmal-rounds-table th:first-child[\s\S]*?width: 14%/);
+    assert.match(source, /ikmal-rounds-table th:nth-child\(2\)[\s\S]*?width: 66%/);
+});
+
+test('change hooks file touched work notes into Today idempotently', () => {
+    const metadataSource = fs.readFileSync(new URL('src/backend/project-metadata-sync.backend.js', root), 'utf8');
+    const topicSource = fs.readFileSync(new URL('src/backend/topic-association-sync.backend.js', root), 'utf8');
+
+    for (const source of [metadataSource, topicSource]) {
+        assert.match(source, /isTouchedWorkNote/);
+        assert.match(source, /getTodayNote/);
+        assert.match(source, /ensureNoteIsPresentInParent\(origin\.noteId, today\.noteId/);
+        assert.match(source, /extProjectHub/);
+        assert.match(source, /extTask/);
+        assert.match(source, /extPerson/);
+        assert.match(source, /extOrganization/);
+        assert.match(source, /extTopic/);
+        assert.match(source, /packageOwner/);
+    }
 });
 
 test('workspace bootstrap is a startup artifact and project dashboards are render artifacts', () => {
@@ -108,9 +137,14 @@ test('workspace bootstrap is a startup artifact and project dashboards are rende
     assert.match(source, /type === 'label' && typeof api !== 'undefined'/);
     assert.match(source, /getFreshOwnedRelationTarget/);
     assert.match(source, /notes\/\$\{noteId\}\/attributes/);
-    assert.match(source, /!freshRelation\.available \|\| currentTarget !== todayCode\.noteId/);
+    assert.match(source, /const maxAttempts = 3/);
+    assert.match(source, /attempt \+ 1 < maxAttempts/);
+    assert.match(source, /freshRelation\.available && currentTarget !== todayCode\.noteId/);
+    assert.doesNotMatch(source, /!freshRelation\.available \|\| currentTarget !== todayCode\.noteId/);
     assert.match(source, /setInterval\(checkTodayAlignment, 60_000\)/);
     assert.match(source, /attachProjectDashboards/);
+    assert.match(source, /collectTreeDescendants/);
+    assert.match(source, /localDayKey/);
     assert.match(source, /Dashboard: \$\{project\.title\}/);
     assert.match(source, /#extTemplate/);
     assert.match(source, /projectHub/);
@@ -121,7 +155,11 @@ test('workspace bootstrap is a startup artifact and project dashboards are rende
     assert.match(source, /disableLegacyStartupScripts/);
     assert.match(source, /Today Dashboard/);
     assert.match(source, /note\.removeLabel\('run'\)/);
+    assert.match(source, /const applied = await api\.runOnBackend/);
+    assert.match(source, /if \(applied\) continue;/);
     assert.match(source, /toggle-in-parent/);
+    assert.match(source, /result\?\.success === true/);
+    assert.match(source, /searchIncludingHidden\(`#\$\{c\.marker\}`\)/);
     assert.match(source, /quick-search/);
     assert.match(source, /notes\/\$\{noteId\}\/title/);
     assert.doesNotMatch(source, /notes\/\$\{reporting\.noteId\}\/data/);
@@ -136,10 +174,14 @@ test('project dashboards support legacy hubs and show live related work', () => 
     assert.match(source, /searchRelated/);
     assert.match(source, /Awaiting replies & follow-ups/);
     assert.match(source, /Archive project/);
+    assert.match(source, /if \(!response\.ok\)/);
+    assert.match(source, /result\?\.success === false/);
     assert.match(source, /container-type: inline-size/);
     assert.match(source, /@container project-dashboard/);
     assert.match(source, /getParentNoteIds/);
     assert.match(source, /getParentNotes/);
+    assert.match(source, /attempt < 20/);
+    assert.match(source, /context is still being assembled/);
 });
 
 test('a fresh install provisions itself once, and the watchdog never creates', () => {
@@ -223,6 +265,7 @@ test('Today has a separate visible page from the workspace settings dashboard', 
     assert.match(source, /showEditor: false/);
     assert.match(source, /showJournalCard: true/);
     assert.match(homepageSource, /renderActiveProjects/);
-    assert.match(homepageSource, /#kind AND #status = active/);
+    assert.match(homepageSource, /#activeProjectRoot/);
+    assert.match(homepageSource, /Membership in the Active branch is authoritative/);
     assert.doesNotMatch(source, /renderSettingsStudio/);
 });

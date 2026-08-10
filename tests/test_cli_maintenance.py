@@ -207,6 +207,28 @@ class CliMaintenanceTest(unittest.TestCase):
         self.assertEqual(updated, 1)
         self.api.set_content.assert_called_once_with("day_1", "<h2>Notes</h2><p></p>")
 
+    def test_remove_retired_daily_sections_handles_daily_note_wrapper(self):
+        """The daily-note wrapper must not hide an empty trailing Day start section."""
+        self.api.find_by_label.side_effect = lambda marker: {
+            "calendarRoot": "cal_root",
+        }.get(marker)
+        self.api.get_content.side_effect = lambda note_id: (
+            "<style>.daily-note p{min-height:1.4em}</style>"
+            "<div class='daily-note'>"
+            "<h2>Notes</h2><p></p><h2>Day start</h2><p></p>"
+            "</div>"
+        )
+        self.api.search.return_value = [{"noteId": "day_1"}]
+
+        updated = cli.remove_retired_daily_sections(self.api)
+
+        self.assertEqual(updated, 1)
+        self.api.set_content.assert_called_once_with(
+            "day_1",
+            "<style>.daily-note p{min-height:1.4em}</style>"
+            "<div class='daily-note'><h2>Notes</h2><p></p></div>",
+        )
+
     def test_version_matches_package_manifest(self):
         manifest = json.loads(
             (Path(__file__).resolve().parents[1] / "trilium-package.json").read_text()

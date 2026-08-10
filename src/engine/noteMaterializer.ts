@@ -38,7 +38,7 @@ interface CreateNoteOpts {
     attributes?: Array<{ type: 'label' | 'relation'; name: string; value?: string; isInheritable?: boolean }>;
 }
 
-interface TriliumFrontendApi {
+export interface TriliumFrontendApi {
     searchForNote(searchString: string): Promise<TriliumFNote | null>;
     searchForNotes(searchString: string): Promise<TriliumFNote[]>;
     searchForNotesIncludingHidden?(searchString: string): Promise<TriliumFNote[]>;
@@ -46,10 +46,11 @@ interface TriliumFrontendApi {
     getNote?(noteId: string): Promise<TriliumFNote | null>;
     createNote(parentNotePath: string, opts?: CreateNoteOpts): Promise<{ note: TriliumFNote | null }>;
     getTodayNote(): Promise<TriliumFNote | null>;
+    showMessage?(msg: string): void;
 }
 
-function triliumApi(): TriliumFrontendApi | null {
-    const a = (globalThis as any).api;
+function triliumApi(explicitApi?: TriliumFrontendApi | null): TriliumFrontendApi | null {
+    const a = explicitApi || (globalThis as any).api;
     return a && typeof a.createNote === 'function' ? a : null;
 }
 
@@ -109,8 +110,8 @@ export function applyDerivedTopics(
     }
 }
 
-async function cloneNoteToParentNote(childNoteId: string, parentNoteId: string): Promise<void> {
-    const frontendApi = (globalThis as any).api;
+async function cloneNoteToParentNote(childNoteId: string, parentNoteId: string, explicitApi?: TriliumFrontendApi | null): Promise<void> {
+    const frontendApi = explicitApi || (globalThis as any).api;
     if (frontendApi && typeof frontendApi.runOnBackend === 'function') {
         try {
             const applied = await frontendApi.runOnBackend((cId: string, pId: string) => {
@@ -155,6 +156,16 @@ async function cloneNoteToParentNote(childNoteId: string, parentNoteId: string):
     if (!response.ok) {
         throw new Error(`Failed to file the note under ${parentNoteId} (HTTP ${response.status})`);
     }
+    const result = await response.json().catch(() => null);
+    if (result?.success === false) {
+        throw new Error(`Trilium refused to file the note under ${parentNoteId}`);
+    }
+}
+
+async function resolveContainerMarker(api: TriliumFrontendApi, marker: string): Promise<string | null> {
+    if (!marker) return null;
+    const note = await api.searchForNote(`#${marker}`);
+    return note?.noteId || null;
 }
 
 async function setNoteAttribute(
@@ -162,7 +173,27 @@ async function setNoteAttribute(
     type: 'label' | 'relation',
     name: string,
     value: string,
+    explicitApi?: TriliumFrontendApi | null,
 ): Promise<void> {
+    const frontendApi = explicitApi || (globalThis as any).api;
+    if (frontendApi && typeof frontendApi.runOnBackend === 'function') {
+        try {
+            const applied = await frontendApi.runOnBackend(
+                (nId: string, aType: string, aName: string, aValue: string) => {
+                    if (typeof api === 'undefined') return false;
+                    const note = api.getNote?.(nId);
+                    if (!note) return false;
+                    if (aType === 'label') note.setLabel(aName, aValue || '');
+                    else if (aType === 'relation') note.setRelation(aName, aValue || '');
+                    else return false;
+                    return true;
+                },
+                [noteId, type, name, value],
+            );
+            if (applied) return;
+        } catch {}
+    }
+
     const glob = (globalThis as any).glob;
     if (!glob) throw new Error('Not running inside Trilium.');
 
@@ -195,6 +226,8 @@ async function setNoteAttribute(
         }
     }
     if (!response.ok) throw new Error(`Failed to set ${name} (HTTP ${response.status})`);
+    const result = await response.json().catch(() => null);
+    if (result?.success === false) throw new Error(`Trilium refused to set ${name}`);
 }
 
 async function searchManagedPackageNotes(api: TriliumFrontendApi): Promise<TriliumFNote[]> {
@@ -213,8 +246,8 @@ async function searchManagedPackageNotes(api: TriliumFrontendApi): Promise<Trili
     return await api.getNotes(result.searchResultNoteIds || [], true);
 }
 
-async function attachProjectDashboard(noteId: string): Promise<void> {
-    const api = triliumApi();
+async function attachProjectDashboard(noteId: string, explicitApi?: TriliumFrontendApi | null): Promise<void> {
+    const api = triliumApi(explicitApi);
     if (!api) return;
 
     const dashboardNotes = await searchManagedPackageNotes(api);
@@ -234,8 +267,8 @@ async function attachProjectDashboard(noteId: string): Promise<void> {
         activate: false,
     });
     if (!dashboard) throw new Error('Trilium did not return the project dashboard.');
-    await setNoteAttribute(dashboard.noteId, 'label', 'extProjectDashboard', 'projectHub');
-    await setNoteAttribute(dashboard.noteId, 'relation', 'renderNote', dashboardCode.noteId);
+    await setNoteAttribute(dashboard.noteId, 'label', 'extProjectDashboard', 'projectHub', api);
+    await setNoteAttribute(dashboard.noteId, 'relation', 'renderNote', dashboardCode.noteId, api);
 }
 
 /** Pure — the part of "where does this note go" that doesn't need Trilium, so it's unit-testable. */
@@ -333,9 +366,10 @@ export async function materializeNoteCreation(
     options?: {
         relationshipEngine?: RelationshipEngine;
         topicFetcher?: (noteId: string) => Promise<string[]>;
+        api?: TriliumFrontendApi | null;
     }
 ): Promise<MaterializeResult> {
-    const api = triliumApi();
+    const api = triliumApi(options?.api);
     if (!api) throw new Error('Not running inside Trilium.');
 
     if (plan.inheritedTopicSources && plan.inheritedTopicSources.length > 0) {
@@ -367,7 +401,7 @@ export async function materializeNoteCreation(
             if (hub) {
                 const hubStatus = hub.getOwnedLabelValue?.('status');
                 if (hubStatus === 'complete' || hubStatus === 'archived') {
-                    await reopenProjectNote(hub.noteId);
+                    await reopenProjectNote(hub.noteId, api);
                 }
                 const children = typeof hub.getChildNotes === 'function' ? await hub.getChildNotes() : [];
                 const rounds = children
@@ -386,7 +420,7 @@ export async function materializeNoteCreation(
                     plan.formattedTitle = `${plan.formattedTitle} — ${roundLabel} ${nextRoundNum}`;
                 }
 
-                await setNoteAttribute(hub.noteId, 'label', 'currentRound', String(nextRoundNum));
+                await setNoteAttribute(hub.noteId, 'label', 'currentRound', String(nextRoundNum), api);
 
                 const clientRel = hub.getRelations?.('client')?.[0];
                 const clientId = clientRel?.value || clientRel?.targetNoteId;
@@ -423,7 +457,7 @@ export async function materializeNoteCreation(
     // A Project Hub is a user-facing workspace note. Attach its dashboard at creation time.
     if (plan.templateId === 'projectHub') {
         try {
-            await attachProjectDashboard(note.noteId);
+            await attachProjectDashboard(note.noteId, api);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             console.warn(`[Ikmal Tools] Project dashboard attachment deferred: ${message}`);
@@ -432,14 +466,21 @@ export async function materializeNoteCreation(
 
     const clonedUnder: string[] = [];
     for (const containerId of plan.autoCloneContainers) {
-        await cloneNoteToParentNote(note.noteId, containerId);
+        await cloneNoteToParentNote(note.noteId, containerId, api);
+        clonedUnder.push(containerId);
+    }
+
+    for (const marker of plan.autoCloneContainerMarkers ?? []) {
+        const containerId = await resolveContainerMarker(api, marker);
+        if (!containerId || clonedUnder.includes(containerId)) continue;
+        await cloneNoteToParentNote(note.noteId, containerId, api);
         clonedUnder.push(containerId);
     }
 
     if (plan.journalClone) {
         const journalNote = await api.getTodayNote();
         if (journalNote) {
-            await cloneNoteToParentNote(note.noteId, journalNote.noteId);
+            await cloneNoteToParentNote(note.noteId, journalNote.noteId, api);
             clonedUnder.push(journalNote.noteId);
         }
     }
@@ -461,7 +502,7 @@ export async function materializeNoteCreation(
             const journalNote = await api.getTodayNote();
             if (journalNote) {
                 try {
-                    await cloneNoteToParentNote(childNote.noteId, journalNote.noteId);
+                    await cloneNoteToParentNote(childNote.noteId, journalNote.noteId, api);
                 } catch {
                     // Non-critical journal clone
                 }
@@ -471,7 +512,7 @@ export async function materializeNoteCreation(
 
     if (['task', 'projectTask', 'story', 'edit'].includes(plan.templateId)) {
         try {
-            await reconcileProjectHubStatuses();
+            await reconcileProjectHubStatuses(api);
         } catch {
             // Non-critical auto-reconciliation
         }
@@ -480,8 +521,8 @@ export async function materializeNoteCreation(
     return { noteId: note.noteId, title: note.title, clonedUnder, childNoteIds };
 }
 
-async function removeNoteFromParentNote(childNoteId: string, parentNoteId: string): Promise<void> {
-    const frontendApi = (globalThis as any).api;
+async function removeNoteFromParentNote(childNoteId: string, parentNoteId: string, explicitApi?: TriliumFrontendApi | null): Promise<void> {
+    const frontendApi = explicitApi || (globalThis as any).api;
     if (frontendApi && typeof frontendApi.runOnBackend === 'function') {
         try {
             const applied = await frontendApi.runOnBackend((cId: string, pId: string) => {
@@ -522,51 +563,61 @@ async function removeNoteFromParentNote(childNoteId: string, parentNoteId: strin
             response = await send();
         }
     }
+
+    if (!response.ok && response.status !== 404) {
+        throw new Error(`Failed to remove note ${childNoteId} from ${parentNoteId} (HTTP ${response.status})`);
+    }
+    if (response.ok) {
+        const result = await response.json().catch(() => null);
+        if (result?.success === false) {
+            throw new Error(`Trilium refused to remove note ${childNoteId} from ${parentNoteId}`);
+        }
+    }
 }
 
 /** Archives a Project Hub by setting status: complete and moving it to #archiveProjectRoot. */
-export async function archiveProjectNote(hubNoteId: string): Promise<void> {
-    const api = triliumApi();
+export async function archiveProjectNote(hubNoteId: string, explicitApi?: TriliumFrontendApi | null): Promise<void> {
+    const api = triliumApi(explicitApi);
     if (!api) return;
     const archiveRoot = await api.searchForNote('#archiveProjectRoot');
     const activeRoot = await api.searchForNote('#activeProjectRoot');
     const projectRoot = await api.searchForNote('#projectRoot');
 
     if (archiveRoot) {
-        await cloneNoteToParentNote(hubNoteId, archiveRoot.noteId);
+        await cloneNoteToParentNote(hubNoteId, archiveRoot.noteId, api);
     }
     if (activeRoot) {
-        try { await removeNoteFromParentNote(hubNoteId, activeRoot.noteId); } catch {}
+        await removeNoteFromParentNote(hubNoteId, activeRoot.noteId, api);
     }
     if (projectRoot) {
-        try { await removeNoteFromParentNote(hubNoteId, projectRoot.noteId); } catch {}
+        await removeNoteFromParentNote(hubNoteId, projectRoot.noteId, api);
     }
-    await setNoteAttribute(hubNoteId, 'label', 'status', 'complete');
+    await setNoteAttribute(hubNoteId, 'label', 'status', 'complete', api);
 }
 
 /** Reopens an Archived Project Hub by setting status: active and moving it to #activeProjectRoot. */
-export async function reopenProjectNote(hubNoteId: string): Promise<void> {
-    const api = triliumApi();
+export async function reopenProjectNote(hubNoteId: string, explicitApi?: TriliumFrontendApi | null): Promise<void> {
+    const api = triliumApi(explicitApi);
     if (!api) return;
     const activeRoot = await api.searchForNote('#activeProjectRoot');
     const archiveRoot = await api.searchForNote('#archiveProjectRoot');
     const projectRoot = await api.searchForNote('#projectRoot');
 
     if (activeRoot) {
-        await cloneNoteToParentNote(hubNoteId, activeRoot.noteId);
+        await cloneNoteToParentNote(hubNoteId, activeRoot.noteId, api);
     }
     if (archiveRoot) {
-        try { await removeNoteFromParentNote(hubNoteId, archiveRoot.noteId); } catch {}
+        await removeNoteFromParentNote(hubNoteId, archiveRoot.noteId, api);
     }
     if (projectRoot) {
-        try { await removeNoteFromParentNote(hubNoteId, projectRoot.noteId); } catch {}
+        await removeNoteFromParentNote(hubNoteId, projectRoot.noteId, api);
     }
-    await setNoteAttribute(hubNoteId, 'label', 'status', 'active');
+    await setNoteAttribute(hubNoteId, 'label', 'status', 'active', api);
 }
 
 /** Reconciles project hub statuses based on child story draft round states. */
-export async function reconcileProjectHubStatuses(): Promise<number> {
-    const api = triliumApi();
+export async function reconcileProjectHubStatuses(explicitApi?: TriliumFrontendApi | null): Promise<number> {
+    const api = triliumApi(explicitApi);
     if (!api || typeof api.searchForNotes !== 'function') return 0;
 
     const hubs = await api.searchForNotes('#extTemplate=projectHub') || [];
@@ -611,14 +662,12 @@ export async function reconcileProjectHubStatuses(): Promise<number> {
         const isLatestDone = latestStatus === 'done' || latestStatus === 'approved' || latestStatus === 'published' || Boolean(latestDraft.getOwnedLabelValue?.('doneDate'));
 
         if (isLatestDone && status !== 'complete') {
-            await archiveProjectNote(hub.noteId);
+            await archiveProjectNote(hub.noteId, api);
             updated++;
         } else if (!isLatestDone && (status === 'complete' || status === 'archived')) {
-            await reopenProjectNote(hub.noteId);
+            await reopenProjectNote(hub.noteId, api);
             updated++;
         }
     }
     return updated;
 }
-
-

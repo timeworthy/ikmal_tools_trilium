@@ -56,7 +56,7 @@ package owns editor statistics, LanguageTool integration, and editor diagnostics
 | `notes-system-css` | stylesheet | `dist/artifacts/notes-system.css` | Theme & UI Stylesheet |
 | `notes-system-workspace-bootstrap` | frontend startup script | `dist/artifacts/notes-system-workspace-bootstrap.js` | Idempotently creates/repairs the visible Today entry and Project Hub dashboard links |
 
-The workspace dashboard render note mounts three tabs (Today, Template Studio, Settings) into a container div and owns state in memory for the session. The workspace bootstrap repairs the visible Today render relation, restores same-day journal branches for Ikmal-created notes, updates or creates Project Dashboard render children for current and legacy Project Hubs, removes only Ikmal-generated Open Tasks and Day start structure from daily-note bodies, and archives a stray package-created Project Dashboard if it is attached only to a daily note. It preserves user-entered text and is idempotent: it does not remove legitimate project branches or create duplicate dashboard children. Package artifacts are discovered through the authenticated hidden-note search path, while user-authored project and journal notes remain in their normal tree locations.
+The workspace dashboard render note mounts three tabs (Today, Template Studio, Settings) into a container div and owns state in memory for the session. The workspace bootstrap repairs the visible Today render relation, restores same-day journal branches for Ikmal-created notes, and the inherited project/topic change hooks also file any project, task, person, organization, topic, or other work note edited during the day under that day's Journal note. It updates or creates Project Dashboard render children for current and legacy Project Hubs, removes only Ikmal-generated Open Tasks and Day start structure from daily-note bodies, and archives a stray package-created Project Dashboard if it is attached only to a daily note. It preserves user-entered text and is idempotent: it does not remove legitimate project branches or create duplicate dashboard children. Package artifacts are discovered through the authenticated hidden-note search path, while user-authored project and journal notes remain in their normal tree locations.
 
 The visible Today page and the workspace dashboard share the same widget renderer, but have different responsibilities: the file-tree Today page is a focused daily workspace without the workspace Open Tasks board, while the dashboard retains that board along with layout editing, Template Studio, and package settings. Its journal button reuses the existing daily-note split, applies the saved journal-width percentage after Trilium initializes the split, and replaces the existing journal context when the date changes.
 
@@ -126,7 +126,9 @@ back to an in-memory store so the same code path runs everywhere.
 copy** of one real specification — useful as a starting point or an export
 target — not something the running plugin reads automatically. Edit it in the
 Settings tab's Specification editor and use Copy/Save there; the file on disk
-doesn't sync itself.
+doesn't sync itself. If the saved specification is missing or you clear the
+editor and save, the Settings tab loads a small starter specification while the
+built-in templates and automation remain active underneath.
 
 ## Creating notes
 

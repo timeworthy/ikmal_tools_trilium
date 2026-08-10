@@ -13,7 +13,7 @@ import { RelationshipEngine } from '../engine/relationshipEngine.js';
 import { IfThenRuleEngine } from '../engine/ifThenRuleEngine.js';
 import { AutomationSettings, SettingsEngine } from '../engine/settingsEngine.js';
 import { saveAutomationSetting } from '../engine/packagePersistence.js';
-import { dumpYamlSpec, parseAndApplyYamlSpec, exportTemplateToYaml, importTemplateFromYaml } from '../engine/yamlSpec.js';
+import { DEFAULT_STARTER_YAML_SPEC, dumpYamlSpec, parseAndApplyYamlSpec, exportTemplateToYaml, importTemplateFromYaml } from '../engine/yamlSpec.js';
 import { escapeHtml, iconAction, listItem, openModal, pageHeader, row, section, switchRow } from './nativeUi.js';
 
 export function renderSettingsStudio(
@@ -23,11 +23,14 @@ export function renderSettingsStudio(
     relationshipEngine: RelationshipEngine,
     ifThenRuleEngine: IfThenRuleEngine,
     settingsEngine: SettingsEngine,
-    onSaveSettings?: (yamlSpec: string) => Promise<void>
+    onSaveSettings?: (yamlSpec: string) => Promise<void>,
+    initialYamlSpec?: string,
+    frontendApi?: any,
 ): void {
     let importError = '';
     let importSuccess = '';
     let settingsError = '';
+    let currentYamlSpec = initialYamlSpec;
 
     function render() {
         container.innerHTML = '';
@@ -104,7 +107,7 @@ export function renderSettingsStudio(
         card.appendChild(switchRow({
             id: 'autoJournalCloneToggle',
             label: "File new notes under today's journal note",
-            description: "Master switch for the per-category setting in Template Studio. Off disables journal filing everywhere; on, each category still decides for itself, and a note already auto-cloned to a project never also files under the journal.",
+            description: "Master switch for the per-category setting in Template Studio. Off disables journal filing everywhere; on, project work is filed under both its project and today's journal.",
             checked: settingsEngine.get('autoJournalClone'),
             onChange: (checked) => applySetting('autoJournalClone', checked),
         }));
@@ -223,7 +226,7 @@ export function renderSettingsStudio(
         const previous = settingsEngine.get(key);
         settingsEngine.set(key, value);
         settingsError = '';
-        saveAutomationSetting(key, value as any).catch((err: Error) => {
+        saveAutomationSetting(key, value as any, frontendApi).catch((err: Error) => {
             settingsEngine.set(key, previous);
             settingsError = `Could not save this setting: ${err.message}`;
             render();
@@ -237,6 +240,7 @@ export function renderSettingsStudio(
             relationshipEngine,
             ifThenRuleEngine
         );
+        const editorContent = currentYamlSpec ?? yamlContent;
 
         const { card } = section(parent, {
             title: 'Specification',
@@ -258,7 +262,7 @@ export function renderSettingsStudio(
         const field = document.createElement('div');
         field.className = 'ns-field';
         field.innerHTML = `
-            <textarea class="form-control ns-code" rows="18" spellcheck="false">${escapeHtml(yamlContent)}</textarea>
+            <textarea class="form-control ns-code" rows="18" spellcheck="false">${escapeHtml(editorContent)}</textarea>
         `;
         card.appendChild(field);
 
@@ -363,7 +367,9 @@ export function renderSettingsStudio(
         });
 
         actions.querySelector<HTMLButtonElement>('.save-yaml-btn')!.addEventListener('click', () => {
-            const res = parseAndApplyYamlSpec(textarea.value, todayEngine, templateEngine, ifThenRuleEngine);
+            const hasCustomSpec = Boolean(textarea.value.trim());
+            const yamlToApply = hasCustomSpec ? textarea.value : DEFAULT_STARTER_YAML_SPEC;
+            const res = parseAndApplyYamlSpec(yamlToApply, todayEngine, templateEngine, ifThenRuleEngine);
             if (!res.success) {
                 importError = res.message;
                 importSuccess = '';
@@ -371,12 +377,15 @@ export function renderSettingsStudio(
                 return;
             }
 
-            importSuccess = res.message;
+            currentYamlSpec = yamlToApply;
+            importSuccess = hasCustomSpec
+                ? res.message
+                : 'Loaded the starter specification. Built-in templates and automation remain active until you add custom sections.';
             importError = '';
             render();
 
             if (onSaveSettings) {
-                onSaveSettings(textarea.value).catch((err: Error) => {
+                onSaveSettings(yamlToApply).catch((err: Error) => {
                     importError = `Applied in this session, but could not save to the manifest note: ${err.message}`;
                     importSuccess = '';
                     render();
@@ -410,7 +419,7 @@ export function renderSettingsStudio(
             statusBox.className = 'alert alert-info';
             statusBox.textContent = 'Sweeping active project hubs and reconciling completed edit rounds...';
             try {
-                const api = (globalThis as any).api;
+                const api = frontendApi || (globalThis as any).api;
                 if (!api || typeof api.searchForNotes !== 'function') {
                     statusBox.className = 'alert alert-warning';
                     statusBox.textContent = 'Project reconciliation requires live Trilium session context.';
@@ -474,7 +483,7 @@ export function renderSettingsStudio(
             statusBox.className = 'alert alert-info';
             statusBox.textContent = 'Running system health verification...';
             try {
-                const api = (globalThis as any).api;
+                const api = frontendApi || (globalThis as any).api;
                 if (!api || typeof api.searchForNotes !== 'function') {
                     statusBox.className = 'alert alert-warning';
                     statusBox.textContent = 'System verification requires live Trilium session context.';

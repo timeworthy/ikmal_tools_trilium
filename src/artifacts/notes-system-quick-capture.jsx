@@ -12,6 +12,7 @@ import { NoteCreationEngine } from '../engine/noteCreationEngine.js';
 import { SettingsEngine } from '../engine/settingsEngine.js';
 import { showQuickCaptureModal } from '../components/QuickCaptureModal.js';
 import { button, section } from '../components/nativeUi.js';
+import { loadRuntimeModel } from '../engine/runtimeModel.js';
 
 export function initNotesSystemQuickCapture(containerEl) {
     const templateEngine = new TemplateEngine();
@@ -20,6 +21,8 @@ export function initNotesSystemQuickCapture(containerEl) {
     const todayEngine = new TodayEngine();
     const settingsEngine = new SettingsEngine();
     const noteCreationEngine = new NoteCreationEngine(templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine);
+    const frontendApi = typeof api !== 'undefined' ? api : null;
+    const modelReady = loadRuntimeModel(templateEngine, todayEngine, ifThenRuleEngine, settingsEngine, frontendApi);
 
     const shell = document.createElement('div');
     shell.className = 'notes-system-shell p-3';
@@ -38,7 +41,12 @@ export function initNotesSystemQuickCapture(containerEl) {
         actions.appendChild(button({
             text: tpl.title,
             icon: `bx-${tpl.icon}`,
-            onClick: () => showQuickCaptureModal(tpl.id, templateEngine, noteCreationEngine),
+            onClick: async () => {
+                await modelReady;
+                return showQuickCaptureModal(tpl.id, templateEngine, noteCreationEngine, undefined, undefined, {
+                    api: frontendApi,
+                });
+            },
         }));
     }
 

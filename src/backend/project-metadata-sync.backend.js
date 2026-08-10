@@ -19,6 +19,59 @@ if (originEntity.type === 'relation' && originEntity.name === 'derivedTopic') {
 }
 
 const origin = api.getNote(originEntity.noteId);
+if (!origin) {
+    return;
+}
+
+// A Journal branch is the day's work index. Creation-time cloning covers new
+// notes, but an existing Project Hub or one of its files can be edited later
+// in the day. This hook already receives project-tree note/attribute changes,
+// so keep that second filing path here and make it idempotent.
+const ownedMarker = (note, name, value) => {
+    const actual = note?.getOwnedLabelValue?.(name);
+    return value === undefined
+        ? actual !== undefined && actual !== null
+        : actual === value;
+};
+
+const isTouchedWorkNote = (note) => {
+    if (!note || note.isInHiddenSubtree?.()) return false;
+    if (ownedMarker(note, 'packageOwner') || ownedMarker(note, 'packageArtifact')) return false;
+    if (ownedMarker(note, 'dateNote') || ownedMarker(note, 'calendarRoot') || ownedMarker(note, 'todayRoot')) return false;
+    return ownedMarker(note, 'extProjectHub')
+        || ownedMarker(note, 'extTask')
+        || ownedMarker(note, 'extStoryDraft')
+        || ownedMarker(note, 'extReportingNotes')
+        || ownedMarker(note, 'extMeeting')
+        || ownedMarker(note, 'extEmailDraft')
+        || ownedMarker(note, 'extScratch')
+        || ownedMarker(note, 'extPerson')
+        || ownedMarker(note, 'extOrganization')
+        || ownedMarker(note, 'extTopic')
+        || ownedMarker(note, 'extTemplate', 'projectHub')
+        || ownedMarker(note, 'extTemplate', 'person')
+        || ownedMarker(note, 'extTemplate', 'organization')
+        || ownedMarker(note, 'extTemplate', 'topic')
+        || ownedMarker(note, 'noteType', 'projectHub')
+        || ownedMarker(note, 'noteType', 'task')
+        || ownedMarker(note, 'noteType', 'projectTask')
+        || ownedMarker(note, 'noteType', 'person')
+        || ownedMarker(note, 'noteType', 'organization')
+        || ownedMarker(note, 'noteType', 'topic')
+        || ownedMarker(note, 'noteGroup', 'people')
+        || ownedMarker(note, 'noteGroup', 'organization');
+};
+
+if (isTouchedWorkNote(origin)) {
+    try {
+        const today = api.getTodayNote();
+        if (today && today.noteId !== origin.noteId) {
+            api.ensureNoteIsPresentInParent(origin.noteId, today.noteId, '');
+        }
+    } catch (error) {
+        api.log(`Daily touch filing skipped ${origin.noteId}: ${error.message}`);
+    }
+}
 
 const DERIVED_TOPIC_SOURCE_RELATIONS = new Set([
     'project',
@@ -262,4 +315,3 @@ if (typeof api.transactional === 'function') {
 } else {
     sync();
 }
-

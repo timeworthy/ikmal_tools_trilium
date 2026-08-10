@@ -14,22 +14,34 @@ import { SettingsEngine } from '../engine/settingsEngine.js';
 import { renderTodayHomepage } from '../components/TodayHomepage.js';
 import { TemplateEngine } from '../engine/templateEngine.js';
 import { showQuickCaptureModal } from '../components/QuickCaptureModal.js';
+import { loadRuntimeModel } from '../engine/runtimeModel.js';
 
 export function initNotesSystemTodayPage(containerEl) {
     const templateEngine = new TemplateEngine();
     const relationshipEngine = new RelationshipEngine(templateEngine);
     const ifThenRuleEngine = new IfThenRuleEngine();
+    const todayEngine = new TodayEngine();
     const settingsEngine = new SettingsEngine();
     const noteCreationEngine = new NoteCreationEngine(templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine);
+    const frontendApi = typeof api !== 'undefined' ? api : null;
+    const modelReady = loadRuntimeModel(templateEngine, todayEngine, ifThenRuleEngine, settingsEngine, frontendApi);
 
-    renderTodayHomepage(
+    let refreshHomepage;
+    refreshHomepage = renderTodayHomepage(
         containerEl,
-        new TodayEngine(),
+        todayEngine,
         templateEngine,
-        (templateId) => showQuickCaptureModal(templateId, templateEngine, noteCreationEngine),
+        async (templateId) => {
+            await modelReady;
+            return showQuickCaptureModal(templateId, templateEngine, noteCreationEngine, () => {
+                refreshHomepage?.();
+            }, undefined, {
+                api: frontendApi,
+            });
+        },
         settingsEngine,
         {
-            api: typeof api !== 'undefined' ? api : null,
+            api: frontendApi,
             showEditor: false,
             showHeader: false,
             showJournalCard: true,

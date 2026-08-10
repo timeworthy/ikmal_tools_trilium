@@ -12,6 +12,7 @@ import { TemplateEngine } from '../engine/templateEngine.js';
 import { IfThenRuleEngine } from '../engine/ifThenRuleEngine.js';
 import { TemplateDefinition, TemplateCategoryDef, IfThenRuleDef, PromotedAttributeDef } from '../engine/types.js';
 import { exportTemplateToYaml, importTemplateFromYaml } from '../engine/yamlSpec.js';
+import { runManualIfThenRules } from '../engine/ifThenManualDispatcher.js';
 import { button, emptyState, escapeHtml, iconAction, listItem, openModal, pageHeader, row, searchableSelect, section, switchRow, toggle } from './nativeUi.js';
 
 /** The rail's template hierarchy. Ids reference templates registered in the engine. */
@@ -60,7 +61,8 @@ export function renderTemplateStudio(
     container: HTMLElement,
     templateEngine: TemplateEngine,
     ifThenRuleEngine: IfThenRuleEngine,
-    onSave: () => void
+    onSave: () => void,
+    frontendApi?: any,
 ): void {
     let selectedTemplateId: string = templateEngine.getAllTemplates()[0]?.id || 'story';
     let activeEditorTab: 'editor' | 'preview' = 'editor';
@@ -769,6 +771,21 @@ export function renderTemplateStudio(
             iconAction({ icon: 'bx-edit-alt', title: 'Edit rule', onClick: () => openRuleEditorModal({ rule }) }),
         ];
 
+        if (frontendApi) {
+            actions.push(iconAction({
+                icon: 'bx-play',
+                title: 'Run manual rules for the current note',
+                onClick: async () => {
+                    try {
+                        const count = await runManualIfThenRules(ruleEngineForManual(), frontendApi, frontendApi.currentNote?.noteId, templateEngine);
+                        frontendApi.showMessage?.(count ? `Applied ${count} manual rule${count === 1 ? '' : 's'}.` : 'No manual rules matched the current note.');
+                    } catch (error: any) {
+                        frontendApi.showError?.(`Manual rule execution failed: ${error?.message || error}`);
+                    }
+                },
+            }));
+        }
+
         if (onDelete) {
             actions.push(iconAction({ icon: 'bx-trash', title: 'Delete rule', onClick: onDelete }));
         }
@@ -798,6 +815,13 @@ export function renderTemplateStudio(
         const descContainer = el.querySelector('.ns-list-item-desc');
         if (descContainer) descContainer.innerHTML = flowDesc;
         return el;
+    }
+
+    // Keep the callback bound to the current engine instance while making the
+    // intent at the call site explicit: the button runs only onManualAction
+    // rules, never creation or attribute-change rules.
+    function ruleEngineForManual(): IfThenRuleEngine {
+        return ifThenRuleEngine;
     }
 
     // ----------------------------------------------------------------- preview
@@ -909,12 +933,18 @@ export function renderTemplateStudio(
                         <select id="rule-trigger" class="form-select form-select-sm">
                             <option value="onNoteCreated"${rule.trigger.type === 'onNoteCreated' ? ' selected' : ''}>When a note is created</option>
                             <option value="onAttributeChanged"${rule.trigger.type === 'onAttributeChanged' ? ' selected' : ''}>When an attribute changes</option>
+                            <option value="onManualAction"${rule.trigger.type === 'onManualAction' ? ' selected' : ''}>When manually run</option>
+                            <option value="onScheduledCheck"${rule.trigger.type === 'onScheduledCheck' ? ' selected' : ''}>During scheduled checks</option>
                         </select>
                     </div>
                     <div class="ns-field">
                         <label for="rule-scope">Scope</label>
                         <input type="text" id="rule-scope" class="form-control form-control-sm" value="${escapeHtml(scope)}" disabled>
                     </div>
+                </div>
+                <div class="ns-field">
+                    <label for="rule-attribute-name">Changed attribute (optional)</label>
+                    <input type="text" id="rule-attribute-name" class="form-control form-control-sm" value="${escapeHtml(rule.trigger.attributeName || '')}" placeholder="Only used for attribute-change rules">
                 </div>
                 <div class="ns-field">
                     <label for="rule-action">Action</label>
@@ -946,6 +976,9 @@ export function renderTemplateStudio(
             rule.name = name;
             rule.description = content.querySelector<HTMLInputElement>('#rule-desc')!.value;
             rule.trigger.type = content.querySelector<HTMLSelectElement>('#rule-trigger')!.value as IfThenRuleDef['trigger']['type'];
+            const changedAttribute = content.querySelector<HTMLInputElement>('#rule-attribute-name')?.value.trim();
+            if (changedAttribute) rule.trigger.attributeName = changedAttribute;
+            else delete rule.trigger.attributeName;
 
             const actionType = content.querySelector<HTMLSelectElement>('#rule-action')!.value as any;
             const lName = content.querySelector<HTMLInputElement>('#param-lname')?.value.trim();
@@ -961,7 +994,7 @@ export function renderTemplateStudio(
                 params.relationName = lName || 'project';
                 params.targetNoteId = lVal || '';
             } else if (actionType === 'archiveNote') {
-                params.containerMarker = lName || 'archiveRoot';
+                params.containerMarker = lName || 'archiveProjectRoot';
             } else if (actionType === 'prependContent') {
                 params.content = lVal || '';
             } else if (actionType === 'cloneToContainer') {

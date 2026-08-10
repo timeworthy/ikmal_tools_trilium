@@ -24,7 +24,7 @@ except ImportError:
     from tools.etapi import Etapi, EtapiError
 
 DIST = Path(__file__).resolve().parents[1] / "dist"
-VERSION = "1.0.32"
+VERSION = "1.0.33"
 
 PACKAGE_MARKERS = ("templateRoot", "dashboardRoot", "scriptRoot")
 

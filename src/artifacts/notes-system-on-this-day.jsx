@@ -6,6 +6,24 @@
 import { escapeHtml, section, emptyState, listItem } from '../components/nativeUi.js';
 import { findOnThisDay } from '../engine/noteInsightsEngine.js';
 
+const WORK_NOTE_QUERY = '#extTask OR #extStoryDraft OR #extMeeting OR #extEmailDraft OR #extScratch OR #extReportingNotes OR #extProjectHub OR #extPerson OR #extOrganization OR #extTopic';
+
+function labelValue(note, name) {
+    return note?.getOwnedLabelValue?.(name)
+        ?? note?.getLabelValue?.(name)
+        ?? note?.labels?.find?.((label) => label.name === name)?.value
+        ?? note?.attributes?.find?.((attribute) => attribute.type === 'label' && attribute.name === name)?.value
+        ?? '';
+}
+
+function timestamp(note, field, label) {
+    const raw = labelValue(note, label) || note?.[field];
+    if (typeof raw === 'number') return raw;
+    if (typeof raw !== 'string') return NaN;
+    const parsed = Date.parse(raw.replace(' ', 'T').replace(/([+-]\d{2})(\d{2})$/, '$1:$2'));
+    return Number.isNaN(parsed) ? NaN : parsed;
+}
+
 export function initIkmalOnThisDay(containerEl) {
     const shell = document.createElement('div');
     shell.className = 'notes-system-shell p-3';
@@ -25,11 +43,12 @@ export function initIkmalOnThisDay(containerEl) {
             return;
         }
 
-        api.searchForNotes('#extTask, #story, #meeting, #scratch').then((notes) => {
+        api.searchForNotes(WORK_NOTE_QUERY).then((notes) => {
             const summaries = (notes || []).map((n) => ({
-                id: n.noteId,
+                noteId: n.noteId,
                 title: n.title || 'Untitled',
-                utcDateCreated: (n.labels || []).find((l) => l.name === 'utcDateCreated')?.value || new Date().toISOString(),
+                dateCreated: timestamp(n, 'dateCreated', 'utcDateCreated'),
+                dateModified: timestamp(n, 'dateModified', 'utcDateModified'),
             }));
             const results = findOnThisDay(summaries, new Date());
             renderList(results);
@@ -52,7 +71,7 @@ export function initIkmalOnThisDay(containerEl) {
                 actions: typeof api !== 'undefined' && api.openNote ? [{
                     icon: 'bx-link-external',
                     title: `Open ${entry.title}`,
-                    onClick: () => api.openNote(entry.id),
+                    onClick: () => api.openNote(entry.noteId),
                 }] : [],
             }));
         }

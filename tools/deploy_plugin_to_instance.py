@@ -416,7 +416,17 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
             if artifact_id == "notes-system-project-metadata-sync":
                 project_root = api.find_by_label("projectRoot")
                 if project_root:
-                    for rel in ("runOnNoteChange", "runOnAttributeChange", "runOnAttributeCreation"):
+                    for rel in ("runOnNoteCreation", "runOnNoteChange", "runOnAttributeChange", "runOnAttributeCreation"):
+                        current_root = api.get_note(project_root)
+                        for attr in current_root.get("attributes", []):
+                            if (attr.get("noteId") == project_root
+                                    and attr.get("type") == "relation"
+                                    and attr.get("name") == rel
+                                    and attr.get("value") != art_note_id):
+                                try:
+                                    api.delete_attribute(attr["attributeId"])
+                                except Exception:
+                                    pass
                         api.set_relation(project_root, rel, art_note_id, inheritable=True)
                     print(f"  ✓ Wired Project Metadata Sync hook on #projectRoot")
             elif artifact_id == "notes-system-daily-note-repair":
@@ -433,6 +443,16 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
                         for rel in ("runOnAttributeCreation", "runOnAttributeChange", "runOnNoteCreation", "runOnNoteChange"):
                             api.set_relation(root_id, rel, art_note_id, inheritable=True)
                 print(f"  ✓ Wired Topic Association Sync hooks across work roots")
+            elif artifact_id == "notes-system-if-then-dispatch":
+                # The dispatcher only needs attribute events. It is inherited
+                # from the main project root so custom YAML rules apply to
+                # direct edits across the whole user workspace without adding
+                # duplicate hooks to every specialized root.
+                project_root = api.find_by_label("projectRoot")
+                if project_root:
+                    for rel in ("runOnAttributeCreation", "runOnAttributeChange"):
+                        api.set_relation(project_root, rel, art_note_id, inheritable=True)
+                    print(f"  ✓ Wired If/Then dispatcher hooks on #projectRoot")
             elif artifact_id == "notes-system-create-note-api":
                 api.set_label(art_note_id, "customRequestHandler", "create-note")
                 print(f"  ✓ Wired Custom Request Handler 'create-note' on API note")

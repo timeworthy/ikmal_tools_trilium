@@ -15,10 +15,12 @@ import {
     buildActivityHeatmap,
     computeMoonPhase,
     computeWritingGoalProgress,
+    countWords,
     findOnThisDay,
     findStaleNotes,
     pickDailyQuote,
 } from '../engine/noteInsightsEngine.js';
+import { loadRuntimeModel } from '../engine/runtimeModel.js';
 
 export function initNotesSystemInsights(containerEl) {
     const templateEngine = new TemplateEngine();
@@ -26,12 +28,13 @@ export function initNotesSystemInsights(containerEl) {
     const ifThenRuleEngine = new IfThenRuleEngine();
     const todayEngine = new TodayEngine();
     const settingsEngine = new SettingsEngine();
-    const noteCreationEngine = new NoteCreationEngine(templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine);
+    const frontendApi = typeof api !== 'undefined' ? api : null;
+    const modelReady = loadRuntimeModel(templateEngine, todayEngine, ifThenRuleEngine, settingsEngine, frontendApi);
 
     const shell = document.createElement('div');
     shell.className = 'notes-system-shell p-3';
 
-    const { card } = section(shell, {
+    const { card: outerCard } = section(shell, {
         title: 'Daily Productivity & Writing Insights',
         description: 'Writing progress, activity heatmap, anniversaries, and stale notes overview.',
     });
@@ -39,71 +42,97 @@ export function initNotesSystemInsights(containerEl) {
     const grid = document.createElement('div');
     grid.className = 'row g-3 mt-1';
 
-    // 1. Writing Goal Widget
-    const col1 = document.createElement('div');
-    col1.className = 'col-12 col-md-6';
-    const goalCard = document.createElement('div');
-    goalCard.className = 'ns-card p-3';
-    goalCard.innerHTML = `<h6 class="ns-card-title"><i class="bx bx-target-lock text-primary me-1"></i> Writing Goal Progress</h6>`;
+    function timestamp(note, field, label) {
+        const raw = note?.getOwnedLabelValue?.(label) || note?.[field];
+        if (typeof raw === 'number') return raw;
+        if (typeof raw !== 'string') return NaN;
+        const parsed = Date.parse(raw.replace(' ', 'T').replace(/([+-]\d{2})(\d{2})$/, '$1:$2'));
+        return Number.isNaN(parsed) ? NaN : parsed;
+    }
 
-    const quote = pickDailyQuote(new Date());
-    const quoteEl = document.createElement('blockquote');
-    quoteEl.className = 'ns-quote mb-3';
-    quoteEl.innerHTML = `<p class="mb-1">&ldquo;${escapeHtml(quote.text)}&rdquo;</p><cite class="small text-muted">&mdash; ${escapeHtml(quote.author)}</cite>`;
-    goalCard.appendChild(quoteEl);
+    function insightCard(title, icon) {
+        const el = document.createElement('div');
+        el.className = 'ns-card p-3';
+        el.innerHTML = `<h6 class="ns-card-title"><i class="bx ${icon} text-primary me-1"></i> ${escapeHtml(title)}</h6>`;
+        return el;
+    }
 
-    const goal = settingsEngine.get('writingGoalWords') ?? 500;
-    const currentWords = 320; // Default sample/current
-    const progress = computeWritingGoalProgress(currentWords, goal);
-
-    const bar = document.createElement('div');
-    bar.className = 'ns-progress mb-2';
-    bar.innerHTML = `<div class="ns-progress-fill" style="width: ${progress.percent}%"></div>`;
-    goalCard.appendChild(bar);
-
-    const label = document.createElement('div');
-    label.className = 'ns-meta ns-progress-label small text-muted';
-    label.textContent = `${progress.current} / ${progress.goal} words (${progress.remaining} to go)`;
-    goalCard.appendChild(label);
-
-    col1.appendChild(goalCard);
-    grid.appendChild(col1);
-
-    // 2. Moon Phase & Quote Widget
-    const col2 = document.createElement('div');
-    col2.className = 'col-12 col-md-6';
-    const phase = computeMoonPhase(new Date());
-    const moonCard = document.createElement('div');
-    moonCard.className = 'ns-card p-3';
-    moonCard.innerHTML = `
-        <h6 class="ns-card-title"><i class="bx bx-moon text-warning me-1"></i> Daily Insights</h6>
-        <div class="d-flex align-items-center gap-3 my-2">
-            <span class="fs-2">${phase.symbol}</span>
-            <div>
-                <div class="fw-bold">${escapeHtml(phase.label)}</div>
-                <div class="small text-muted">${phase.illuminationPercent}% illumination</div>
-            </div>
-        </div>
-    `;
-    const copyBtn = document.createElement('button');
-    copyBtn.type = 'button';
-    copyBtn.className = 'btn btn-sm btn-outline-primary mt-2 d-inline-flex align-items-center gap-1';
-    copyBtn.innerHTML = '<i class="bx bx-copy"></i> Copy Accomplishments for Standup';
-    copyBtn.addEventListener('click', async () => {
-        const text = `**Daily Accomplishments (${new Date().toISOString().slice(0, 10)})**\n- Writing Progress: ${progress.current}/${progress.goal} words (${progress.percent}%)\n- Moon Phase: ${phase.symbol} ${phase.label}\n- Daily Reflection: "${quote.text}" — ${quote.author}`;
-        if (navigator.clipboard) {
-            try {
-                await navigator.clipboard.writeText(text);
-                if (window.__ikmalToast) window.__ikmalToast('Copied daily accomplishments to clipboard!', 'success');
-            } catch (e) {}
+    function appendEntries(parent, entries, emptyText) {
+        if (!entries.length) {
+            parent.appendChild(emptyState(emptyText));
+            return;
         }
+        entries.slice(0, 10).forEach((entry) => {
+            const row = document.createElement('div');
+            row.className = 'ns-list-item py-1';
+            row.innerHTML = `<div class="fw-semibold">${escapeHtml(entry.title)}</div><div class="ns-meta">${escapeHtml(entry.description || '')}</div>`;
+            if (frontendApi?.openNote && entry.noteId) row.addEventListener('click', () => frontendApi.openNote(entry.noteId));
+            parent.appendChild(row);
+        });
+    }
+
+    async function loadSummaries() {
+        if (!frontendApi?.searchForNotes) return { notes: [], summaries: [], words: 0 };
+        const query = '#extTask OR #extStoryDraft OR #extMeeting OR #extEmailDraft OR #extScratch OR #extReportingNotes OR #extProjectHub OR #extPerson OR #extOrganization OR #extTopic';
+        const notes = await frontendApi.searchForNotes(query);
+        const summaries = (notes || []).map((note) => ({
+            noteId: note.noteId,
+            title: note.title || 'Untitled',
+            dateCreated: timestamp(note, 'dateCreated', 'utcDateCreated'),
+            dateModified: timestamp(note, 'dateModified', 'utcDateModified'),
+            status: note.getOwnedLabelValue?.('status') || note.getLabelValue?.('status') || '',
+        }));
+        let words = 0;
+        const todayKey = new Date().toDateString();
+        for (const note of notes || []) {
+            if (new Date(timestamp(note, 'dateModified', 'utcDateModified')).toDateString() !== todayKey) continue;
+            if (typeof note.getContent === 'function') words += countWords(await note.getContent());
+        }
+        return { notes, summaries, words };
+    }
+
+    function renderLoadedData({ summaries, words }) {
+        const today = new Date();
+        const quote = pickDailyQuote(today);
+        const goal = settingsEngine.get('writingGoalWords') ?? 500;
+        const progress = computeWritingGoalProgress(words, goal);
+
+        const goalCard = insightCard('Writing Goal Progress', 'bx-target-lock');
+        goalCard.innerHTML += `<blockquote class="ns-quote mb-3"><p>&ldquo;${escapeHtml(quote.text)}&rdquo;</p><cite class="small text-muted">&mdash; ${escapeHtml(quote.author)}</cite></blockquote>`;
+        goalCard.innerHTML += `<div class="ns-progress mb-2"><div class="ns-progress-fill" style="width: ${progress.percent}%"></div></div><div class="ns-meta">${progress.current} / ${progress.goal} words (${progress.remaining} to go)</div>`;
+
+        const activityCard = insightCard('Activity', 'bx-bar-chart-alt-2');
+        const weeks = buildActivityHeatmap(summaries.map((entry) => entry.dateCreated), today, 12);
+        activityCard.appendChild(weeks.length ? document.createTextNode(`${weeks.flatMap((week) => week.days).reduce((total, day) => total + day.count, 0)} notes across the last 12 weeks.`) : emptyState('No activity found.'));
+
+        const onThisDayCard = insightCard('On This Day', 'bx-history');
+        appendEntries(onThisDayCard, findOnThisDay(summaries, today).map((entry) => ({ ...entry, description: `${entry.yearsAgo} year${entry.yearsAgo === 1 ? '' : 's'} ago today` })), 'No historical notes found.');
+
+        const staleCard = insightCard('Needs Attention', 'bx-time-five');
+        appendEntries(staleCard, findStaleNotes(summaries, today, settingsEngine.get('staleThresholdDays') ?? 14).map((entry) => ({ ...entry, description: `Untouched for ${entry.daysSinceModified} days` })), 'Nothing has gone stale.');
+
+        const phase = computeMoonPhase(today);
+        const moonCard = insightCard('Daily Insights', 'bx-moon');
+        moonCard.innerHTML += `<div class="d-flex align-items-center gap-3 my-2"><span class="fs-2"><i class="bx bx-${escapeHtml(phase.icon)}"></i></span><div><div class="fw-bold">${escapeHtml(phase.name)}</div><div class="small text-muted">${Math.round(phase.illumination * 100)}% illumination</div></div></div>`;
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button'; copyBtn.className = 'btn btn-sm btn-outline-primary'; copyBtn.textContent = 'Copy Accomplishments for Standup';
+        copyBtn.addEventListener('click', async () => {
+            const text = `**Daily Accomplishments (${today.toLocaleDateString('en-CA')})**\n- Writing Progress: ${progress.current}/${progress.goal} words (${progress.percent}%)\n- Moon Phase: ${phase.name} (${Math.round(phase.illumination * 100)}% illumination)`;
+            try { await navigator.clipboard?.writeText(text); window.__ikmalToast?.('Copied daily accomplishments to clipboard!', 'success'); } catch {}
+        });
+        moonCard.appendChild(copyBtn);
+
+        grid.replaceChildren(goalCard, activityCard, onThisDayCard, staleCard, moonCard);
+    }
+
+    const loading = insightCard('Loading insights', 'bx-loader-alt');
+    loading.appendChild(emptyState('Loading live note activity…'));
+    grid.appendChild(loading);
+    modelReady.then(() => loadSummaries()).then(renderLoadedData).catch((error) => {
+        loading.replaceChildren(emptyState(`Insights unavailable: ${error.message}`));
     });
-    moonCard.appendChild(copyBtn);
 
-    col2.appendChild(moonCard);
-    grid.appendChild(col2);
-
-    card.appendChild(grid);
+    outerCard.appendChild(grid);
     shell.appendChild(card);
     containerEl.appendChild(shell);
 }

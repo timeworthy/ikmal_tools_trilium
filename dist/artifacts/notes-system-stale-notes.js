@@ -98,6 +98,17 @@
     el.textContent = text;
     return el;
   }
+  function bindAsyncClick(button, onClick) {
+    button.addEventListener("click", () => {
+      try {
+        Promise.resolve(onClick()).catch((error) => {
+          console.warn(`[Ikmal Tools] Button action failed: ${error?.message || error}`);
+        });
+      } catch (error) {
+        console.warn(`[Ikmal Tools] Button action failed: ${error?.message || error}`);
+      }
+    });
+  }
   function iconAction({ icon, title, onClick }) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -105,7 +116,7 @@
     btn.title = title;
     btn.setAttribute("aria-label", title);
     btn.innerHTML = `<span class="bx ${escapeHtml(icon)}"></span>`;
-    btn.addEventListener("click", onClick);
+    bindAsyncClick(btn, onClick);
     return btn;
   }
   function showToast(opts, typeArg, durationArg) {
@@ -170,7 +181,62 @@
   }
   var KNOWN_NEW_MOON_MS = Date.UTC(2e3, 0, 6, 18, 14);
 
+  // src/engine/packagePersistence.ts
+  var PACKAGE_ID = "iansherr/ikmal_tools_trilium";
+  function settingLabelName(key) {
+    return `packageSetting:${key}`;
+  }
+  function triliumApi(explicitApi) {
+    const a = explicitApi || globalThis.api;
+    return a && typeof a.searchForNotes === "function" ? a : null;
+  }
+  async function findManifestNote(explicitApi) {
+    const api2 = triliumApi(explicitApi);
+    if (!api2) return null;
+    const notes = await api2.searchForNotes(`#packageOwner="${PACKAGE_ID}" #packageArtifact="manifest"`);
+    return notes[0] ?? null;
+  }
+  function parseStoredBoolean(raw, fallback) {
+    try {
+      const parsed = JSON.parse(raw);
+      return typeof parsed === "boolean" ? parsed : fallback;
+    } catch {
+      return raw === "true";
+    }
+  }
+  var memoryStore = /* @__PURE__ */ new Map();
+  async function loadAutomationSettings(explicitApi) {
+    const note = await findManifestNote(explicitApi);
+    const result = { ...DEFAULT_AUTOMATION_SETTINGS };
+    for (const key of Object.keys(DEFAULT_AUTOMATION_SETTINGS)) {
+      const raw = note ? note.getOwnedLabelValue(settingLabelName(key)) : memoryStore.get(key) ?? null;
+      if (raw !== null) {
+        const def = DEFAULT_AUTOMATION_SETTINGS[key];
+        if (typeof def === "boolean") {
+          result[key] = parseStoredBoolean(raw, def);
+        } else if (typeof def === "number") {
+          const num = Number(raw);
+          result[key] = isNaN(num) ? def : num;
+        } else {
+          result[key] = String(raw);
+        }
+      }
+    }
+    return result;
+  }
+
   // src/artifacts/notes-system-stale-notes.jsx
+  var WORK_NOTE_QUERY = "#extTask OR #extStoryDraft OR #extMeeting OR #extEmailDraft OR #extScratch OR #extReportingNotes";
+  function labelValue(note, name) {
+    return note?.getOwnedLabelValue?.(name) ?? note?.getLabelValue?.(name) ?? note?.labels?.find?.((label) => label.name === name)?.value ?? note?.attributes?.find?.((attribute) => attribute.type === "label" && attribute.name === name)?.value ?? "";
+  }
+  function timestamp(note, field, label) {
+    const raw = labelValue(note, label) || note?.[field];
+    if (typeof raw === "number") return raw;
+    if (typeof raw !== "string") return NaN;
+    const parsed = Date.parse(raw.replace(" ", "T").replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
+    return Number.isNaN(parsed) ? NaN : parsed;
+  }
   function initIkmalStaleNotes(containerEl) {
     const settingsEngine = new SettingsEngine();
     const shell = document.createElement("div");
@@ -189,12 +255,13 @@
         return;
       }
       const threshold = settingsEngine.get("staleThresholdDays") ?? 14;
-      api.searchForNotes("#extTask, #story, #meeting, #scratch").then((notes) => {
+      api.searchForNotes(WORK_NOTE_QUERY).then((notes) => {
         const summaries = (notes || []).map((n) => ({
-          id: n.noteId,
+          noteId: n.noteId,
           title: n.title || "Untitled",
-          utcDateModified: (n.labels || []).find((l) => l.name === "utcDateModified")?.value || (/* @__PURE__ */ new Date()).toISOString(),
-          status: (n.labels || []).find((l) => l.name === "status")?.value || ""
+          dateCreated: timestamp(n, "dateCreated", "utcDateCreated"),
+          dateModified: timestamp(n, "dateModified", "utcDateModified"),
+          status: labelValue(n, "status")
         }));
         const stale = findStaleNotes(summaries, /* @__PURE__ */ new Date(), threshold);
         renderList(stale);
@@ -215,14 +282,19 @@
           actions: typeof api !== "undefined" && api.openNote ? [{
             icon: "bx-link-external",
             title: `Open ${entry.title}`,
-            onClick: () => api.openNote(entry.id)
+            onClick: () => api.openNote(entry.noteId)
           }] : []
         }));
       }
     }
     shell.appendChild(card);
     containerEl.appendChild(shell);
-    loadNotes();
+    const frontendApi = typeof api !== "undefined" ? api : null;
+    loadAutomationSettings(frontendApi).then((loaded) => {
+      settingsEngine.set("staleThresholdDays", loaded.staleThresholdDays);
+    }).catch((error) => {
+      console.warn(`[Ikmal Tools] Stale-note settings could not load: ${error}`);
+    }).finally(() => loadNotes());
   }
   if (typeof api !== "undefined" || typeof window !== "undefined") {
     const init = () => {

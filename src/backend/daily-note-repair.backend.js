@@ -6,16 +6,28 @@ if (!dayNote || !dayNote.hasOwnedLabel('dateNote')) {
 }
 
 const day = dayNote.getOwnedLabelValue('dateNote');
-// Story drafts and Reporting Notes are attached by the explicit New Story
-// workflow. Do not infer that relationship from the day a note was created:
-// opening a new journal should not pull every same-day story project into it.
+// The day note is the index of today's work. Project-created notes must be
+// included here too; the legacy repair path intentionally restored story
+// drafts and Reporting Notes alongside ordinary captures.
 const sources = [
     ['extTask'],
     ['extMeeting'],
+    ['extStoryDraft'],
+    ['extReportingNotes'],
     ['extEmailDraft'],
     ['extScratch'],
+    ['extPerson'],
+    ['extOrganization'],
     ['noteGroup', 'people'],
     ['noteGroup', 'organization'],
+    ['extTemplate', 'projectHub'],
+    ['extTemplate', 'person'],
+    ['extTemplate', 'organization'],
+    ['extTemplate', 'topic'],
+    ['extProjectHub'],
+    ['extTopic'],
+    ['noteType', 'projectHub'],
+    ['noteType', 'topic'],
 ];
 const candidates = new Map();
 

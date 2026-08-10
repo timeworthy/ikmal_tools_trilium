@@ -44,6 +44,25 @@ const HEADER = `# ==============================================================
 # ==============================================================================
 `;
 
+/**
+ * Safe reset value for the editable specification.
+ *
+ * An empty saved value means "no custom YAML overrides". The dashboard still
+ * constructs its built-in templates and rules, while the Settings editor gets
+ * a valid, intentionally small document to edit instead of a blank textarea or
+ * a parse error.
+ */
+export const DEFAULT_STARTER_YAML_SPEC = `${HEADER}
+version: ${SPEC_VERSION}
+packageId: ${PACKAGE_ID}
+homepage:
+  columns: auto
+  density: comfortable
+categories: []
+templates: []
+ifThenRules: []
+`;
+
 export function dumpYamlSpec(
     todayLayout: TodayLayoutConfig,
     templateEngine: TemplateEngine,

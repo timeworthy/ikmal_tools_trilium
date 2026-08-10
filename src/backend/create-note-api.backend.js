@@ -19,8 +19,10 @@ const NOTE_TYPES = {
     meeting: { root: 'meetingRoot', template: 'meeting', projectScoped: true },
     meetingPrep: { root: 'meetingRoot', template: 'meetingPrep', projectScoped: true },
     story: { root: 'storyDraftRoot', template: 'storyDraft', projectScoped: true },
+    edit: { root: 'storyDraftRoot', template: 'storyDraft', projectScoped: true },
     reportingNotes: { root: 'storyDraftRoot', template: 'reportingNotes', projectScoped: true },
     email: { root: 'emailRoot', template: 'emailDraft', projectScoped: true },
+    scratch: { root: 'unassignedRoot', template: 'scratch', projectScoped: false },
     person: { root: 'peopleRoot', template: 'person' },
     organization: { root: 'orgRoot', template: 'organization' },
     topic: { root: 'topicRoot', template: 'topic', noJournalClone: true },
@@ -33,8 +35,10 @@ const NOTE_GROUPS = {
     meeting: 'meeting',
     meetingPrep: 'meeting',
     story: 'draft',
+    edit: 'draft',
     reportingNotes: 'reporting',
     email: 'email',
+    scratch: 'scratch',
     person: 'people',
     organization: 'organization',
     topic: 'topic',
@@ -47,8 +51,10 @@ const NOTE_MARKERS = {
     meeting: 'extMeeting',
     meetingPrep: 'extMeeting',
     story: 'extStoryDraft',
+    edit: 'extStoryDraft',
     reportingNotes: 'extReportingNotes',
     email: 'extEmailDraft',
+    scratch: 'extScratch',
     topic: 'extTopic',
 };
 
@@ -152,7 +158,8 @@ function ensureLaunchers() {
 }
 
 function ensureHubDashboard(hub) {
-    const markup = findScript('hubDashboardMarkup');
+    const markup = findScript('hubDashboardMarkup')
+        || api.getNotesWithLabel?.('packageArtifact', 'notes-system-project-dashboard')?.[0];
     if (!markup) {
         return null;
     }
@@ -305,11 +312,11 @@ function applyEditorialFields(note, typeKey, options, hub) {
     }
     if (hub) {
         note.setRelation('project', hub.noteId);
-        if (typeKey === 'story') {
+        if (typeKey === 'story' || typeKey === 'edit') {
             hub.setLabel('status', 'active');
             const round = String(options.round || nextRound(hub));
             note.setLabel('round', round);
-            note.setLabel('status', options.status || 'editing');
+            note.setLabel('status', options.status || (options.workflow === 'edit' ? 'editing' : 'drafting'));
             hub.setLabel('currentRound', round);
             syncHubFromRound(hub, note);
         }
@@ -633,7 +640,7 @@ function createNote(typeKey, title, options = {}) {
         return { error: `missing container #${marker} -- run apply_skeleton.py` };
     }
 
-    const noteTitle = typeKey === 'story'
+    const noteTitle = typeKey === 'story' || typeKey === 'edit'
         ? normalizedRoundTitle(title, hub, options)
         : title;
     const { note } = api.createTextNote(parent.noteId, noteTitle, '');
@@ -644,7 +651,7 @@ function createNote(typeKey, title, options = {}) {
         note.setLabel(NOTE_MARKERS[typeKey]);
     }
     applyEditorialFields(note, typeKey, options, hub);
-    if (typeKey === 'story') {
+    if (typeKey === 'story' || typeKey === 'edit') {
         note.setContent(options.workflow === 'edit' ? EDIT_ROUND_CONTENT : STORY_DRAFT_CONTENT);
     } else if (typeKey === 'reportingNotes') {
         note.setContent(REPORTING_NOTES_CONTENT);

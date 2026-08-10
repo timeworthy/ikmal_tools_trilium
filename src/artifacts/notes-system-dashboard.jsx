@@ -10,12 +10,13 @@ import { IfThenRuleEngine } from '../engine/ifThenRuleEngine.js';
 import { TodayEngine } from '../engine/todayEngine.js';
 import { NoteCreationEngine } from '../engine/noteCreationEngine.js';
 import { SettingsEngine } from '../engine/settingsEngine.js';
-import { loadAutomationSettings, loadYamlSpecification, saveYamlSpecification } from '../engine/packagePersistence.js';
-import { parseAndApplyYamlSpec } from '../engine/yamlSpec.js';
+import { saveYamlSpecification } from '../engine/packagePersistence.js';
+import { dumpYamlSpec } from '../engine/yamlSpec.js';
 import { renderTodayHomepage } from '../components/TodayHomepage.js';
 import { renderTemplateStudio } from '../components/TemplateStudio.js';
 import { renderSettingsStudio } from '../components/SettingsStudio.js';
 import { showQuickCaptureModal } from '../components/QuickCaptureModal.js';
+import { loadRuntimeModel } from '../engine/runtimeModel.js';
 
 // Render errors can carry note-derived text (a title echoed into a thrown
 // message), and the error card writes them through innerHTML.
@@ -32,6 +33,9 @@ export function initNotesSystemDashboard(containerEl) {
     const noteCreationEngine = new NoteCreationEngine(templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine);
 
     let activeTab = 'today';
+    let yamlEditorSpec;
+    const frontendApi = typeof api !== 'undefined' ? api : null;
+    const modelReady = loadRuntimeModel(templateEngine, todayEngine, ifThenRuleEngine, settingsEngine, frontendApi);
 
     function renderMain() {
         containerEl.innerHTML = '';
@@ -75,8 +79,9 @@ export function initNotesSystemDashboard(containerEl) {
 
         try {
             if (activeTab === 'today') {
-                renderTodayHomepage(contentArea, todayEngine, templateEngine, (templateId) => {
-                    showQuickCaptureModal(templateId, templateEngine, noteCreationEngine, ({ plan, result }) => {
+                renderTodayHomepage(contentArea, todayEngine, templateEngine, async (templateId) => {
+                    await modelReady;
+                    return showQuickCaptureModal(templateId, templateEngine, noteCreationEngine, ({ plan, result }) => {
                         if (result) {
                             renderMain();
                         } else {
@@ -85,16 +90,21 @@ export function initNotesSystemDashboard(containerEl) {
                                 : (plan.journalClone ? "Today's Journal" : 'None');
                             alert(`Preview only (no Trilium api present).\n\nFormatted Title: ${plan.formattedTitle}\nLabels: ${plan.labelsToCreate.map(l => '#' + l.name + '=' + l.value).join(', ')}\nAuto-Clone Target: ${cloneTarget}`);
                         }
-                    });
+                    }, undefined, { api: frontendApi });
                 }, settingsEngine, { api: typeof api !== 'undefined' ? api : null });
             } else if (activeTab === 'templates') {
                 renderTemplateStudio(contentArea, templateEngine, ifThenRuleEngine, () => {
-                    console.log('Templates & Automations updated!');
-                });
+                    const spec = dumpYamlSpec(todayEngine.getLayout(), templateEngine, relationshipEngine, ifThenRuleEngine);
+                    yamlEditorSpec = spec;
+                    saveYamlSpecification(spec, frontendApi)
+                        .then(() => renderMain())
+                        .catch((error) => console.warn(`[Ikmal Tools] Template changes could not be saved: ${error}`));
+                }, frontendApi);
             } else if (activeTab === 'settings') {
                 renderSettingsStudio(contentArea, todayEngine, templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine, (yamlSpec) => {
-                    return saveYamlSpecification(yamlSpec);
-                });
+                    yamlEditorSpec = yamlSpec;
+                    return saveYamlSpecification(yamlSpec, frontendApi);
+                }, yamlEditorSpec, frontendApi);
             }
         } catch (renderError) {
             contentArea.innerHTML = `
@@ -123,22 +133,11 @@ export function initNotesSystemDashboard(containerEl) {
     // engines were constructed with, the same way parseAndApplyYamlSpec is used
     // from the Settings tab's Save button. Without this, "Save specification"
     // would only ever last until the next reload.
-    loadYamlSpecification().then((savedSpec) => {
-        if (savedSpec) {
-            parseAndApplyYamlSpec(savedSpec, todayEngine, templateEngine, ifThenRuleEngine);
-            renderMain();
-        }
-    });
-
-    // Automation settings load from the package's manifest note asynchronously
-    // (or resolve immediately outside Trilium); re-render once they land so the
-    // Settings tab and NoteCreationEngine reflect the saved values rather than
-    // the defaults they were constructed with.
-    loadAutomationSettings().then((loaded) => {
-        for (const key of Object.keys(loaded)) {
-            settingsEngine.set(key, loaded[key]);
-        }
+    modelReady.then(({ yamlSpec }) => {
+        yamlEditorSpec = yamlSpec;
         renderMain();
+    }).catch((error) => {
+        console.warn(`[Ikmal Tools] Could not load the saved runtime model: ${error}`);
     });
 }
 

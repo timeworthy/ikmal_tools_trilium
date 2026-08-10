@@ -11,6 +11,15 @@ import { TodayEngine } from '../engine/todayEngine.js';
 import { NoteCreationEngine } from '../engine/noteCreationEngine.js';
 import { SettingsEngine } from '../engine/settingsEngine.js';
 import { escapeHtml, section } from '../components/nativeUi.js';
+import { loadRuntimeModel } from '../engine/runtimeModel.js';
+
+function labelValue(note, name) {
+    return note?.getOwnedLabelValue?.(name)
+        ?? note?.getLabelValue?.(name)
+        ?? note?.labels?.find?.((label) => label.name === name)?.value
+        ?? note?.attributes?.find?.((attribute) => attribute.type === 'label' && attribute.name === name)?.value
+        ?? '';
+}
 
 export function initNotesSystemKanban(containerEl) {
     const templateEngine = new TemplateEngine();
@@ -19,6 +28,8 @@ export function initNotesSystemKanban(containerEl) {
     const todayEngine = new TodayEngine();
     const settingsEngine = new SettingsEngine();
     const noteCreationEngine = new NoteCreationEngine(templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine);
+    const frontendApi = typeof api !== 'undefined' ? api : null;
+    const modelReady = loadRuntimeModel(templateEngine, todayEngine, ifThenRuleEngine, settingsEngine, frontendApi);
 
     const shell = document.createElement('div');
     shell.className = 'notes-system-shell p-3';
@@ -62,9 +73,11 @@ export function initNotesSystemKanban(containerEl) {
     ];
 
     let taskCache = [];
+    let taskLoadGeneration = 0;
 
     function loadTasks() {
-        if (typeof api === 'undefined' || !api.searchForNotes) {
+        const generation = ++taskLoadGeneration;
+        if (!frontendApi?.searchForNotes) {
             taskCache = [
                 { id: 't1', title: 'Sample Task 1 (Offline)', status: 'todo' },
                 { id: 't2', title: 'Sample Task 2 (Offline)', status: 'in_progress' },
@@ -73,12 +86,13 @@ export function initNotesSystemKanban(containerEl) {
             return;
         }
 
-        api.searchForNotes('#extTask').then((notes) => {
+        frontendApi.searchForNotes('#extTask').then((notes) => {
+            if (generation !== taskLoadGeneration) return;
             taskCache = (notes || []).map((n) => ({
                 id: n.noteId,
                 title: n.title || 'Untitled Task',
-                status: (n.labels || []).find((l) => l.name === 'status')?.value || 'todo',
-                priority: (n.labels || []).find((l) => l.name === 'priority')?.value || 'medium',
+                status: labelValue(n, 'status') || 'todo',
+                priority: labelValue(n, 'priority') || 'medium',
             }));
             renderColumns();
         }).catch((err) => {
@@ -129,9 +143,9 @@ export function initNotesSystemKanban(containerEl) {
                 const task = taskCache.find((t) => t.id === noteId);
                 if (task && task.status !== column.id) {
                     task.status = column.id;
-                    if (typeof api !== 'undefined' && api.getNote) {
+                    if (frontendApi?.getNote) {
                         try {
-                            const note = api.getNote(noteId);
+                            const note = frontendApi.getNote(noteId);
                             if (note) {
                                 note.setLabel('status', column.id);
                                 if (column.id === 'done') {
@@ -181,8 +195,8 @@ export function initNotesSystemKanban(containerEl) {
                         </div>
                     `;
                     cardItem.querySelector('.ns-card-title')?.addEventListener('click', () => {
-                        if (typeof api !== 'undefined' && api.openNote) {
-                            api.openNote(t.id);
+                        if (frontendApi?.openNote) {
+                            frontendApi.openNote(t.id);
                         }
                     });
                     cardItem.querySelectorAll('.move-btn').forEach((btn) => {
@@ -194,9 +208,9 @@ export function initNotesSystemKanban(containerEl) {
                             if (newStatus === 'done') {
                                 cardItem.classList.add('ns-card-done-anim');
                             }
-                            if (typeof api !== 'undefined' && api.getNote) {
+                            if (frontendApi?.getNote) {
                                 try {
-                                    const note = api.getNote(t.id);
+                                    const note = frontendApi.getNote(t.id);
                                     if (note) {
                                         note.setLabel('status', newStatus);
                                         if (newStatus === 'done') {
@@ -226,7 +240,10 @@ export function initNotesSystemKanban(containerEl) {
     shell.appendChild(card);
     containerEl.appendChild(shell);
 
-    loadTasks();
+    modelReady.then(() => loadTasks()).catch((error) => {
+        console.warn(`[Ikmal Tools] Kanban model could not load: ${error.message}`);
+        loadTasks();
+    });
 }
 
 if (typeof api !== 'undefined' || typeof window !== 'undefined') {

@@ -22,3 +22,5 @@ dist/*
 !dist/artifacts/
 !dist/artifacts/*.js
 !dist/artifacts/*.css
+!dist/backend/
+!dist/backend/*.js

@@ -6,7 +6,7 @@
     if (window.__ikmal_workspace_bootstrap_started) return;
     window.__ikmal_workspace_bootstrap_started = true;
     const PACKAGE_ID = "iansherr/ikmal_tools_trilium";
-    const PACKAGE_VERSION = "1.0.34";
+    const PACKAGE_VERSION = "1.0.35";
     let extConfigNoteId = null;
     const LEGACY_STARTUP_TITLES = /* @__PURE__ */ new Set([
       "Note Creation Buttons",

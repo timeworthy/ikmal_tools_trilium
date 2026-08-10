@@ -1,6 +1,6 @@
 {
   "id": "iansherr/ikmal_tools_trilium",
-  "version": "1.0.33",
+  "version": "1.0.34",
   "name": "Ikmal Tools for Trilium",
   "description": "Component-driven, editable, and organizable notes system layer for Trilium Notes with Today Homepage, Template Studio, and If/Then Automation Rules.",
   "author": "Ian Sherr",
@@ -170,7 +170,7 @@
       "id": "notes-system-workspace-bootstrap",
       "type": "frontend",
       "source": "dist/artifacts/notes-system-workspace-bootstrap.js",
-      "integrity": "sha256-tS0GH2ktDf8oGI98I4aPRnyHCZIPYmqVRPvdz10dO6M=",
+      "integrity": "sha256-TwFmF3J/AllmIy+q6Wmvi0EisxVrM0S6R14Bhc9JsUs=",
       "title": "Ikmal Tools for Trilium: Workspace Setup & Repair",
       "activation": "startup"
     },

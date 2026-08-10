@@ -14,7 +14,7 @@
 
     const PACKAGE_ID = 'iansherr/ikmal_tools_trilium';
     // Kept in lockstep with `trilium-package.json` by a package manifest test.
-    const PACKAGE_VERSION = '1.0.33';
+    const PACKAGE_VERSION = '1.0.34';
 
     // Remembered by `ensureSkeletonContainers` so the first-run marker can be
     // written even when the freshly created Config note is not searchable yet.

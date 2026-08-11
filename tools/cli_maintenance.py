@@ -52,7 +52,7 @@ def _descendants(api: Etapi, root_id: str) -> list[str]:
 # Kept in lockstep with `trilium-package.json` by a package manifest test, so
 # the version this tool stamps on #extConfig matches what the deploy tool
 # stamps on every artifact.
-VERSION = "1.0.35"
+VERSION = "1.0.36"
 
 CONTAINERS = [
     ("calendarRoot", "Journal", "root", "book", {"datePattern": "{isoDate} - {weekDay}", "iconClass": "bx bx-calendar"}),

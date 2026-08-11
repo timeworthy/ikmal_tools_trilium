@@ -73,6 +73,7 @@
     align-items: center;
     gap: 16px;
     max-width: var(--ns-card-max-width);
+    flex-wrap: wrap;
 }
 
 .ns-page-header-icon {
@@ -90,17 +91,15 @@
 }
 
 .ns-page-header-titles {
-    flex: 1 1 auto;
-    min-width: 0;
+    flex: 1 1 220px;
+    min-width: 180px;
 }
 
 .ns-page-header-title {
     margin: 0;
     font-size: 1.4rem;
     font-weight: normal;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
+    overflow-wrap: anywhere;
 }
 
 .ns-page-header-subtitle {
@@ -110,10 +109,37 @@
 }
 
 .ns-page-header-actions {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    min-width: 0;
+}
+
+.ns-page-header-actions > * {
+    min-width: 0;
+}
+
+/* Keep compound header controls usable when the title and actions cannot fit on
+   one line. The title remains readable and the actions move below it instead
+   of squeezing the heading down to an ellipsis. */
+@container (max-width: 760px) {
+    .ns-page-header-inner {
+        align-items: flex-start;
+    }
+
+    .ns-page-header-titles {
+        flex-basis: calc(100% - 56px);
+        min-width: 0;
+    }
+
+    .ns-page-header-actions {
+        flex-basis: 100%;
+        justify-content: flex-start;
+        margin-inline-start: 56px;
+    }
 }
 
 /* -------------------------------------------------------------------- section */
@@ -285,6 +311,13 @@
 
     display: flex;
     align-items: center;
+    gap: 8px;
+    min-width: 76px;
+}
+
+.ns-switch-control {
+    display: inline-flex;
+    flex: 0 0 auto;
 }
 
 .ns-switch .ns-switch-button {
@@ -299,8 +332,25 @@
 }
 
 .ns-switch .ns-switch-button.on {
-    background: var(--main-text-color);
+    background: var(--accent-color, #2563eb);
     transition: background 100ms ease-out;
+}
+
+.ns-switch-state {
+    min-width: 2.4em;
+    color: var(--muted-text-color, var(--ns-muted));
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1;
+}
+
+.ns-switch.is-on .ns-switch-state {
+    color: var(--accent-color, #2563eb);
+}
+
+.ns-switch.is-off .ns-switch-state {
+    opacity: 0.8;
 }
 
 .ns-switch .ns-switch-button::after {

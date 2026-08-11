@@ -1082,18 +1082,24 @@ ${child.content || ""}`;
   }
   function toggle(id, checked, onChange) {
     const wrapper = document.createElement("div");
-    wrapper.className = "ns-switch";
+    wrapper.className = `ns-switch${checked ? " is-on" : " is-off"}`;
     wrapper.innerHTML = `
-        <label>
+        <label class="ns-switch-control">
             <div class="ns-switch-button${checked ? " on" : ""}">
-                <input type="checkbox" id="${escapeHtml(id)}"${checked ? " checked" : ""}>
+                <input type="checkbox" id="${escapeHtml(id)}" role="switch" aria-checked="${checked}" aria-label="Toggle setting"${checked ? " checked" : ""}>
             </div>
         </label>
+        <span class="ns-switch-state" aria-live="polite">${checked ? "ON" : "OFF"}</span>
     `;
     const input = wrapper.querySelector("input");
     const track = wrapper.querySelector(".ns-switch-button");
+    const state = wrapper.querySelector(".ns-switch-state");
     input.addEventListener("change", () => {
       track.classList.toggle("on", input.checked);
+      wrapper.classList.toggle("is-on", input.checked);
+      wrapper.classList.toggle("is-off", !input.checked);
+      input.setAttribute("aria-checked", String(input.checked));
+      state.textContent = input.checked ? "ON" : "OFF";
       onChange?.(input.checked);
     });
     return wrapper;

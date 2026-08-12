@@ -53,11 +53,18 @@ test('all declared if/then triggers have runtime entry points', () => {
 
 test('Today exposes a tomorrow planning action through the date-note API', () => {
     const today = read('src/components/TodayHomepage.tsx');
+    const rollover = read('src/engine/todayRollover.ts');
 
     assert.match(today, /Plan for Tomorrow/);
     assert.match(today, /api\.getDayNote\(tomorrow\)/);
     assert.match(today, /format\('YYYY-MM-DD'\)/);
     assert.match(today, /openJournalNote\(api, tomorrowNote\.noteId\)/);
+    assert.match(today, /startTodayRolloverMonitor/);
+    assert.match(today, /resetDateSensitiveState/);
+    assert.match(rollover, /nextLocalMidnight/);
+    assert.match(rollover, /timezone-change/);
+    assert.match(rollover, /clock-change/);
+    assert.match(rollover, /Math\.min\(untilMidnight, checkIntervalMs\)/);
 });
 
 test('Quick Capture uses fuzzy comboboxes for finite and note-backed fields', () => {

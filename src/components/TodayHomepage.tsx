@@ -22,6 +22,7 @@ import {
     pickDailyQuote,
 } from '../engine/noteInsightsEngine.js';
 import { button, emptyState, escapeHtml, iconAction, listItem, pageHeader, row, section, switchRow, toggle } from './nativeUi.js';
+import { startTodayRolloverMonitor } from '../engine/todayRollover.js';
 
 interface KanbanTask {
     id: string;
@@ -57,6 +58,8 @@ const KANBAN_COLUMNS = [
     { id: 'done', title: 'Completed' },
 ];
 
+const activeTodayRenderers = new WeakMap<HTMLElement, () => void>();
+
 /**
  * Keep the Today capture bar aligned with the original Ikmal workspace
  * actions. The template registry contains more implementation/editorial
@@ -91,6 +94,11 @@ export function renderTodayHomepage(
     settingsEngine?: SettingsEngine,
     options: TodayHomepageOptions = {}
 ): () => void {
+    // Dashboard tab switches can construct another renderer for the same
+    // container. Stop the prior monitor first so an old render cannot repaint a
+    // detached DOM tree or accumulate hourly timers.
+    activeTodayRenderers.get(container)?.();
+
     let mode: 'edit' | 'preview' = 'preview';
 
     const showEditor = options.showEditor !== false;
@@ -124,8 +132,23 @@ export function renderTodayHomepage(
     let wordsTodayCache: number | null = null;
     let wordsTodayPending = false;
     let dataGeneration = 0;
+    let disposed = false;
+    let stopTodayRolloverMonitor: (() => void) | null = null;
+
+    function resetDateSensitiveState() {
+        dataGeneration += 1;
+        noteSummaryPending = false;
+        taskPending = false;
+        activeProjectPending = false;
+        wordsTodayPending = false;
+        noteSummaryCache = null;
+        taskCache = null;
+        activeProjectCache = null;
+        wordsTodayCache = null;
+    }
 
     function refresh() {
+        if (disposed) return;
         container.innerHTML = '';
 
         const wrapper = document.createElement('div');
@@ -1373,23 +1396,35 @@ export function renderTodayHomepage(
         parent.appendChild(board);
     }
 
-    refresh();
-    return () => {
+    const refreshHomepage = () => {
         // A successful quick capture changes several widgets at once (active
         // projects, stories, recent activity, and today's journal). Clear the
         // memoized searches before repainting so the page does not look stale
         // until the user hard-refreshes Trilium.
-        dataGeneration += 1;
-        noteSummaryPending = false;
-        taskPending = false;
-        activeProjectPending = false;
-        wordsTodayPending = false;
-        noteSummaryCache = null;
-        taskCache = null;
-        activeProjectCache = null;
-        wordsTodayCache = null;
+        resetDateSensitiveState();
         refresh();
     };
+
+    stopTodayRolloverMonitor = startTodayRolloverMonitor(() => {
+        // A date or timezone change affects the journal, quotes, anniversaries,
+        // stale-note calculations, writing goal, and activity widgets. Rebuild
+        // the current render in place so the user does not need to refresh the
+        // Trilium note manually.
+        resetDateSensitiveState();
+        refresh();
+    });
+    const dispose = () => {
+        disposed = true;
+        stopTodayRolloverMonitor?.();
+        stopTodayRolloverMonitor = null;
+        for (const timer of splitWidthTimers) window.clearTimeout(timer);
+        splitWidthTimers = [];
+        if (activeTodayRenderers.get(container) === dispose) activeTodayRenderers.delete(container);
+    };
+    activeTodayRenderers.set(container, dispose);
+
+    refresh();
+    return refreshHomepage;
 }
 
 export interface TodayHomepageOptions {

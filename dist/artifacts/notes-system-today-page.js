@@ -1394,6 +1394,71 @@ ${child.content || ""}`;
     window.__ikmalToast = showToast;
   }
 
+  // src/engine/todayRollover.ts
+  function localDateKey(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+  function localTimezoneKey(date) {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "unknown";
+    return `${timezone}|offset=${date.getTimezoneOffset()}`;
+  }
+  function snapshotTodayClock(date, monotonicMs) {
+    return {
+      dateKey: localDateKey(date),
+      timezoneKey: localTimezoneKey(date),
+      wallClockMs: date.getTime(),
+      monotonicMs
+    };
+  }
+  function nextLocalMidnight(date) {
+    const next = new Date(date.getTime());
+    next.setHours(24, 0, 0, 0);
+    return next;
+  }
+  function detectTodayClockChange(previous, current, driftToleranceMs = 5 * 60 * 1e3) {
+    if (previous.dateKey !== current.dateKey) return "date-change";
+    if (previous.timezoneKey !== current.timezoneKey) return "timezone-change";
+    const wallDelta = current.wallClockMs - previous.wallClockMs;
+    const monotonicDelta = current.monotonicMs - previous.monotonicMs;
+    if (Math.abs(wallDelta - monotonicDelta) > driftToleranceMs) return "clock-change";
+    return null;
+  }
+  function startTodayRolloverMonitor(onRollover, options = {}) {
+    const now = options.now || (() => /* @__PURE__ */ new Date());
+    const monotonicNow = options.monotonicNow || (() => globalThis.performance?.now?.() ?? Date.now());
+    const setTimeoutFn = options.setTimeout || ((handler, timeout) => globalThis.setTimeout(handler, timeout));
+    const clearTimeoutFn = options.clearTimeout || ((timer2) => globalThis.clearTimeout(timer2));
+    const checkIntervalMs = Math.max(6e4, options.checkIntervalMs || 60 * 60 * 1e3);
+    let previous = snapshotTodayClock(now(), monotonicNow());
+    let timer = null;
+    let stopped = false;
+    const check = () => {
+      if (stopped) return;
+      const currentDate = now();
+      const current = snapshotTodayClock(currentDate, monotonicNow());
+      const reason = detectTodayClockChange(previous, current);
+      previous = current;
+      if (reason) onRollover(reason);
+      schedule(currentDate);
+    };
+    const schedule = (currentDate) => {
+      if (stopped) return;
+      const untilMidnight = Math.max(1e3, nextLocalMidnight(currentDate).getTime() - currentDate.getTime() + 250);
+      const delay = Math.min(untilMidnight, checkIntervalMs);
+      timer = setTimeoutFn(check, delay);
+    };
+    schedule(now());
+    return () => {
+      if (stopped) return;
+      stopped = true;
+      if (timer !== null) clearTimeoutFn(timer);
+      timer = null;
+    };
+  }
+
   // src/components/TodayHomepage.tsx
   var SAMPLE_TASKS = [
     { id: "t1", title: "Review quarterly goals & roadmap", priority: "high", status: "todo", project: "Trilium Extension" },
@@ -1408,6 +1473,7 @@ ${child.content || ""}`;
     { id: "in_progress", title: "In progress" },
     { id: "done", title: "Completed" }
   ];
+  var activeTodayRenderers = /* @__PURE__ */ new WeakMap();
   var TODAY_QUICK_CAPTURE_ACTIONS = [
     { type: "projectHub", label: "New Project", icon: "book", title: "Create a new Project Hub" },
     { type: "scratch", label: "New Scratch", icon: "file-blank", title: "Create a scratch note" },
@@ -1421,6 +1487,7 @@ ${child.content || ""}`;
     { type: "topic", label: "New Topic", icon: "purchase-tag", title: "Create a new Topic" }
   ];
   function renderTodayHomepage(container, todayEngine, templateEngine, onQuickCapture, settingsEngine, options = {}) {
+    activeTodayRenderers.get(container)?.();
     let mode = "preview";
     const showEditor = options.showEditor !== false;
     const showJournalCard = options.showJournalCard === true;
@@ -1441,7 +1508,21 @@ ${child.content || ""}`;
     let wordsTodayCache = null;
     let wordsTodayPending = false;
     let dataGeneration = 0;
+    let disposed = false;
+    let stopTodayRolloverMonitor = null;
+    function resetDateSensitiveState() {
+      dataGeneration += 1;
+      noteSummaryPending = false;
+      taskPending = false;
+      activeProjectPending = false;
+      wordsTodayPending = false;
+      noteSummaryCache = null;
+      taskCache = null;
+      activeProjectCache = null;
+      wordsTodayCache = null;
+    }
     function refresh() {
+      if (disposed) return;
       container.innerHTML = "";
       const wrapper = document.createElement("div");
       wrapper.className = "today-homepage-wrapper";
@@ -2478,19 +2559,25 @@ ${child.content || ""}`;
       }
       parent.appendChild(board);
     }
-    refresh();
-    return () => {
-      dataGeneration += 1;
-      noteSummaryPending = false;
-      taskPending = false;
-      activeProjectPending = false;
-      wordsTodayPending = false;
-      noteSummaryCache = null;
-      taskCache = null;
-      activeProjectCache = null;
-      wordsTodayCache = null;
+    const refreshHomepage = () => {
+      resetDateSensitiveState();
       refresh();
     };
+    stopTodayRolloverMonitor = startTodayRolloverMonitor(() => {
+      resetDateSensitiveState();
+      refresh();
+    });
+    const dispose = () => {
+      disposed = true;
+      stopTodayRolloverMonitor?.();
+      stopTodayRolloverMonitor = null;
+      for (const timer of splitWidthTimers) window.clearTimeout(timer);
+      splitWidthTimers = [];
+      if (activeTodayRenderers.get(container) === dispose) activeTodayRenderers.delete(container);
+    };
+    activeTodayRenderers.set(container, dispose);
+    refresh();
+    return refreshHomepage;
   }
 
   // src/engine/templateEngine.ts

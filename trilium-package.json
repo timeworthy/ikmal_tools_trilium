@@ -1,6 +1,6 @@
 {
   "id": "iansherr/ikmal_tools_trilium",
-  "version": "1.0.36",
+  "version": "1.0.37",
   "name": "Ikmal Tools for Trilium",
   "description": "Component-driven, editable, and organizable notes system layer for Trilium Notes with Today Homepage, Template Studio, and If/Then Automation Rules.",
   "author": "Ian Sherr",
@@ -74,7 +74,7 @@
       "id": "notes-system-today-page",
       "type": "render",
       "source": "dist/artifacts/notes-system-today-page.js",
-      "integrity": "sha256-Y5+4VA314Pgty4R2nneWimUsA/4ga3Hp71p8fBVJJXM=",
+      "integrity": "sha256-tSlKUlL/uozv0zLhvCytQ/eaDpbLKCRZTOVBOVrvXqU=",
       "title": "Ikmal Tools for Trilium: Today",
       "activation": "manual"
     },
@@ -82,7 +82,7 @@
       "id": "notes-system-dashboard",
       "type": "render",
       "source": "dist/artifacts/notes-system-dashboard.js",
-      "integrity": "sha256-VDFHgtW7gwUeptoc3RB098tyEePJR0dsHMqVLGSVd1w=",
+      "integrity": "sha256-YpfqocaimjVmy3oanL+9rOGxTccZ8lKqQ6/nzqZlQjA=",
       "title": "Ikmal Tools for Trilium: Today Homepage & Workspace Dashboard",
       "activation": "manual"
     },
@@ -170,7 +170,7 @@
       "id": "notes-system-workspace-bootstrap",
       "type": "frontend",
       "source": "dist/artifacts/notes-system-workspace-bootstrap.js",
-      "integrity": "sha256-82k5s0EslWJf/NA0GdFyytEhEQGfFJWNXA71LDB+mA8=",
+      "integrity": "sha256-cqrTnhnQ1mJRQra8Y+WqZylYr0awgjNBiYKB0Z3FHho=",
       "title": "Ikmal Tools for Trilium: Workspace Setup & Repair",
       "activation": "startup"
     },

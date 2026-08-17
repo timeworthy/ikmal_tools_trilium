@@ -74,7 +74,7 @@
       "id": "notes-system-today-page",
       "type": "render",
       "source": "dist/artifacts/notes-system-today-page.js",
-      "integrity": "sha256-tSlKUlL/uozv0zLhvCytQ/eaDpbLKCRZTOVBOVrvXqU=",
+      "integrity": "sha256-SgSFaRQepI3kRzztLpbHByonSx8iRWY9kOabjlvm530=",
       "title": "Ikmal Tools for Trilium: Today",
       "activation": "manual"
     },
@@ -82,7 +82,7 @@
       "id": "notes-system-dashboard",
       "type": "render",
       "source": "dist/artifacts/notes-system-dashboard.js",
-      "integrity": "sha256-YpfqocaimjVmy3oanL+9rOGxTccZ8lKqQ6/nzqZlQjA=",
+      "integrity": "sha256-To7pCXDnu9oEKKKUVROj8FHQw9rs/8J8IPPPOBIQcnc=",
       "title": "Ikmal Tools for Trilium: Today Homepage & Workspace Dashboard",
       "activation": "manual"
     },

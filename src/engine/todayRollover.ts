@@ -17,6 +17,14 @@ export interface TodayClockSnapshot {
 }
 
 export interface TodayRolloverOptions {
+    /**
+     * Consulted at the start of every tick, before any rollover is detected.
+     * Returning false stops the monitor permanently. A caller whose render can
+     * be discarded without warning uses this to end the timer chain; checking
+     * it inside `onRollover` would not work, because a quiet tick reschedules
+     * without ever calling the rollover handler.
+     */
+    shouldContinue?: () => boolean;
     checkIntervalMs?: number;
     now?: () => Date;
     monotonicNow?: () => number;
@@ -81,6 +89,10 @@ export function startTodayRolloverMonitor(
 
     const check = () => {
         if (stopped) return;
+        if (options.shouldContinue && !options.shouldContinue()) {
+            stop();
+            return;
+        }
 
         const currentDate = now();
         const current = snapshotTodayClock(currentDate, monotonicNow());
@@ -98,12 +110,14 @@ export function startTodayRolloverMonitor(
         timer = setTimeoutFn(check, delay);
     };
 
-    schedule(now());
-
-    return () => {
+    const stop = () => {
         if (stopped) return;
         stopped = true;
         if (timer !== null) clearTimeoutFn(timer);
         timer = null;
     };
+
+    schedule(now());
+
+    return stop;
 }

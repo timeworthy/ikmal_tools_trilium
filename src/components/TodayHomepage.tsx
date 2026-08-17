@@ -94,9 +94,11 @@ export function renderTodayHomepage(
     settingsEngine?: SettingsEngine,
     options: TodayHomepageOptions = {}
 ): () => void {
-    // Dashboard tab switches can construct another renderer for the same
-    // container. Stop the prior monitor first so an old render cannot repaint a
-    // detached DOM tree or accumulate hourly timers.
+    // The Today artifact re-renders into the same container element, so stop
+    // that container's prior monitor before replacing it. This cannot catch the
+    // dashboard, which builds a new content div per render, or a closed note
+    // where no second render ever arrives; the rollover callback below handles
+    // both by disposing itself once the container is detached.
     activeTodayRenderers.get(container)?.();
 
     let mode: 'edit' | 'preview' = 'preview';
@@ -1405,14 +1407,6 @@ export function renderTodayHomepage(
         refresh();
     };
 
-    stopTodayRolloverMonitor = startTodayRolloverMonitor(() => {
-        // A date or timezone change affects the journal, quotes, anniversaries,
-        // stale-note calculations, writing goal, and activity widgets. Rebuild
-        // the current render in place so the user does not need to refresh the
-        // Trilium note manually.
-        resetDateSensitiveState();
-        refresh();
-    });
     const dispose = () => {
         disposed = true;
         stopTodayRolloverMonitor?.();
@@ -1422,6 +1416,28 @@ export function renderTodayHomepage(
         if (activeTodayRenderers.get(container) === dispose) activeTodayRenderers.delete(container);
     };
     activeTodayRenderers.set(container, dispose);
+
+    stopTodayRolloverMonitor = startTodayRolloverMonitor(() => {
+        // A date or timezone change affects the journal, quotes, anniversaries,
+        // stale-note calculations, writing goal, and activity widgets. Rebuild
+        // the current render in place so the user does not need to refresh the
+        // Trilium note manually.
+        resetDateSensitiveState();
+        refresh();
+    }, {
+        // The dashboard hands each render a freshly built content div and the
+        // Trilium note can be closed outright, so a later render is not
+        // guaranteed to arrive and run the disposer above. Detachment is the
+        // condition we actually care about. If a host ever detaches and
+        // reattaches a live container, it re-runs the render note and gets a
+        // fresh monitor; the worst case is the pre-feature behaviour of not
+        // repainting at midnight, not a broken page.
+        shouldContinue: () => {
+            if (container.isConnected) return true;
+            dispose();
+            return false;
+        },
+    });
 
     refresh();
     return refreshHomepage;

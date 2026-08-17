@@ -56,3 +56,32 @@ test('Today rollover schedules the nearer of midnight and the hourly clock guard
     assert.equal(timers.at(-1).cleared, true);
     stop();
 });
+
+test('Today rollover stops rescheduling once its owner reports it is gone', () => {
+    // A quiet tick never reaches the rollover handler, so a monitor that only
+    // checked liveness there would re-arm forever behind a discarded render.
+    let alive = true;
+    const timers = [];
+    const changes = [];
+    const now = new Date(2026, 7, 12, 12, 0);
+    startTodayRolloverMonitor((reason) => changes.push(reason), {
+        now: () => now,
+        monotonicNow: () => 0,
+        shouldContinue: () => alive,
+        setTimeout: (handler, timeout) => {
+            timers.push({ handler, timeout });
+            return timers.length;
+        },
+        clearTimeout: (timer) => { timers[timer - 1].cleared = true; },
+    });
+
+    assert.equal(timers.length, 1);
+    timers[0].handler();
+    assert.equal(timers.length, 2, 'a live owner keeps the chain armed');
+    assert.deepEqual(changes, [], 'an unchanged clock does not trigger a rollover');
+
+    alive = false;
+    timers[1].handler();
+    assert.equal(timers.length, 2, 'a detached owner schedules nothing further');
+    assert.deepEqual(changes, []);
+});

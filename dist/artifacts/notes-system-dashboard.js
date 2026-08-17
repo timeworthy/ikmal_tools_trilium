@@ -2841,6 +2841,10 @@ ${YamlParser.stringify({ template: dumped })}
     let stopped = false;
     const check = () => {
       if (stopped) return;
+      if (options.shouldContinue && !options.shouldContinue()) {
+        stop();
+        return;
+      }
       const currentDate = now();
       const current = snapshotTodayClock(currentDate, monotonicNow());
       const reason = detectTodayClockChange(previous, current);
@@ -2854,13 +2858,14 @@ ${YamlParser.stringify({ template: dumped })}
       const delay = Math.min(untilMidnight, checkIntervalMs);
       timer = setTimeoutFn(check, delay);
     };
-    schedule(now());
-    return () => {
+    const stop = () => {
       if (stopped) return;
       stopped = true;
       if (timer !== null) clearTimeoutFn(timer);
       timer = null;
     };
+    schedule(now());
+    return stop;
   }
 
   // src/components/TodayHomepage.tsx
@@ -3967,10 +3972,6 @@ ${YamlParser.stringify({ template: dumped })}
       resetDateSensitiveState();
       refresh();
     };
-    stopTodayRolloverMonitor = startTodayRolloverMonitor(() => {
-      resetDateSensitiveState();
-      refresh();
-    });
     const dispose = () => {
       disposed = true;
       stopTodayRolloverMonitor?.();
@@ -3980,6 +3981,23 @@ ${YamlParser.stringify({ template: dumped })}
       if (activeTodayRenderers.get(container) === dispose) activeTodayRenderers.delete(container);
     };
     activeTodayRenderers.set(container, dispose);
+    stopTodayRolloverMonitor = startTodayRolloverMonitor(() => {
+      resetDateSensitiveState();
+      refresh();
+    }, {
+      // The dashboard hands each render a freshly built content div and the
+      // Trilium note can be closed outright, so a later render is not
+      // guaranteed to arrive and run the disposer above. Detachment is the
+      // condition we actually care about. If a host ever detaches and
+      // reattaches a live container, it re-runs the render note and gets a
+      // fresh monitor; the worst case is the pre-feature behaviour of not
+      // repainting at midnight, not a broken page.
+      shouldContinue: () => {
+        if (container.isConnected) return true;
+        dispose();
+        return false;
+      }
+    });
     refresh();
     return refreshHomepage;
   }

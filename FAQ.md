@@ -30,6 +30,15 @@ a configured registry or the direct manifest URL shown in the README. Installing
 the declared artifacts into that Trilium instance; it does not copy this repository into
 the Trilium source checkout.
 
+### Can I install from a local checkout?
+
+Yes. Use the deployment helper for a local filesystem checkout, or expose the checkout
+through a localhost HTTP server and add its manifest/registry URL in Settings → Plugins.
+Do not paste a filesystem path or `file://` URL into the browser-based Plugins page; the
+browser cannot read arbitrary local files. The modern source label is mirrored into the
+legacy source labels when settings are saved, which keeps older embedded package
+managers able to resolve the same source.
+
 ## What does Quick Capture's "Create" button actually do?
 
 Builds a `NoteCreationPlan` (`noteCreationEngine.ts`) and materializes it

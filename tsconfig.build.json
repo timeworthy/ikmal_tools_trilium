@@ -6,5 +6,6 @@
     "rootDir": "src"
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
-  "exclude": ["src/artifacts/**", "tests/**"]
+  "//": "src/backend is excluded from emit only: tools/build.mjs bundles those entry points with esbuild to the same dist/backend paths, and a plain tsc emit would overwrite the committed bundles and break their manifest integrity hashes. The base tsconfig still typechecks them via `npm run check`.",
+  "exclude": ["src/artifacts/**", "src/backend/**", "tests/**"]
 }

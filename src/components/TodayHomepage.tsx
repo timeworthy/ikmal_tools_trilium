@@ -22,6 +22,7 @@ import {
     pickDailyQuote,
 } from '../engine/noteInsightsEngine.js';
 import { button, emptyState, escapeHtml, iconAction, listItem, pageHeader, row, section, switchRow, toggle } from './nativeUi.js';
+import { startTodayRolloverMonitor } from '../engine/todayRollover.js';
 
 interface KanbanTask {
     id: string;
@@ -57,6 +58,8 @@ const KANBAN_COLUMNS = [
     { id: 'done', title: 'Completed' },
 ];
 
+const activeTodayRenderers = new WeakMap<HTMLElement, () => void>();
+
 /**
  * Keep the Today capture bar aligned with the original Ikmal workspace
  * actions. The template registry contains more implementation/editorial
@@ -91,6 +94,13 @@ export function renderTodayHomepage(
     settingsEngine?: SettingsEngine,
     options: TodayHomepageOptions = {}
 ): () => void {
+    // The Today artifact re-renders into the same container element, so stop
+    // that container's prior monitor before replacing it. This cannot catch the
+    // dashboard, which builds a new content div per render, or a closed note
+    // where no second render ever arrives; the rollover callback below handles
+    // both by disposing itself once the container is detached.
+    activeTodayRenderers.get(container)?.();
+
     let mode: 'edit' | 'preview' = 'preview';
 
     const showEditor = options.showEditor !== false;
@@ -124,8 +134,23 @@ export function renderTodayHomepage(
     let wordsTodayCache: number | null = null;
     let wordsTodayPending = false;
     let dataGeneration = 0;
+    let disposed = false;
+    let stopTodayRolloverMonitor: (() => void) | null = null;
+
+    function resetDateSensitiveState() {
+        dataGeneration += 1;
+        noteSummaryPending = false;
+        taskPending = false;
+        activeProjectPending = false;
+        wordsTodayPending = false;
+        noteSummaryCache = null;
+        taskCache = null;
+        activeProjectCache = null;
+        wordsTodayCache = null;
+    }
 
     function refresh() {
+        if (disposed) return;
         container.innerHTML = '';
 
         const wrapper = document.createElement('div');
@@ -1373,23 +1398,49 @@ export function renderTodayHomepage(
         parent.appendChild(board);
     }
 
-    refresh();
-    return () => {
+    const refreshHomepage = () => {
         // A successful quick capture changes several widgets at once (active
         // projects, stories, recent activity, and today's journal). Clear the
         // memoized searches before repainting so the page does not look stale
         // until the user hard-refreshes Trilium.
-        dataGeneration += 1;
-        noteSummaryPending = false;
-        taskPending = false;
-        activeProjectPending = false;
-        wordsTodayPending = false;
-        noteSummaryCache = null;
-        taskCache = null;
-        activeProjectCache = null;
-        wordsTodayCache = null;
+        resetDateSensitiveState();
         refresh();
     };
+
+    const dispose = () => {
+        disposed = true;
+        stopTodayRolloverMonitor?.();
+        stopTodayRolloverMonitor = null;
+        for (const timer of splitWidthTimers) window.clearTimeout(timer);
+        splitWidthTimers = [];
+        if (activeTodayRenderers.get(container) === dispose) activeTodayRenderers.delete(container);
+    };
+    activeTodayRenderers.set(container, dispose);
+
+    stopTodayRolloverMonitor = startTodayRolloverMonitor(() => {
+        // A date or timezone change affects the journal, quotes, anniversaries,
+        // stale-note calculations, writing goal, and activity widgets. Rebuild
+        // the current render in place so the user does not need to refresh the
+        // Trilium note manually.
+        resetDateSensitiveState();
+        refresh();
+    }, {
+        // The dashboard hands each render a freshly built content div and the
+        // Trilium note can be closed outright, so a later render is not
+        // guaranteed to arrive and run the disposer above. Detachment is the
+        // condition we actually care about. If a host ever detaches and
+        // reattaches a live container, it re-runs the render note and gets a
+        // fresh monitor; the worst case is the pre-feature behaviour of not
+        // repainting at midnight, not a broken page.
+        shouldContinue: () => {
+            if (container.isConnected) return true;
+            dispose();
+            return false;
+        },
+    });
+
+    refresh();
+    return refreshHomepage;
 }
 
 export interface TodayHomepageOptions {

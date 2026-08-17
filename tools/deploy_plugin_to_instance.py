@@ -91,6 +91,13 @@ def note_is_archived(note: dict) -> bool:
     )
 
 
+def set_package_integrity(api: Etapi, note_id: str, artifact: dict) -> None:
+    """Keep local ETAPI installs equivalent to URL-installer artifact notes."""
+    integrity = artifact.get("integrity")
+    if integrity:
+        api.set_label(note_id, "packageIntegrity", integrity)
+
+
 # Every label that can make an artifact execute. Both archive paths must strip
 # the same set: an artifact that migrated to `#widget` activation and was then
 # retired would otherwise stay instantiable by the frontend after archiving.
@@ -319,6 +326,7 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
             api.set_label(render_note_id, "packageVersion", manifest["version"])
             api.set_label(render_note_id, "packageArtifact", artifact_id)
             api.set_label(render_note_id, "packageEnabled", "true")
+            set_package_integrity(api, render_note_id, artifact)
 
             # Check or create child script note
             script_title = f"{title} (Script)"
@@ -347,6 +355,7 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
             api.set_label(script_note_id, "packageVersion", manifest["version"])
             api.set_label(script_note_id, "packageArtifact", f"{artifact_id}-script")
             api.set_label(script_note_id, "packageEnabled", "true")
+            set_package_integrity(api, script_note_id, artifact)
 
             # Link parent render note to child script note via ~renderNote relation
             api.set_relation(render_note_id, "renderNote", script_note_id)
@@ -393,6 +402,7 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
             api.set_label(art_note_id, "packageVersion", manifest["version"])
             api.set_label(art_note_id, "packageArtifact", artifact_id)
             api.set_label(art_note_id, "packageEnabled", "true")
+            set_package_integrity(api, art_note_id, artifact)
 
             # A package update may change an artifact's activation model (for
             # example, the Ikmal Editor moved from a startup script to a

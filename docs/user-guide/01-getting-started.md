@@ -19,6 +19,21 @@ package manager and Plugins settings tab are developed separately in the experim
 4. Install and enable **Ikmal Tools for Trilium**.
 5. Trilium will instantiate the `#packageOwner="iansherr/ikmal_tools_trilium"` container note and its package artifacts.
 
+### Local development install
+
+The Plugins page runs in the browser, so it can load a local package only through a
+localhost HTTP URL (for example, a local registry server whose manifest artifact URLs
+also point to that server). It cannot fetch a filesystem
+path or `file://` URL. For a checkout-to-instance install, use:
+
+```bash
+PYTHONPATH=. python3 tools/deploy_plugin_to_instance.py http://127.0.0.1:37840 ETAPI_TOKEN trilium-package.json
+```
+
+The local deployer and URL installer use the same package ID and manifest version. The
+stored manifest is used when the catalog is unavailable, while a newer remote manifest
+can still update the local installation later.
+
 ---
 
 ## First Launch

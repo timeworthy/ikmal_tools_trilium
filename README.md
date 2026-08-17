@@ -24,6 +24,14 @@ direct manifest URL:
 
 `https://raw.githubusercontent.com/iansherr/ikmal_tools_trilium/main/trilium-package.json`
 
+For local development, either serve a registry/manifest whose artifact repository also
+points to a localhost HTTP server and add that URL as a source, or use
+`tools/deploy_plugin_to_instance.py` with the local `trilium-package.json`. A browser-based Plugins page cannot read an arbitrary
+`/path/to/trilium-package.json` or `file://` URL. The Plugins settings page stores the
+modern `packageSources` label and compatibility aliases for older package managers, so
+switching between a local source and a remote source remains readable across host and
+manager versions.
+
 The integration branch is experimental and is not a production Trilium release.
 
 The `src/artifacts` files are build inputs. The committed `dist/artifacts` files are the

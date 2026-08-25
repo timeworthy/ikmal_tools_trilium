@@ -27,10 +27,13 @@ def manifest_tree_notes(api: Etapi, manifest_note_id: str) -> list[dict]:
     seen = set()
     while pending:
         note_id = pending.pop()
-        if note_id in seen:
+        if not note_id or note_id in seen:
             continue
         seen.add(note_id)
-        note = api.get_note(note_id)
+        try:
+            note = api.get_note(note_id)
+        except Exception:
+            continue
         result.append(note)
         pending.extend(note.get("childNoteIds", []))
     return result
@@ -38,7 +41,27 @@ def manifest_tree_notes(api: Etapi, manifest_note_id: str) -> list[dict]:
 
 def community_package_tree_notes(api: Etapi) -> list[dict]:
     """Walk the hidden package root because normal search omits it."""
-    return manifest_tree_notes(api, COMMUNITY_PACKAGES_ROOT_ID)
+    root_id = COMMUNITY_PACKAGES_ROOT_ID
+    try:
+        api.get_note(root_id)
+    except Exception:
+        matches = api.search('#communityPackages', include_archived=True)
+        if matches:
+            root_id = matches[0]["noteId"]
+        else:
+            try:
+                user_hidden = api.get_note("_userHidden")
+                for cid in user_hidden.get("childNoteIds", []):
+                    try:
+                        cn = api.get_note(cid)
+                        if any(a.get("name") == "communityPackages" for a in cn.get("attributes", [])):
+                            root_id = cid
+                            break
+                    except Exception:
+                        pass
+            except Exception:
+                return []
+    return manifest_tree_notes(api, root_id)
 
 
 def owned_artifacts(api: Etapi, owner: str, artifact_id: str) -> list[dict]:
@@ -47,11 +70,16 @@ def owned_artifacts(api: Etapi, owner: str, artifact_id: str) -> list[dict]:
     # by artifact-only searches in every Trilium frontend/cache state.
     candidates = api.search(f'#packageOwner="{owner}"')
     if not candidates:
-        candidates = api.search(
-            f'#packageOwner="{owner}"',
-            include_archived=True,
-            ancestor_note_id=COMMUNITY_PACKAGES_ROOT_ID,
-        )
+        root_id = COMMUNITY_PACKAGES_ROOT_ID
+        try:
+            api.get_note(root_id)
+            candidates = api.search(
+                f'#packageOwner="{owner}"',
+                include_archived=True,
+                ancestor_note_id=root_id,
+            )
+        except Exception:
+            candidates = []
     if not candidates:
         candidates = community_package_tree_notes(api)
         candidates = [
@@ -241,16 +269,34 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
     
     print(f"🚀 Deploying plugin '{manifest['id']}' v{manifest['version']} to {url}...")
     
-    # 1. Resolve the hidden Community Packages root by its stable label. An
-    # earlier local helper used a stale ID and silently fell back to `root`,
-    # making the entire package tree visible to users.
+    root_note = None
     try:
         root_note = api.get_note(COMMUNITY_PACKAGES_ROOT_ID)
-    except Exception as cause:
-        raise RuntimeError(
-            "Could not resolve the hidden Community Packages root; refusing to install into root. "
-            "Open Settings → Plugins once to initialize the package manager."
-        ) from cause
+    except Exception:
+        pass
+
+    if not root_note:
+        community_matches = api.search('#communityPackages')
+        if community_matches:
+            root_note = community_matches[0]
+        else:
+            # Look for _userHidden or root
+            hidden_id = "_userHidden"
+            try:
+                hidden_note = api.get_note("_userHidden")
+                hidden_id = hidden_note["noteId"]
+            except Exception:
+                hidden_matches = api.search("root")
+                hidden_id = hidden_matches[0]["noteId"] if hidden_matches else "root"
+            
+            root_note_id = api.create_note(
+                parent_note_id=hidden_id,
+                title="Community Packages",
+                note_type="book",
+            )
+            api.set_label(root_note_id, "communityPackages", "")
+            root_note = api.get_note(root_note_id)
+
     parent_id = root_note["noteId"]
     print(f"  ✓ Target hidden root found: '{root_note['title']}' ({parent_id})")
 

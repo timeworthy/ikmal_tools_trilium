@@ -252,6 +252,36 @@ export const BUILTIN_TEMPLATES: TemplateDefinition[] = [
         ],
     },
     {
+        id: 'weeklyReview',
+        marker: 'extWeeklyReview',
+        title: 'Weekly Review & Reflection',
+        icon: 'calendar-week',
+        category: 'work',
+        rootContainerMarker: 'calendarRoot',
+        titlePattern: '{date:YYYY-[W]WW} - Weekly Review',
+        defaultContent: '<h2>Accomplishments & Completed Tasks</h2><p></p><h2>Key Insights & Learnings</h2><p></p><h2>Blockers & Stale Items</h2><p></p><h2>Priorities for Next Week</h2><ul><li></li></ul>',
+        projectScoped: false,
+        isBuiltin: true,
+        attributes: [
+            { name: 'reviewDate', type: 'label', dataType: 'date', isPromoted: true, label: 'Review Date' },
+            { name: 'weekNumber', type: 'label', dataType: 'number', isPromoted: true, label: 'Week Number' },
+            { name: 'mood', type: 'label', dataType: 'select', options: ['energized', 'productive', 'steady', 'exhausted', 'blocked'], defaultValue: 'productive', isPromoted: true, label: 'Week Rating' },
+        ],
+        relationships: [
+            {
+                id: 'rel_review_projects',
+                name: 'Reviewed Projects',
+                relationName: 'reviewedProjects',
+                targetTemplateId: 'projectHub',
+                targetTemplateName: 'Project Hub',
+                isMulti: true,
+                autoCloneToParent: false,
+                inheritTopics: false,
+                direction: 'peer',
+            },
+        ],
+    },
+    {
         id: 'projectHub',
         marker: 'extProjectHub',
         title: 'Project Hub',
@@ -526,19 +556,54 @@ export class TemplateEngine {
         return this.templates.delete(id);
     }
 
-    public formatTitle(templateId: string, rawTitle: string, dateObj: Date = new Date()): string {
+    public formatTitle(
+        templateId: string,
+        rawTitle: string,
+        dateObj: Date = new Date(),
+        options?: {
+            projectName?: string;
+            prompts?: Record<string, string>;
+        }
+    ): string {
         const template = this.getTemplate(templateId);
-        const pattern = template ? template.titlePattern : '{title}';
+        let pattern = template ? template.titlePattern : '{title}';
         
         const year = dateObj.getFullYear();
         const month = String(dateObj.getMonth() + 1).padStart(2, '0');
         const day = String(dateObj.getDate()).padStart(2, '0');
         const dateStr = `${year}-${month}-${day}`;
 
+        // Calculate ISO week number
+        const utcDate = new Date(Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate()));
+        const dayNum = utcDate.getUTCDay() || 7;
+        utcDate.setUTCDate(utcDate.getUTCDate() + 4 - dayNum);
+        const yearStart = new Date(Date.UTC(utcDate.getUTCFullYear(), 0, 1));
+        const weekNumber = Math.ceil((((utcDate.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+        const weekStr = String(weekNumber).padStart(2, '0');
+
         let formatted = pattern
             .replace('{title}', rawTitle || 'Untitled')
             .replace('YYYY-MM-DD', dateStr)
-            .replace('{date}', dateStr);
+            .replace('{date}', dateStr)
+            .replace('{date:YYYY-MM-DD}', dateStr)
+            .replace('{date:YYYY-[W]WW}', `${year}-W${weekStr}`)
+            .replace('{date:YYYY-WW}', `${year}-${weekStr}`)
+            .replace('{date:week}', weekStr);
+
+        if (options?.projectName) {
+            formatted = formatted
+                .replace('{project:name}', options.projectName)
+                .replace('{project}', options.projectName);
+        }
+
+        if (options?.prompts) {
+            for (const [k, v] of Object.entries(options.prompts)) {
+                formatted = formatted.replace(new RegExp(`\\{prompt:${k}\\}`, 'g'), v);
+            }
+        }
+
+        // Clean any leftover unfilled prompt tags
+        formatted = formatted.replace(/\{prompt:[^}]+\}/g, rawTitle || '').trim();
 
         return formatted.trim();
     }

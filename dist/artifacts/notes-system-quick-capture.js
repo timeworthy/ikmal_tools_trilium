@@ -252,6 +252,36 @@
       ]
     },
     {
+      id: "weeklyReview",
+      marker: "extWeeklyReview",
+      title: "Weekly Review & Reflection",
+      icon: "calendar-week",
+      category: "work",
+      rootContainerMarker: "calendarRoot",
+      titlePattern: "{date:YYYY-[W]WW} - Weekly Review",
+      defaultContent: "<h2>Accomplishments & Completed Tasks</h2><p></p><h2>Key Insights & Learnings</h2><p></p><h2>Blockers & Stale Items</h2><p></p><h2>Priorities for Next Week</h2><ul><li></li></ul>",
+      projectScoped: false,
+      isBuiltin: true,
+      attributes: [
+        { name: "reviewDate", type: "label", dataType: "date", isPromoted: true, label: "Review Date" },
+        { name: "weekNumber", type: "label", dataType: "number", isPromoted: true, label: "Week Number" },
+        { name: "mood", type: "label", dataType: "select", options: ["energized", "productive", "steady", "exhausted", "blocked"], defaultValue: "productive", isPromoted: true, label: "Week Rating" }
+      ],
+      relationships: [
+        {
+          id: "rel_review_projects",
+          name: "Reviewed Projects",
+          relationName: "reviewedProjects",
+          targetTemplateId: "projectHub",
+          targetTemplateName: "Project Hub",
+          isMulti: true,
+          autoCloneToParent: false,
+          inheritTopics: false,
+          direction: "peer"
+        }
+      ]
+    },
+    {
       id: "projectHub",
       marker: "extProjectHub",
       title: "Project Hub",
@@ -508,14 +538,29 @@
       }
       return this.templates.delete(id);
     }
-    formatTitle(templateId, rawTitle, dateObj = /* @__PURE__ */ new Date()) {
+    formatTitle(templateId, rawTitle, dateObj = /* @__PURE__ */ new Date(), options) {
       const template = this.getTemplate(templateId);
-      const pattern = template ? template.titlePattern : "{title}";
+      let pattern = template ? template.titlePattern : "{title}";
       const year = dateObj.getFullYear();
       const month = String(dateObj.getMonth() + 1).padStart(2, "0");
       const day = String(dateObj.getDate()).padStart(2, "0");
       const dateStr = `${year}-${month}-${day}`;
-      let formatted = pattern.replace("{title}", rawTitle || "Untitled").replace("YYYY-MM-DD", dateStr).replace("{date}", dateStr);
+      const utcDate = new Date(Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate()));
+      const dayNum = utcDate.getUTCDay() || 7;
+      utcDate.setUTCDate(utcDate.getUTCDate() + 4 - dayNum);
+      const yearStart = new Date(Date.UTC(utcDate.getUTCFullYear(), 0, 1));
+      const weekNumber = Math.ceil(((utcDate.getTime() - yearStart.getTime()) / 864e5 + 1) / 7);
+      const weekStr = String(weekNumber).padStart(2, "0");
+      let formatted = pattern.replace("{title}", rawTitle || "Untitled").replace("YYYY-MM-DD", dateStr).replace("{date}", dateStr).replace("{date:YYYY-MM-DD}", dateStr).replace("{date:YYYY-[W]WW}", `${year}-W${weekStr}`).replace("{date:YYYY-WW}", `${year}-${weekStr}`).replace("{date:week}", weekStr);
+      if (options?.projectName) {
+        formatted = formatted.replace("{project:name}", options.projectName).replace("{project}", options.projectName);
+      }
+      if (options?.prompts) {
+        for (const [k, v] of Object.entries(options.prompts)) {
+          formatted = formatted.replace(new RegExp(`\\{prompt:${k}\\}`, "g"), v);
+        }
+      }
+      formatted = formatted.replace(/\{prompt:[^}]+\}/g, rawTitle || "").trim();
       return formatted.trim();
     }
     addPromotedAttribute(templateId, attribute) {
@@ -757,7 +802,7 @@
         if (eventType === "onAttributeChanged" && rule.trigger.attributeName && rule.trigger.attributeName !== changedAttribute) {
           continue;
         }
-        if (this.checkConditions(rule.conditions, context)) {
+        if (this.checkRuleConditions(rule, context)) {
           results.push({
             ruleId: rule.id,
             ruleName: rule.name,
@@ -768,11 +813,26 @@
       }
       return results;
     }
-    /** Substitutes the placeholders an action's params may carry. */
+    /** Substitutes the placeholders an action's params may carry and processes date offsets. */
     processActionTemplates(action, context) {
       const copy = JSON.parse(JSON.stringify(action));
       const now = /* @__PURE__ */ new Date();
       const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      if (copy.type === "setDueDateOffset") {
+        let offsetDays = copy.params.offsetDays;
+        if (offsetDays === void 0 && copy.params.offsetString) {
+          const s = copy.params.offsetString.trim();
+          if (s === "+1w" || s === "1w") offsetDays = 7;
+          else if (s === "+2w" || s === "2w") offsetDays = 14;
+          else if (s === "+1m" || s === "1m") offsetDays = 30;
+          else if (s.endsWith("d")) offsetDays = parseInt(s, 10);
+          else offsetDays = parseInt(s, 10);
+        }
+        const targetDate = new Date(now.getTime() + (offsetDays || 0) * 864e5);
+        const targetIso = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, "0")}-${String(targetDate.getDate()).padStart(2, "0")}`;
+        copy.params.labelName = "dueDate";
+        copy.params.labelValue = targetIso;
+      }
       for (const key of Object.keys(copy.params)) {
         const value = copy.params[key];
         if (typeof value === "string") {
@@ -781,63 +841,78 @@
       }
       return copy;
     }
-    checkConditions(conditions, context) {
-      for (const cond of conditions) {
-        const val = context.attributes[cond.field] ?? context.relations[cond.field] ?? {
-          title: context.title,
-          templateId: context.templateId,
-          category: context.category,
-          containerMarker: context.containerMarker
-        }[cond.field];
-        switch (cond.operator) {
-          case "equals":
-            if (val !== cond.value) return false;
-            break;
-          case "notEquals":
-            if (val === cond.value) return false;
-            break;
-          case "contains":
-            if (typeof val === "string") {
-              if (!val.includes(String(cond.value))) return false;
-            } else if (Array.isArray(val)) {
-              if (!val.includes(cond.value)) return false;
-            } else {
-              return false;
-            }
-            break;
-          case "notContains":
-            if (typeof val === "string") {
-              if (val.includes(String(cond.value))) return false;
-            } else if (Array.isArray(val)) {
-              if (val.includes(cond.value)) return false;
-            }
-            break;
-          case "startsWith":
-            if (typeof val !== "string" || !val.startsWith(String(cond.value))) return false;
-            break;
-          case "endsWith":
-            if (typeof val !== "string" || !val.endsWith(String(cond.value))) return false;
-            break;
-          case "isEmpty":
-            if (!(val === void 0 || val === null || val === "")) return false;
-            break;
-          case "greaterThan":
-            if (Number.isNaN(Number(val)) || Number(val) <= Number(cond.value)) return false;
-            break;
-          case "lessThan":
-            if (Number.isNaN(Number(val)) || Number(val) >= Number(cond.value)) return false;
-            break;
-          case "isSet": {
-            const expectSet = cond.value !== false;
-            const isPresent = val !== void 0 && val !== null && val !== "";
-            if (expectSet !== isPresent) return false;
-            break;
+    evaluateCondition(cond, context) {
+      const val = context.attributes[cond.field] ?? context.relations[cond.field] ?? {
+        title: context.title,
+        templateId: context.templateId,
+        category: context.category,
+        containerMarker: context.containerMarker
+      }[cond.field];
+      switch (cond.operator) {
+        case "equals":
+          return val === cond.value;
+        case "notEquals":
+          return val !== cond.value;
+        case "contains":
+          if (typeof val === "string") {
+            return val.includes(String(cond.value));
+          } else if (Array.isArray(val)) {
+            return val.includes(cond.value);
           }
-          case "isNotSet":
-            if (val !== void 0 && val !== null && val !== "") return false;
-            break;
-          default:
-            return false;
+          return false;
+        case "notContains":
+          if (typeof val === "string") {
+            return !val.includes(String(cond.value));
+          } else if (Array.isArray(val)) {
+            return !val.includes(cond.value);
+          }
+          return true;
+        case "startsWith":
+          return typeof val === "string" && val.startsWith(String(cond.value));
+        case "endsWith":
+          return typeof val === "string" && val.endsWith(String(cond.value));
+        case "isEmpty":
+          return val === void 0 || val === null || val === "";
+        case "greaterThan":
+          return !Number.isNaN(Number(val)) && Number(val) > Number(cond.value);
+        case "lessThan":
+          return !Number.isNaN(Number(val)) && Number(val) < Number(cond.value);
+        case "isSet": {
+          const expectSet = cond.value !== false;
+          const isPresent = val !== void 0 && val !== null && val !== "";
+          return expectSet === isPresent;
+        }
+        case "isNotSet":
+          return val === void 0 || val === null || val === "";
+        default:
+          return false;
+      }
+    }
+    evaluateConditionGroup(group, context) {
+      if (!group || !Array.isArray(group.conditions)) return true;
+      if (group.operator === "any") {
+        if (group.conditions.length === 0) return true;
+        return group.conditions.some((item) => {
+          if ("operator" in item && "conditions" in item) {
+            return this.evaluateConditionGroup(item, context);
+          }
+          return this.evaluateCondition(item, context);
+        });
+      }
+      return group.conditions.every((item) => {
+        if ("operator" in item && "conditions" in item) {
+          return this.evaluateConditionGroup(item, context);
+        }
+        return this.evaluateCondition(item, context);
+      });
+    }
+    checkRuleConditions(rule, context) {
+      if (rule.conditionGroup) {
+        if (!this.evaluateConditionGroup(rule.conditionGroup, context)) return false;
+      }
+      if (rule.conditions && rule.conditions.length > 0) {
+        for (const cond of rule.conditions) {
+          if (!this.evaluateCondition(cond, context)) return false;
         }
       }
       return true;

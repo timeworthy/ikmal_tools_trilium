@@ -157,7 +157,7 @@
         if (eventType === "onAttributeChanged" && rule.trigger.attributeName && rule.trigger.attributeName !== changedAttribute) {
           continue;
         }
-        if (this.checkConditions(rule.conditions, context)) {
+        if (this.checkRuleConditions(rule, context)) {
           results.push({
             ruleId: rule.id,
             ruleName: rule.name,
@@ -168,11 +168,26 @@
       }
       return results;
     }
-    /** Substitutes the placeholders an action's params may carry. */
+    /** Substitutes the placeholders an action's params may carry and processes date offsets. */
     processActionTemplates(action, context) {
       const copy = JSON.parse(JSON.stringify(action));
       const now = /* @__PURE__ */ new Date();
       const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      if (copy.type === "setDueDateOffset") {
+        let offsetDays = copy.params.offsetDays;
+        if (offsetDays === void 0 && copy.params.offsetString) {
+          const s = copy.params.offsetString.trim();
+          if (s === "+1w" || s === "1w") offsetDays = 7;
+          else if (s === "+2w" || s === "2w") offsetDays = 14;
+          else if (s === "+1m" || s === "1m") offsetDays = 30;
+          else if (s.endsWith("d")) offsetDays = parseInt(s, 10);
+          else offsetDays = parseInt(s, 10);
+        }
+        const targetDate = new Date(now.getTime() + (offsetDays || 0) * 864e5);
+        const targetIso = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, "0")}-${String(targetDate.getDate()).padStart(2, "0")}`;
+        copy.params.labelName = "dueDate";
+        copy.params.labelValue = targetIso;
+      }
       for (const key of Object.keys(copy.params)) {
         const value = copy.params[key];
         if (typeof value === "string") {
@@ -181,63 +196,78 @@
       }
       return copy;
     }
-    checkConditions(conditions, context) {
-      for (const cond of conditions) {
-        const val = context.attributes[cond.field] ?? context.relations[cond.field] ?? {
-          title: context.title,
-          templateId: context.templateId,
-          category: context.category,
-          containerMarker: context.containerMarker
-        }[cond.field];
-        switch (cond.operator) {
-          case "equals":
-            if (val !== cond.value) return false;
-            break;
-          case "notEquals":
-            if (val === cond.value) return false;
-            break;
-          case "contains":
-            if (typeof val === "string") {
-              if (!val.includes(String(cond.value))) return false;
-            } else if (Array.isArray(val)) {
-              if (!val.includes(cond.value)) return false;
-            } else {
-              return false;
-            }
-            break;
-          case "notContains":
-            if (typeof val === "string") {
-              if (val.includes(String(cond.value))) return false;
-            } else if (Array.isArray(val)) {
-              if (val.includes(cond.value)) return false;
-            }
-            break;
-          case "startsWith":
-            if (typeof val !== "string" || !val.startsWith(String(cond.value))) return false;
-            break;
-          case "endsWith":
-            if (typeof val !== "string" || !val.endsWith(String(cond.value))) return false;
-            break;
-          case "isEmpty":
-            if (!(val === void 0 || val === null || val === "")) return false;
-            break;
-          case "greaterThan":
-            if (Number.isNaN(Number(val)) || Number(val) <= Number(cond.value)) return false;
-            break;
-          case "lessThan":
-            if (Number.isNaN(Number(val)) || Number(val) >= Number(cond.value)) return false;
-            break;
-          case "isSet": {
-            const expectSet = cond.value !== false;
-            const isPresent = val !== void 0 && val !== null && val !== "";
-            if (expectSet !== isPresent) return false;
-            break;
+    evaluateCondition(cond, context) {
+      const val = context.attributes[cond.field] ?? context.relations[cond.field] ?? {
+        title: context.title,
+        templateId: context.templateId,
+        category: context.category,
+        containerMarker: context.containerMarker
+      }[cond.field];
+      switch (cond.operator) {
+        case "equals":
+          return val === cond.value;
+        case "notEquals":
+          return val !== cond.value;
+        case "contains":
+          if (typeof val === "string") {
+            return val.includes(String(cond.value));
+          } else if (Array.isArray(val)) {
+            return val.includes(cond.value);
           }
-          case "isNotSet":
-            if (val !== void 0 && val !== null && val !== "") return false;
-            break;
-          default:
-            return false;
+          return false;
+        case "notContains":
+          if (typeof val === "string") {
+            return !val.includes(String(cond.value));
+          } else if (Array.isArray(val)) {
+            return !val.includes(cond.value);
+          }
+          return true;
+        case "startsWith":
+          return typeof val === "string" && val.startsWith(String(cond.value));
+        case "endsWith":
+          return typeof val === "string" && val.endsWith(String(cond.value));
+        case "isEmpty":
+          return val === void 0 || val === null || val === "";
+        case "greaterThan":
+          return !Number.isNaN(Number(val)) && Number(val) > Number(cond.value);
+        case "lessThan":
+          return !Number.isNaN(Number(val)) && Number(val) < Number(cond.value);
+        case "isSet": {
+          const expectSet = cond.value !== false;
+          const isPresent = val !== void 0 && val !== null && val !== "";
+          return expectSet === isPresent;
+        }
+        case "isNotSet":
+          return val === void 0 || val === null || val === "";
+        default:
+          return false;
+      }
+    }
+    evaluateConditionGroup(group, context) {
+      if (!group || !Array.isArray(group.conditions)) return true;
+      if (group.operator === "any") {
+        if (group.conditions.length === 0) return true;
+        return group.conditions.some((item) => {
+          if ("operator" in item && "conditions" in item) {
+            return this.evaluateConditionGroup(item, context);
+          }
+          return this.evaluateCondition(item, context);
+        });
+      }
+      return group.conditions.every((item) => {
+        if ("operator" in item && "conditions" in item) {
+          return this.evaluateConditionGroup(item, context);
+        }
+        return this.evaluateCondition(item, context);
+      });
+    }
+    checkRuleConditions(rule, context) {
+      if (rule.conditionGroup) {
+        if (!this.evaluateConditionGroup(rule.conditionGroup, context)) return false;
+      }
+      if (rule.conditions && rule.conditions.length > 0) {
+        for (const cond of rule.conditions) {
+          if (!this.evaluateCondition(cond, context)) return false;
         }
       }
       return true;

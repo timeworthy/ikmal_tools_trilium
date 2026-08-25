@@ -49,6 +49,8 @@ def _descendants(api: Etapi, root_id: str) -> list[str]:
         pending.extend(child_ids)
     return result
 
+EXIT_OK = 0
+
 # Kept in lockstep with `trilium-package.json` by a package manifest test, so
 # the version this tool stamps on #extConfig matches what the deploy tool
 # stamps on every artifact.
@@ -71,6 +73,22 @@ CONTAINERS = [
     ("storyDraftRoot", "Drafts", "_userHidden", "book", {"iconClass": "bx bx-file"}),
     ("emailRoot", "Emails", "_userHidden", "book", {"iconClass": "bx bx-envelope"}),
     ("dashboardRoot", "Dashboards", "root", "book", {"iconClass": "bx bx-dashboard", "viewType": "dashboard"}),
+]
+
+SAVED_SEARCHES = [
+    ("Due Soon", "dueSoon", "#extTask AND #dueDate <= TODAY+7 AND #!doneDate orderBy #dueDate", {"viewType": "table"}),
+    ("Overdue", "overdue", "#extTask AND #dueDate < TODAY AND #!doneDate orderBy #dueDate", {"viewType": "table"}),
+    ("Recently Touched", "recentlyTouched", "#noteType AND #!dateNote AND note.dateModified >= TODAY-7 orderBy note.dateModified desc", {"viewType": "table"}),
+    ("Task Calendar", "taskCalendar", "#extTask AND #dueDate AND #!doneDate", {"viewType": "calendar", "calendar:startDate": "dueDate", "calendar:view": "dayGridMonth"}),
+    ("Meeting Calendar", "meetingCalendar", "#extMeeting AND #startDate", {"viewType": "calendar", "calendar:view": "dayGridMonth"}),
+    ("Open Tasks", "openTasks", "#extTask AND #!doneDate orderBy #dueDate", {"viewType": "table"}),
+    ("Upcoming Meetings", "upcomingMeetings", "#extMeeting AND #startDate orderBy #startDate", {"viewType": "table"}),
+    ("Active Projects", "activeProjects", "#projectArea = active AND (#extProjectHub OR #extTemplate = projectHub) orderBy #startDate desc", {"viewType": "table"}),
+    ("Drafts", "openDrafts", "#extStoryDraft AND #!doneDate orderBy note.dateModified desc", {"viewType": "table"}),
+    ("Emails", "openEmails", "#extEmailDraft orderBy note.dateModified desc", {"viewType": "table"}),
+    ("High Priority", "highPriority", "#priority = high AND #!doneDate orderBy #dueDate", {"viewType": "table"}),
+    ("Awaiting Replies", "awaitingReplies", "#status = awaiting AND #!doneDate orderBy #followUpDate", {"viewType": "table"}),
+    ("Follow-ups Due", "followUpsDue", "#followUpDate <= TODAY+7 AND #!doneDate orderBy #followUpDate", {"viewType": "table"}),
 ]
 
 # Attribute definition schemas
@@ -299,6 +317,23 @@ TEMPLATES_DETAILED = [
         "definitions": {**TOPIC_ALIAS},
         "labels": {"extTemplate": "topic", "template": "", "noteType": "topic", "extTopic": "", "noteGroup": "topic"},
     },
+    {
+        "title": "Weekly Review & Reflection",
+        "marker": "weeklyReview",
+        "content": (
+            "<h2>Accomplishments &amp; Completed Tasks</h2><p></p>"
+            "<h2>Key Insights &amp; Learnings</h2><p></p>"
+            "<h2>Blockers &amp; Stale Items</h2><p></p>"
+            "<h2>Priorities for Next Week</h2><ul><li></li></ul>"
+        ),
+        "definitions": {
+            "label:reviewDate": "promoted,alias=Review date,single,date",
+            "label:weekNumber": "promoted,alias=Week number,single,number",
+            "label:mood": "promoted,alias=Week rating,single,text",
+            "relation:reviewedProjects": "promoted,alias=Reviewed projects,multi",
+        },
+        "labels": {"extTemplate": "weeklyReview", "template": "", "noteType": "weeklyReview", "noteGroup": "work"},
+    },
 ]
 
 TEMPLATES = [(t["title"], t["marker"], f"{t['title']} template", t["labels"]) for t in TEMPLATES_DETAILED]
@@ -308,6 +343,13 @@ def ensure_containers(api: Etapi) -> int:
     created = 0
     for marker, title, parent_marker, note_type, labels in CONTAINERS:
         existing = api.find_by_label(marker)
+        if existing:
+            try:
+                note = api.get_note(existing)
+                if any(a.get("name") == "archived" for a in note.get("attributes", [])):
+                    existing = None
+            except Exception:
+                existing = None
         if existing:
             continue
         parent_id = "root"
@@ -340,6 +382,7 @@ def ensure_containers(api: Etapi) -> int:
         for name, val in proj_defs.items():
             api.set_label(proj_root, name, val)
         api.set_label(proj_root, "viewType", "table")
+    return created
 def ensure_templates(api: Etapi) -> int:
     templates_root = api.find_by_label("templateRoot")
     if not templates_root:
@@ -1193,8 +1236,16 @@ def verify(api: Etapi) -> list[str]:
     problems = []
 
     for marker, title, _, _, _ in CONTAINERS:
-        if api.find_by_label(marker) is None:
+        nid = api.find_by_label(marker)
+        if nid is None:
             problems.append(f"missing container #{marker} ({title})")
+        else:
+            try:
+                note = api.get_note(nid)
+                if any(a.get("name") == "archived" for a in note.get("attributes", [])):
+                    problems.append(f"missing container #{marker} ({title})")
+            except Exception:
+                problems.append(f"missing container #{marker} ({title})")
 
     templates_root = api.find_by_label("templateRoot")
     if not templates_root:
@@ -1347,9 +1398,10 @@ def cmd_uninstall(api: Etapi) -> int:
             count += 1
         except Exception:
             pass
-    print(f"  ✓ Archived {count} package note artifacts.")
-    record_migration_log(api, "uninstall", f"Uninstalled v{VERSION}.")
     print("Uninstallation complete.")
+    return 0
+
+
 def cmd_export(api: Etapi) -> int:
     try:
         import export_package as exporter

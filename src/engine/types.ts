@@ -61,7 +61,13 @@ export interface TemplateDefinition {
 }
 
 // If/Then Rules Engine Types (event-triggered automation)
-export type TriggerType = 'onNoteCreated' | 'onAttributeChanged' | 'onManualAction' | 'onScheduledCheck';
+export type TriggerType =
+    | 'onNoteCreated'
+    | 'onAttributeChanged'
+    | 'onManualAction'
+    | 'onScheduledCheck'
+    | 'onStatusChanged'
+    | 'onDueDatePassed';
 
 export interface IfThenTrigger {
     type: TriggerType;
@@ -88,13 +94,22 @@ export type OperatorType =
 export interface IfThenCondition {
     field: string; // Attribute name or system property (e.g. title, type)
     operator: OperatorType;
-    value: string | number | boolean;
+    value?: string | number | boolean;
+}
+
+export type GroupOperatorType = 'all' | 'any';
+
+export interface ConditionGroup {
+    operator: GroupOperatorType; // 'all' (AND) or 'any' (OR)
+    conditions: (IfThenCondition | ConditionGroup)[];
 }
 
 export type ActionType =
     | 'setLabel'
     | 'removeLabel'
     | 'setRelation'
+    | 'removeRelation'
+    | 'setDueDateOffset'
     | 'cloneToContainer'
     | 'syncDerivedTopics'
     | 'createLinkedNote'
@@ -113,6 +128,8 @@ export interface IfThenAction {
         containerMarker?: string;
         templateId?: string;
         scriptMarker?: string;
+        offsetDays?: number;
+        offsetString?: string;
         [key: string]: any;
     };
 }
@@ -123,7 +140,8 @@ export interface IfThenRuleDef {
     description: string;
     enabled: boolean;
     trigger: IfThenTrigger;
-    conditions: IfThenCondition[];
+    conditions?: IfThenCondition[];
+    conditionGroup?: ConditionGroup;
     actions: IfThenAction[];
     isBuiltin?: boolean;
 }

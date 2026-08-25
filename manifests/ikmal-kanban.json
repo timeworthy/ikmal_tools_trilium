@@ -22,7 +22,7 @@
       "id": "ikmal-kanban-board",
       "type": "render",
       "source": "dist/artifacts/notes-system-kanban.js",
-      "integrity": "sha256-IpazNw9zy4pht3vqX46y3a6jFjqgXbx2plrdf4GrQhg=",
+      "integrity": "sha256-1+iEoTDyjBPhNYjpwjR6XuicX088TLVCwE2lINcfC1o=",
       "title": "Ikmal Standalone Kanban Board",
       "activation": "manual"
     }

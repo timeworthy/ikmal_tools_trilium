@@ -90,13 +90,7 @@ WRITER = {"relation:writer": "promoted,alias=Writer,single"}
 CURRENT_ROUND = {"label:currentRound": "promoted,alias=Current round,single,number"}
 NEXT_ACTION = {"label:nextAction": "promoted,alias=Next action,single,text"}
 
-DAILY_NOTE_CONTENT = (
-    "<style>.daily-note h2{margin:1.5rem 0 .55rem}.daily-note h2:first-child{margin-top:0}"
-    ".daily-note p{min-height:1.4em}</style>"
-    "<div class='daily-note'>"
-    "<h2>Notes</h2><p></p>"
-    "</div>"
-)
+DAILY_NOTE_CONTENT = "<h2>Notes</h2><p></p>"
 
 STORY_DRAFT_CONTENT = (
     "<h2>HED</h2><ul><li></li><li></li><li></li></ul>"
@@ -878,7 +872,7 @@ def ensure_project_hub_dashboards(api: Etapi) -> int:
 
 
 def remove_retired_daily_sections(api: Etapi) -> int:
-    """Remove retired Open Tasks and Day start sections from daily notes."""
+    """Remove retired Open Tasks, Day start sections, and legacy style blocks from daily notes."""
     # A missing #templateRoot only costs us the daily-template pass. The journal
     # sweep below is keyed off #calendarRoot and must still run.
     templates_root = api.find_by_label("templateRoot")
@@ -886,12 +880,30 @@ def remove_retired_daily_sections(api: Etapi) -> int:
     daily_id = None
     if templates_root:
         for child_id in api.get_note(templates_root).get("childNoteIds", []):
-            for attr in api.get_note(child_id).get("attributes", []):
+            note = api.get_note(child_id)
+            for attr in note.get("attributes", []):
                 if attr.get("noteId") == child_id and attr.get("name") == "extTemplate" and attr.get("value") == "daily":
                     daily_id = child_id
                     break
+            if not daily_id and note.get("title") == "Daily Note":
+                daily_id = child_id
+            if daily_id:
+                break
 
     def clean(content: str) -> str:
+        # Strip <style>...</style> blocks
+        content = re.sub(r"<style\b[^>]*>[\s\S]*?</style>", "", content, flags=re.IGNORECASE)
+        # Strip any plain text or <p> tags containing .daily-note CSS
+        content = re.sub(
+            r"(?:<p\b[^>]*>\s*)?\.daily-note\s+[^{<]*\{[^}]*\}(?:\s*</p>)?",
+            "",
+            content,
+            flags=re.IGNORECASE,
+        )
+        # Unwrap <div class=['"]daily-note['"]>...</div>
+        content = re.sub(r"<div\b[^>]*class=['\"][^'\"]*daily-note[^'\"]*['\"][^>]*>", "", content, flags=re.IGNORECASE)
+        content = re.sub(r"</div>\s*$", "", content, flags=re.IGNORECASE)
+
         content = re.sub(
             r"<h2>Open Tasks</h2>\s*<section\b[^>]*data-extension-open-tasks=['\"]true['\"][\s\S]*?</section>",
             "",
@@ -902,12 +914,13 @@ def remove_retired_daily_sections(api: Etapi) -> int:
         # nothing but blank paragraphs before the next heading or the end of
         # the note. Removing it unconditionally would orphan anything a user
         # had written under "Day start" into the preceding section.
-        return re.sub(
+        content = re.sub(
             r"<h2>Day start</h2>\s*(?:<p>(?:\s|&nbsp;|<br\s*/?>)*</p>\s*)*(?=<h[1-6]\b|</div>\s*\Z|\Z)",
             "",
             content,
             flags=re.IGNORECASE,
         )
+        return content.strip()
 
     updated = 0
     if daily_id:

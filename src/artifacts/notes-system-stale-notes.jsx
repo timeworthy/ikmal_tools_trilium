@@ -4,7 +4,7 @@
  */
 
 import { SettingsEngine } from '../engine/settingsEngine.js';
-import { escapeHtml, section, emptyState, listItem } from '../components/nativeUi.js';
+import { escapeHtml, section, emptyState, listItem, iconAction } from '../components/nativeUi.js';
 import { findStaleNotes } from '../engine/noteInsightsEngine.js';
 import { loadAutomationSettings } from '../engine/packagePersistence.js';
 
@@ -74,11 +74,11 @@ export function initIkmalStaleNotes(containerEl) {
                 icon: 'bx-time-five',
                 title: entry.title,
                 description: `Untouched for ${entry.daysSinceModified} days`,
-                actions: typeof api !== 'undefined' && api.openNote ? [{
+                actions: typeof api !== 'undefined' && api.openNote ? [iconAction({
                     icon: 'bx-link-external',
                     title: `Open ${entry.title}`,
                     onClick: () => api.openNote(entry.noteId),
-                }] : [],
+                })] : [],
             }));
         }
     }

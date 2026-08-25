@@ -243,7 +243,7 @@ export class TodayEngine {
     }
 
     public setJournalWidth(percent: number): TodayLayoutConfig {
-        this.layout.journalWidthPercent = Math.min(85, Math.max(35, percent));
+        this.layout.journalWidthPercent = Number.isFinite(percent) ? Math.min(85, Math.max(35, percent)) : 65;
         return this.getLayout();
     }
 

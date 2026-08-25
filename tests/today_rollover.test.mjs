@@ -26,8 +26,49 @@ test('Today rollover detects a date, timezone, and system-clock change', () => {
     const timezoneChanged = { ...previous, timezoneKey: `${previous.timezoneKey}-travelled` };
     assert.equal(detectTodayClockChange(previous, timezoneChanged), 'timezone-change');
 
-    const clockJumped = { ...previous, wallClockMs: previous.wallClockMs + 60 * 60 * 1000, monotonicMs: previous.monotonicMs + 1000 };
-    assert.equal(detectTodayClockChange(previous, clockJumped), 'clock-change');
+    const clockSetBack = { ...previous, wallClockMs: previous.wallClockMs - 60 * 60 * 1000, monotonicMs: previous.monotonicMs + 1000 };
+    assert.equal(detectTodayClockChange(previous, clockSetBack), 'clock-change');
+});
+
+test('Today rollover treats a suspended machine as a quiet tick, not a clock change', () => {
+    // performance.now() stops with the machine, so every wake from sleep leaves
+    // the wall clock hours ahead of the monotonic one. Repainting on that would
+    // drop scroll position and any open editor on a date that never rolled.
+    const previous = snapshotTodayClock(new Date(2026, 7, 12, 13, 0), 5000);
+    const wokeSameDay = snapshotTodayClock(new Date(2026, 7, 12, 17, 0), 5100);
+    assert.equal(detectTodayClockChange(previous, wokeSameDay), null);
+
+    const wokeNextDay = snapshotTodayClock(new Date(2026, 7, 13, 9, 0), 5100);
+    assert.equal(detectTodayClockChange(previous, wokeNextDay), 'date-change');
+});
+
+test('Today rollover keeps its timer chain armed when the handler throws', () => {
+    // The handler is a full page repaint; one failed Trilium search inside it
+    // must not leave the render unable to roll over for the rest of the session.
+    let now = new Date(2026, 7, 12, 23, 30);
+    const timers = [];
+    const attempts = [];
+    startTodayRolloverMonitor((reason) => {
+        attempts.push(reason);
+        throw new Error('render failed');
+    }, {
+        now: () => now,
+        monotonicNow: () => 0,
+        setTimeout: (handler, timeout) => {
+            timers.push({ handler, timeout });
+            return timers.length;
+        },
+        clearTimeout: () => {},
+    });
+
+    now = new Date(2026, 7, 13, 0, 1);
+    assert.doesNotThrow(() => timers[0].handler());
+    assert.deepEqual(attempts, ['date-change']);
+    assert.equal(timers.length, 2, 'a throwing handler still re-arms the chain');
+
+    now = new Date(2026, 7, 14, 0, 1);
+    timers[1].handler();
+    assert.deepEqual(attempts, ['date-change', 'date-change'], 'the next day still rolls over');
 });
 
 test('Today rollover schedules the nearer of midnight and the hourly clock guard and can stop cleanly', () => {

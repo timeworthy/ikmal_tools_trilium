@@ -58,7 +58,26 @@ const KANBAN_COLUMNS = [
     { id: 'done', title: 'Completed' },
 ];
 
-const activeTodayRenderers = new WeakMap<HTMLElement, () => void>();
+interface ActiveTodayRenderer {
+    dispose: () => void;
+    /** The live render's own repaint, so a superseded closure can hand off to it. */
+    refresh: () => void;
+}
+
+const activeTodayRenderers = new WeakMap<HTMLElement, ActiveTodayRenderer>();
+
+/**
+ * Ends the render currently owning `container`: its rollover monitor, its
+ * pending split-width timers, and its registry entry. Idempotent, and a no-op
+ * for a container that never hosted a Today render.
+ *
+ * Hosts that build a fresh element per render (the dashboard) cannot rely on
+ * the same-container handover inside `renderTodayHomepage`, so they call this
+ * with the previous element before rendering the next one.
+ */
+export function disposeTodayHomepage(container: HTMLElement | null | undefined): void {
+    if (container) activeTodayRenderers.get(container)?.dispose();
+}
 
 /**
  * Keep the Today capture bar aligned with the original Ikmal workspace
@@ -95,11 +114,11 @@ export function renderTodayHomepage(
     options: TodayHomepageOptions = {}
 ): () => void {
     // The Today artifact re-renders into the same container element, so stop
-    // that container's prior monitor before replacing it. This cannot catch the
-    // dashboard, which builds a new content div per render, or a closed note
-    // where no second render ever arrives; the rollover callback below handles
-    // both by disposing itself once the container is detached.
-    activeTodayRenderers.get(container)?.();
+    // that container's prior monitor before replacing it. Hosts that build a
+    // new element per render call `disposeTodayHomepage` themselves; a closed
+    // note, where no second render ever arrives, is caught by the rollover
+    // callback below disposing itself once the container is detached.
+    activeTodayRenderers.get(container)?.dispose();
 
     let mode: 'edit' | 'preview' = 'preview';
 
@@ -1289,6 +1308,11 @@ export function renderTodayHomepage(
         for (const timer of splitWidthTimers) window.clearTimeout(timer);
         splitWidthTimers = [];
         const apply = () => {
+            // The timers below are only registered for cleanup once this frame
+            // runs, so a disposal in between clears an empty list and leaves
+            // them live. They would then drive Trilium's real split widths from
+            // a discarded render's layout for up to a second and a half.
+            if (disposed) return;
             if (api && noteId) {
                 const context = findExactJournalContext(api, noteId);
                 if (context) journalContext = context;
@@ -1296,6 +1320,7 @@ export function renderTodayHomepage(
             applyJournalWidth();
         };
         window.requestAnimationFrame(() => {
+            if (disposed) return;
             apply();
             for (const delay of [50, 150, 350, 750, 1500]) {
                 splitWidthTimers.push(window.setTimeout(apply, delay));
@@ -1403,6 +1428,15 @@ export function renderTodayHomepage(
         // projects, stories, recent activity, and today's journal). Clear the
         // memoized searches before repainting so the page does not look stale
         // until the user hard-refreshes Trilium.
+        if (disposed) {
+            // Callers outlive the render that produced them: a Quick Capture
+            // modal opened before a re-render still holds this closure when the
+            // user saves. Repainting from here would overwrite the live render
+            // with this one's stale state, so hand the work to whoever owns the
+            // container now. Only if nobody does is there nothing to repaint.
+            activeTodayRenderers.get(container)?.refresh();
+            return;
+        }
         resetDateSensitiveState();
         refresh();
     };
@@ -1413,9 +1447,15 @@ export function renderTodayHomepage(
         stopTodayRolloverMonitor = null;
         for (const timer of splitWidthTimers) window.clearTimeout(timer);
         splitWidthTimers = [];
-        if (activeTodayRenderers.get(container) === dispose) activeTodayRenderers.delete(container);
+        if (activeTodayRenderers.get(container)?.dispose === dispose) activeTodayRenderers.delete(container);
     };
-    activeTodayRenderers.set(container, dispose);
+    activeTodayRenderers.set(container, {
+        dispose,
+        refresh: () => {
+            resetDateSensitiveState();
+            refresh();
+        },
+    });
 
     stopTodayRolloverMonitor = startTodayRolloverMonitor(() => {
         // A date or timezone change affects the journal, quotes, anniversaries,
@@ -1423,15 +1463,20 @@ export function renderTodayHomepage(
         // the current render in place so the user does not need to refresh the
         // Trilium note manually.
         resetDateSensitiveState();
-        refresh();
+        // Same rule the async widget loads follow: an unrequested rebuild must
+        // not tear the layout editor out from under someone mid-edit, which
+        // would discard a typed-but-unblurred field along with its focus.
+        // Leaving edit mode repaints anyway, and the caches are already clear
+        // by then, so the new date still lands.
+        if (mode === 'preview') refresh();
     }, {
-        // The dashboard hands each render a freshly built content div and the
-        // Trilium note can be closed outright, so a later render is not
-        // guaranteed to arrive and run the disposer above. Detachment is the
-        // condition we actually care about. If a host ever detaches and
-        // reattaches a live container, it re-runs the render note and gets a
-        // fresh monitor; the worst case is the pre-feature behaviour of not
-        // repainting at midnight, not a broken page.
+        // A backstop, not the primary teardown: hosts dispose explicitly, but a
+        // Trilium note can be closed outright, and then no later render arrives
+        // to do it. Detachment is the condition that actually means gone. If a
+        // host ever detaches and reattaches a live container, it re-runs the
+        // render note and gets a fresh monitor; the worst case is the
+        // pre-feature behaviour of not repainting at midnight, not a broken
+        // page.
         shouldContinue: () => {
             if (container.isConnected) return true;
             dispose();

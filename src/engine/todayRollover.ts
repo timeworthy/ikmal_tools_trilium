@@ -67,9 +67,15 @@ export function detectTodayClockChange(
     if (previous.dateKey !== current.dateKey) return 'date-change';
     if (previous.timezoneKey !== current.timezoneKey) return 'timezone-change';
 
+    // Only a backwards jump is reported here. `performance.now()` is suspended
+    // along with the machine, so any sleep longer than the tolerance leaves the
+    // wall clock far ahead of the monotonic one — indistinguishable from the
+    // clock being set forward, and far more common. Sleeping across midnight
+    // still repaints, because the date key above catches it; sleeping within
+    // one day changes nothing this page renders, so it must not repaint.
     const wallDelta = current.wallClockMs - previous.wallClockMs;
     const monotonicDelta = current.monotonicMs - previous.monotonicMs;
-    if (Math.abs(wallDelta - monotonicDelta) > driftToleranceMs) return 'clock-change';
+    if (monotonicDelta - wallDelta > driftToleranceMs) return 'clock-change';
     return null;
 }
 
@@ -98,7 +104,17 @@ export function startTodayRolloverMonitor(
         const current = snapshotTodayClock(currentDate, monotonicNow());
         const reason = detectTodayClockChange(previous, current);
         previous = current;
-        if (reason) onRollover(reason);
+        // The handler is a full page repaint for every caller, so a failing
+        // Trilium search inside it must not take the timer chain down with it:
+        // nothing would re-arm the monitor and that render would never roll
+        // over again, for the rest of the session.
+        if (reason) {
+            try {
+                onRollover(reason);
+            } catch (error) {
+                console.warn(`[Ikmal Tools] Today rollover handler failed (${reason}): ${error}`);
+            }
+        }
 
         schedule(currentDate);
     };

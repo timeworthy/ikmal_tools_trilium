@@ -12,7 +12,7 @@ import { NoteCreationEngine } from '../engine/noteCreationEngine.js';
 import { SettingsEngine } from '../engine/settingsEngine.js';
 import { saveYamlSpecification } from '../engine/packagePersistence.js';
 import { dumpYamlSpec } from '../engine/yamlSpec.js';
-import { renderTodayHomepage } from '../components/TodayHomepage.js';
+import { disposeTodayHomepage, renderTodayHomepage } from '../components/TodayHomepage.js';
 import { renderTemplateStudio } from '../components/TemplateStudio.js';
 import { renderSettingsStudio } from '../components/SettingsStudio.js';
 import { showQuickCaptureModal } from '../components/QuickCaptureModal.js';
@@ -33,11 +33,20 @@ export function initNotesSystemDashboard(containerEl) {
     const noteCreationEngine = new NoteCreationEngine(templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine);
 
     let activeTab = 'today';
+    let todayContentArea = null;
     let yamlEditorSpec;
     const frontendApi = typeof api !== 'undefined' ? api : null;
     const modelReady = loadRuntimeModel(templateEngine, todayEngine, ifThenRuleEngine, settingsEngine, frontendApi);
 
     function renderMain() {
+        // Every render below builds a fresh content div, so the Today page
+        // cannot recognise its own previous render by container identity the
+        // way the standalone Today note does. Without this, each tab click,
+        // quick capture, and YAML save would strand another midnight-rollover
+        // monitor holding a detached subtree and that render's search caches.
+        disposeTodayHomepage(todayContentArea);
+        todayContentArea = null;
+
         containerEl.innerHTML = '';
 
         // Container shell. Colours and spacing come from notes-system.css so the
@@ -79,6 +88,7 @@ export function initNotesSystemDashboard(containerEl) {
 
         try {
             if (activeTab === 'today') {
+                todayContentArea = contentArea;
                 renderTodayHomepage(contentArea, todayEngine, templateEngine, async (templateId) => {
                     await modelReady;
                     return showQuickCaptureModal(templateId, templateEngine, noteCreationEngine, ({ plan, result }) => {

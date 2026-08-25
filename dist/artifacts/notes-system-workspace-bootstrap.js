@@ -424,6 +424,36 @@
       if (typeof content !== "string" || typeof DOMParser === "undefined") return content;
       const document2 = new DOMParser().parseFromString(content, "text/html");
       let changed = false;
+      const styleElements = document2.querySelectorAll("style");
+      if (styleElements.length > 0) {
+        styleElements.forEach((el) => el.remove());
+        changed = true;
+      }
+      const blockElements = document2.querySelectorAll("p, div, span, pre, code, section");
+      for (const el of blockElements) {
+        const text = el.textContent || "";
+        if (text.includes(".daily-note") && (text.includes("{") || text.includes("margin") || text.includes("height"))) {
+          el.remove();
+          changed = true;
+        }
+      }
+      for (const child of [...document2.body.childNodes]) {
+        if (child.nodeType === 3) {
+          const val = child.nodeValue || "";
+          if (val.includes(".daily-note") && (val.includes("{") || val.includes("margin") || val.includes("height"))) {
+            child.remove();
+            changed = true;
+          }
+        }
+      }
+      const dailyNoteDivs = document2.querySelectorAll("div.daily-note");
+      for (const div of dailyNoteDivs) {
+        while (div.firstChild) {
+          div.parentNode.insertBefore(div.firstChild, div);
+        }
+        div.remove();
+        changed = true;
+      }
       const headings = () => [...document2.querySelectorAll("h2")];
       const headingNamed = (name) => headings().find((heading) => heading.textContent.trim().toLowerCase() === name.toLowerCase());
       const openTasksHeading = headingNamed("Open Tasks");
@@ -476,8 +506,20 @@
       return cleanNotes(notes);
     }
     async function cleanDailyTemplate() {
-      const templates = (await searchIncludingHidden("#extTemplate")).filter((note) => markerValue(note, "extTemplate") === "daily" || note.title === "Daily Note");
-      return cleanNotes(templates);
+      const candidates = /* @__PURE__ */ new Map();
+      const extTemplates = await searchIncludingHidden("#extTemplate");
+      for (const t of extTemplates || []) {
+        if (markerValue(t, "extTemplate") === "daily" || t.title === "Daily Note") {
+          candidates.set(t.noteId, t);
+        }
+      }
+      const namedTemplates = await searchIncludingHidden("Daily Note");
+      for (const t of namedTemplates || []) {
+        if (t.title === "Daily Note") {
+          candidates.set(t.noteId, t);
+        }
+      }
+      return cleanNotes([...candidates.values()]);
     }
     async function removeProjectDashboardsFromDailyNotes() {
       const dailyNotes = (await searchMany(["#dateNote", "#extTemplate"])).filter((note) => !note.isArchived && isDailyNote(note));
@@ -1150,6 +1192,7 @@ ${entry}`);
       const projectCode = packageCode("notes-system-project-dashboard", projectNotes);
       if (projectCode) await attachProjectDashboards(projectCode);
       await repairTodayBranches();
+      await cleanDailyTemplate();
       await ensureBackendEventWiring();
     }
     let repairPromise = null;

@@ -52,6 +52,14 @@ if (violations.length > 0) {
 
 // 2. Bundle jsx/ts artifacts into standalone browser/backend JS using esbuild
 try {
+    // The emit config below excludes src/backend (esbuild owns those outputs)
+    // and src/artifacts, and esbuild only strips types rather than checking
+    // them. This pass over the base config is what keeps those files
+    // typechecked at all, instead of shipping into dist/ with a fresh integrity
+    // hash and failing nothing.
+    console.log('🔨 Typechecking all sources...');
+    execSync('npx tsc --noEmit', { stdio: 'inherit' });
+
     // The engines and components are compiled to dist/ as well as bundled into the
     // artifacts. The test suite imports dist/, so without this step it would keep
     // asserting against whatever was compiled last rather than the current source.

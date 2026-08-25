@@ -208,7 +208,7 @@ class CliMaintenanceTest(unittest.TestCase):
         self.api.set_content.assert_called_once_with("day_1", "<h2>Notes</h2><p></p>")
 
     def test_remove_retired_daily_sections_handles_daily_note_wrapper(self):
-        """The daily-note wrapper must not hide an empty trailing Day start section."""
+        """The daily-note wrapper and style tags must be cleaned up."""
         self.api.find_by_label.side_effect = lambda marker: {
             "calendarRoot": "cal_root",
         }.get(marker)
@@ -225,8 +225,27 @@ class CliMaintenanceTest(unittest.TestCase):
         self.assertEqual(updated, 1)
         self.api.set_content.assert_called_once_with(
             "day_1",
-            "<style>.daily-note p{min-height:1.4em}</style>"
-            "<div class='daily-note'><h2>Notes</h2><p></p></div>",
+            "<h2>Notes</h2><p></p>",
+        )
+
+    def test_remove_retired_daily_sections_strips_raw_daily_note_css(self):
+        """Raw .daily-note CSS text left by CKEditor parsing must be removed."""
+        self.api.find_by_label.side_effect = lambda marker: {
+            "calendarRoot": "cal_root",
+        }.get(marker)
+        self.api.get_content.side_effect = lambda note_id: (
+            "<p>.daily-note h2{margin:1.5rem 0 .55rem}.daily-note h2:first-child{margin-top:0}"
+            ".daily-note .include-note{margin-bottom:1.5rem}.daily-note p{min-height:1.4em}</p>"
+            "<h2>Notes</h2><p></p>"
+        )
+        self.api.search.return_value = [{"noteId": "day_1"}]
+
+        updated = cli.remove_retired_daily_sections(self.api)
+
+        self.assertEqual(updated, 1)
+        self.api.set_content.assert_called_once_with(
+            "day_1",
+            "<h2>Notes</h2><p></p>",
         )
 
     def test_version_matches_package_manifest(self):

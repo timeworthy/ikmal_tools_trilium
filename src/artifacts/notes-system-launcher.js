@@ -16,6 +16,7 @@ import { TodayEngine } from '../engine/todayEngine.js';
 import { showQuickCaptureModal } from '../components/QuickCaptureModal.js';
 import { openModal } from '../components/nativeUi.js';
 import { loadRuntimeModel } from '../engine/runtimeModel.js';
+import { materializeNoteCreation } from '../engine/noteMaterializer.js';
 
 (function initLauncherBar() {
     if (typeof document === 'undefined') return;

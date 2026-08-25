@@ -547,7 +547,7 @@
   // src/engine/relationshipEngine.ts
   var RelationshipEngine = class {
     constructor(templateEngine) {
-      this.templateEngine = templateEngine;
+      __publicField(this, "templateEngine", templateEngine);
     }
     /**
      * Given a source template and relation values, computes where the note should be cloned,
@@ -805,6 +805,19 @@
               return false;
             }
             break;
+          case "notContains":
+            if (typeof val === "string") {
+              if (val.includes(String(cond.value))) return false;
+            } else if (Array.isArray(val)) {
+              if (val.includes(cond.value)) return false;
+            }
+            break;
+          case "startsWith":
+            if (typeof val !== "string" || !val.startsWith(String(cond.value))) return false;
+            break;
+          case "endsWith":
+            if (typeof val !== "string" || !val.endsWith(String(cond.value))) return false;
+            break;
           case "isEmpty":
             if (!(val === void 0 || val === null || val === "")) return false;
             break;
@@ -814,10 +827,17 @@
           case "lessThan":
             if (Number.isNaN(Number(val)) || Number(val) >= Number(cond.value)) return false;
             break;
-          case "isSet":
-            if (cond.value && (val === void 0 || val === null || val === "")) return false;
-            if (!cond.value && val !== void 0 && val !== null && val !== "") return false;
+          case "isSet": {
+            const expectSet = cond.value !== false;
+            const isPresent = val !== void 0 && val !== null && val !== "";
+            if (expectSet !== isPresent) return false;
             break;
+          }
+          case "isNotSet":
+            if (val !== void 0 && val !== null && val !== "") return false;
+            break;
+          default:
+            return false;
         }
       }
       return true;
@@ -855,10 +875,10 @@
   var REPORTING_NOTES_CONTENT = "<h2>LINKS</h2><ul><li></li></ul><h2>OPEN QUESTIONS</h2><ul><li></li></ul><h2>IDEA / ANGLE</h2><p></p><h2>REPORTING NOTES</h2><p></p><div class='reporting-note-actions-placeholder' data-reporting-note-actions='true'></div>";
   var NoteCreationEngine = class {
     constructor(templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine = new SettingsEngine()) {
-      this.templateEngine = templateEngine;
-      this.relationshipEngine = relationshipEngine;
-      this.ifThenRuleEngine = ifThenRuleEngine;
-      this.settingsEngine = settingsEngine;
+      __publicField(this, "templateEngine", templateEngine);
+      __publicField(this, "relationshipEngine", relationshipEngine);
+      __publicField(this, "ifThenRuleEngine", ifThenRuleEngine);
+      __publicField(this, "settingsEngine", settingsEngine);
     }
     planNoteCreation(request) {
       const isStoryOrEdit = request.type === "story" || request.type === "edit";
@@ -1277,7 +1297,7 @@ ${child.content || ""}`;
       return this.getLayout();
     }
     setJournalWidth(percent) {
-      this.layout.journalWidthPercent = Math.min(85, Math.max(35, percent));
+      this.layout.journalWidthPercent = Number.isFinite(percent) ? Math.min(85, Math.max(35, percent)) : 65;
       return this.getLayout();
     }
     setWritingGoalWords(words) {
@@ -1551,7 +1571,7 @@ ${child.content || ""}`;
     }
     return container.noteId;
   }
-  async function materializeNoteCreation2(plan, options) {
+  async function materializeNoteCreation(plan, options) {
     const api2 = triliumApi(options?.api);
     if (!api2) throw new Error("Not running inside Trilium.");
     if (plan.inheritedTopicSources && plan.inheritedTopicSources.length > 0) {
@@ -2347,7 +2367,7 @@ ${child.content || ""}`;
             title: newTitle.trim()
           });
           try {
-            const res = api2 ? await materializeNoteCreation2(plan, { api: api2 }) : void 0;
+            const res = api2 ? await materializeNoteCreation(plan, { api: api2 }) : void 0;
             const createdId = res ? res.noteId : `preview_${Date.now()}`;
             candidates.push({ noteId: createdId, title: newTitle.trim() });
             picker.setOptions?.(candidates.map((n) => ({ value: n.noteId, label: n.title })));
@@ -2435,7 +2455,7 @@ ${child.content || ""}`;
       createBtn.disabled = true;
       createBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Creating\u2026';
       try {
-        const result = api2 ? await materializeNoteCreation2(plan, { api: api2 }) : void 0;
+        const result = api2 ? await materializeNoteCreation(plan, { api: api2 }) : void 0;
         if (result) api2?.showMessage?.(`Created "${result.title}".`);
         closeModal();
         onCreated?.({ plan, result });

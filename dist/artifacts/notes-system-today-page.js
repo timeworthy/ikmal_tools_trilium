@@ -7,7 +7,7 @@
   // src/engine/relationshipEngine.ts
   var RelationshipEngine = class {
     constructor(templateEngine) {
-      this.templateEngine = templateEngine;
+      __publicField(this, "templateEngine", templateEngine);
     }
     /**
      * Given a source template and relation values, computes where the note should be cloned,
@@ -265,6 +265,19 @@
               return false;
             }
             break;
+          case "notContains":
+            if (typeof val === "string") {
+              if (val.includes(String(cond.value))) return false;
+            } else if (Array.isArray(val)) {
+              if (val.includes(cond.value)) return false;
+            }
+            break;
+          case "startsWith":
+            if (typeof val !== "string" || !val.startsWith(String(cond.value))) return false;
+            break;
+          case "endsWith":
+            if (typeof val !== "string" || !val.endsWith(String(cond.value))) return false;
+            break;
           case "isEmpty":
             if (!(val === void 0 || val === null || val === "")) return false;
             break;
@@ -274,10 +287,17 @@
           case "lessThan":
             if (Number.isNaN(Number(val)) || Number(val) >= Number(cond.value)) return false;
             break;
-          case "isSet":
-            if (cond.value && (val === void 0 || val === null || val === "")) return false;
-            if (!cond.value && val !== void 0 && val !== null && val !== "") return false;
+          case "isSet": {
+            const expectSet = cond.value !== false;
+            const isPresent = val !== void 0 && val !== null && val !== "";
+            if (expectSet !== isPresent) return false;
             break;
+          }
+          case "isNotSet":
+            if (val !== void 0 && val !== null && val !== "") return false;
+            break;
+          default:
+            return false;
         }
       }
       return true;
@@ -503,7 +523,7 @@
       return this.getLayout();
     }
     setJournalWidth(percent) {
-      this.layout.journalWidthPercent = Math.min(85, Math.max(35, percent));
+      this.layout.journalWidthPercent = Number.isFinite(percent) ? Math.min(85, Math.max(35, percent)) : 65;
       return this.getLayout();
     }
     setWritingGoalWords(words) {
@@ -554,10 +574,10 @@
   var REPORTING_NOTES_CONTENT = "<h2>LINKS</h2><ul><li></li></ul><h2>OPEN QUESTIONS</h2><ul><li></li></ul><h2>IDEA / ANGLE</h2><p></p><h2>REPORTING NOTES</h2><p></p><div class='reporting-note-actions-placeholder' data-reporting-note-actions='true'></div>";
   var NoteCreationEngine = class {
     constructor(templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine = new SettingsEngine()) {
-      this.templateEngine = templateEngine;
-      this.relationshipEngine = relationshipEngine;
-      this.ifThenRuleEngine = ifThenRuleEngine;
-      this.settingsEngine = settingsEngine;
+      __publicField(this, "templateEngine", templateEngine);
+      __publicField(this, "relationshipEngine", relationshipEngine);
+      __publicField(this, "ifThenRuleEngine", ifThenRuleEngine);
+      __publicField(this, "settingsEngine", settingsEngine);
     }
     planNoteCreation(request) {
       const isStoryOrEdit = request.type === "story" || request.type === "edit";
@@ -796,7 +816,11 @@ ${child.content || ""}`;
     }
     return condition;
   }
-  function buildWeatherUrl({ latitude, longitude, units }) {
+  function buildWeatherUrl(weather) {
+    if (!hasLocation(weather)) {
+      return null;
+    }
+    const { latitude, longitude, units } = weather;
     const params = new URLSearchParams({
       latitude: String(latitude),
       longitude: String(longitude),
@@ -862,7 +886,12 @@ ${child.content || ""}`;
       signal?.removeEventListener("abort", forwardAbort);
     };
     try {
-      const response = await fetch(buildWeatherUrl(weather), {
+      const url = buildWeatherUrl(weather);
+      if (!url) {
+        cleanup();
+        throw new Error("Weather location is unset or invalid");
+      }
+      const response = await fetch(url, {
         signal: controller?.signal || signal
       });
       cleanup();
@@ -1423,7 +1452,7 @@ ${child.content || ""}`;
     if (previous.timezoneKey !== current.timezoneKey) return "timezone-change";
     const wallDelta = current.wallClockMs - previous.wallClockMs;
     const monotonicDelta = current.monotonicMs - previous.monotonicMs;
-    if (Math.abs(wallDelta - monotonicDelta) > driftToleranceMs) return "clock-change";
+    if (monotonicDelta - wallDelta > driftToleranceMs) return "clock-change";
     return null;
   }
   function startTodayRolloverMonitor(onRollover, options = {}) {
@@ -1445,7 +1474,13 @@ ${child.content || ""}`;
       const current = snapshotTodayClock(currentDate, monotonicNow());
       const reason = detectTodayClockChange(previous, current);
       previous = current;
-      if (reason) onRollover(reason);
+      if (reason) {
+        try {
+          onRollover(reason);
+        } catch (error) {
+          console.warn(`[Ikmal Tools] Today rollover handler failed (${reason}): ${error}`);
+        }
+      }
       schedule(currentDate);
     };
     const schedule = (currentDate) => {
@@ -1492,7 +1527,7 @@ ${child.content || ""}`;
     { type: "topic", label: "New Topic", icon: "purchase-tag", title: "Create a new Topic" }
   ];
   function renderTodayHomepage(container, todayEngine, templateEngine, onQuickCapture, settingsEngine, options = {}) {
-    activeTodayRenderers.get(container)?.();
+    activeTodayRenderers.get(container)?.dispose();
     let mode = "preview";
     const showEditor = options.showEditor !== false;
     const showJournalCard = options.showJournalCard === true;
@@ -2472,6 +2507,7 @@ ${child.content || ""}`;
       for (const timer of splitWidthTimers) window.clearTimeout(timer);
       splitWidthTimers = [];
       const apply = () => {
+        if (disposed) return;
         if (api2 && noteId) {
           const context = findExactJournalContext(api2, noteId);
           if (context) journalContext = context;
@@ -2479,6 +2515,7 @@ ${child.content || ""}`;
         applyJournalWidth();
       };
       window.requestAnimationFrame(() => {
+        if (disposed) return;
         apply();
         for (const delay of [50, 150, 350, 750, 1500]) {
           splitWidthTimers.push(window.setTimeout(apply, delay));
@@ -2565,6 +2602,10 @@ ${child.content || ""}`;
       parent.appendChild(board);
     }
     const refreshHomepage = () => {
+      if (disposed) {
+        activeTodayRenderers.get(container)?.refresh();
+        return;
+      }
       resetDateSensitiveState();
       refresh();
     };
@@ -2574,20 +2615,26 @@ ${child.content || ""}`;
       stopTodayRolloverMonitor = null;
       for (const timer of splitWidthTimers) window.clearTimeout(timer);
       splitWidthTimers = [];
-      if (activeTodayRenderers.get(container) === dispose) activeTodayRenderers.delete(container);
+      if (activeTodayRenderers.get(container)?.dispose === dispose) activeTodayRenderers.delete(container);
     };
-    activeTodayRenderers.set(container, dispose);
+    activeTodayRenderers.set(container, {
+      dispose,
+      refresh: () => {
+        resetDateSensitiveState();
+        refresh();
+      }
+    });
     stopTodayRolloverMonitor = startTodayRolloverMonitor(() => {
       resetDateSensitiveState();
-      refresh();
+      if (mode === "preview") refresh();
     }, {
-      // The dashboard hands each render a freshly built content div and the
-      // Trilium note can be closed outright, so a later render is not
-      // guaranteed to arrive and run the disposer above. Detachment is the
-      // condition we actually care about. If a host ever detaches and
-      // reattaches a live container, it re-runs the render note and gets a
-      // fresh monitor; the worst case is the pre-feature behaviour of not
-      // repainting at midnight, not a broken page.
+      // A backstop, not the primary teardown: hosts dispose explicitly, but a
+      // Trilium note can be closed outright, and then no later render arrives
+      // to do it. Detachment is the condition that actually means gone. If a
+      // host ever detaches and reattaches a live container, it re-runs the
+      // render note and gets a fresh monitor; the worst case is the
+      // pre-feature behaviour of not repainting at midnight, not a broken
+      // page.
       shouldContinue: () => {
         if (container.isConnected) return true;
         dispose();

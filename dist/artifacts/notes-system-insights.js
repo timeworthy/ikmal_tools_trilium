@@ -547,7 +547,7 @@
   // src/engine/relationshipEngine.ts
   var RelationshipEngine = class {
     constructor(templateEngine) {
-      this.templateEngine = templateEngine;
+      __publicField(this, "templateEngine", templateEngine);
     }
     /**
      * Given a source template and relation values, computes where the note should be cloned,
@@ -805,6 +805,19 @@
               return false;
             }
             break;
+          case "notContains":
+            if (typeof val === "string") {
+              if (val.includes(String(cond.value))) return false;
+            } else if (Array.isArray(val)) {
+              if (val.includes(cond.value)) return false;
+            }
+            break;
+          case "startsWith":
+            if (typeof val !== "string" || !val.startsWith(String(cond.value))) return false;
+            break;
+          case "endsWith":
+            if (typeof val !== "string" || !val.endsWith(String(cond.value))) return false;
+            break;
           case "isEmpty":
             if (!(val === void 0 || val === null || val === "")) return false;
             break;
@@ -814,10 +827,17 @@
           case "lessThan":
             if (Number.isNaN(Number(val)) || Number(val) >= Number(cond.value)) return false;
             break;
-          case "isSet":
-            if (cond.value && (val === void 0 || val === null || val === "")) return false;
-            if (!cond.value && val !== void 0 && val !== null && val !== "") return false;
+          case "isSet": {
+            const expectSet = cond.value !== false;
+            const isPresent = val !== void 0 && val !== null && val !== "";
+            if (expectSet !== isPresent) return false;
             break;
+          }
+          case "isNotSet":
+            if (val !== void 0 && val !== null && val !== "") return false;
+            break;
+          default:
+            return false;
         }
       }
       return true;
@@ -1043,7 +1063,7 @@
       return this.getLayout();
     }
     setJournalWidth(percent) {
-      this.layout.journalWidthPercent = Math.min(85, Math.max(35, percent));
+      this.layout.journalWidthPercent = Number.isFinite(percent) ? Math.min(85, Math.max(35, percent)) : 65;
       return this.getLayout();
     }
     setWritingGoalWords(words) {
@@ -1095,8 +1115,8 @@
   function section(parent, { title, description, actions, collapsible } = {}) {
     const sectionEl = document.createElement("div");
     sectionEl.className = "ns-section";
-    const card2 = document.createElement("div");
-    card2.className = "ns-section-card";
+    const card = document.createElement("div");
+    card.className = "ns-section-card";
     if (title || actions?.length || collapsible) {
       const header = document.createElement("div");
       header.className = "ns-section-header d-flex justify-content-between align-items-center";
@@ -1111,9 +1131,9 @@
           icon: "bx-chevron-up",
           title: "Collapse section",
           onClick: () => {
-            const isHidden = card2.hidden;
-            card2.hidden = !isHidden;
-            toggleBtn.querySelector("span")?.setAttribute("class", `bx ${card2.hidden ? "bx-chevron-down" : "bx-chevron-up"}`);
+            const isHidden = card.hidden;
+            card.hidden = !isHidden;
+            toggleBtn.querySelector("span")?.setAttribute("class", `bx ${card.hidden ? "bx-chevron-down" : "bx-chevron-up"}`);
           }
         });
         headerRight.appendChild(toggleBtn);
@@ -1125,11 +1145,11 @@
       const p = document.createElement("p");
       p.className = "ns-section-description";
       p.textContent = description;
-      card2.appendChild(p);
+      card.appendChild(p);
     }
-    sectionEl.appendChild(card2);
+    sectionEl.appendChild(card);
     parent.appendChild(sectionEl);
-    return { section: sectionEl, card: card2 };
+    return { section: sectionEl, card };
   }
   function emptyState(text) {
     const el = document.createElement("div");
@@ -1927,7 +1947,6 @@ ifThenRules: []
       loading.replaceChildren(emptyState(`Insights unavailable: ${error.message}`));
     });
     outerCard.appendChild(grid);
-    shell.appendChild(card);
     containerEl.appendChild(shell);
   }
   if (typeof api !== "undefined" || typeof window !== "undefined") {

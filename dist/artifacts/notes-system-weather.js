@@ -223,7 +223,7 @@
       return this.getLayout();
     }
     setJournalWidth(percent) {
-      this.layout.journalWidthPercent = Math.min(85, Math.max(35, percent));
+      this.layout.journalWidthPercent = Number.isFinite(percent) ? Math.min(85, Math.max(35, percent)) : 65;
       return this.getLayout();
     }
     setWritingGoalWords(words) {
@@ -984,6 +984,19 @@
               return false;
             }
             break;
+          case "notContains":
+            if (typeof val === "string") {
+              if (val.includes(String(cond.value))) return false;
+            } else if (Array.isArray(val)) {
+              if (val.includes(cond.value)) return false;
+            }
+            break;
+          case "startsWith":
+            if (typeof val !== "string" || !val.startsWith(String(cond.value))) return false;
+            break;
+          case "endsWith":
+            if (typeof val !== "string" || !val.endsWith(String(cond.value))) return false;
+            break;
           case "isEmpty":
             if (!(val === void 0 || val === null || val === "")) return false;
             break;
@@ -993,10 +1006,17 @@
           case "lessThan":
             if (Number.isNaN(Number(val)) || Number(val) >= Number(cond.value)) return false;
             break;
-          case "isSet":
-            if (cond.value && (val === void 0 || val === null || val === "")) return false;
-            if (!cond.value && val !== void 0 && val !== null && val !== "") return false;
+          case "isSet": {
+            const expectSet = cond.value !== false;
+            const isPresent = val !== void 0 && val !== null && val !== "";
+            if (expectSet !== isPresent) return false;
             break;
+          }
+          case "isNotSet":
+            if (val !== void 0 && val !== null && val !== "") return false;
+            break;
+          default:
+            return false;
         }
       }
       return true;
@@ -1202,7 +1222,11 @@
     }
     return condition;
   }
-  function buildWeatherUrl({ latitude, longitude, units }) {
+  function buildWeatherUrl(weather) {
+    if (!hasLocation(weather)) {
+      return null;
+    }
+    const { latitude, longitude, units } = weather;
     const params = new URLSearchParams({
       latitude: String(latitude),
       longitude: String(longitude),
@@ -1268,7 +1292,12 @@
       signal?.removeEventListener("abort", forwardAbort);
     };
     try {
-      const response = await fetch(buildWeatherUrl(weather), {
+      const url = buildWeatherUrl(weather);
+      if (!url) {
+        cleanup();
+        throw new Error("Weather location is unset or invalid");
+      }
+      const response = await fetch(url, {
         signal: controller?.signal || signal
       });
       cleanup();

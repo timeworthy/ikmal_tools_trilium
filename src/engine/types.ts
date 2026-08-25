@@ -72,7 +72,18 @@ export interface IfThenTrigger {
 }
 
 
-export type OperatorType = 'equals' | 'notEquals' | 'contains' | 'isSet' | 'isEmpty' | 'greaterThan' | 'lessThan';
+export type OperatorType =
+    | 'equals'
+    | 'notEquals'
+    | 'contains'
+    | 'notContains'
+    | 'startsWith'
+    | 'endsWith'
+    | 'isSet'
+    | 'isNotSet'
+    | 'isEmpty'
+    | 'greaterThan'
+    | 'lessThan';
 
 export interface IfThenCondition {
     field: string; // Attribute name or system property (e.g. title, type)

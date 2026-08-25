@@ -3,7 +3,7 @@
  * Displays notes created on the exact calendar day in previous years as an independent render note widget.
  */
 
-import { escapeHtml, section, emptyState, listItem } from '../components/nativeUi.js';
+import { escapeHtml, section, emptyState, listItem, iconAction } from '../components/nativeUi.js';
 import { findOnThisDay } from '../engine/noteInsightsEngine.js';
 
 const WORK_NOTE_QUERY = '#extTask OR #extStoryDraft OR #extMeeting OR #extEmailDraft OR #extScratch OR #extReportingNotes OR #extProjectHub OR #extPerson OR #extOrganization OR #extTopic';
@@ -68,11 +68,11 @@ export function initIkmalOnThisDay(containerEl) {
                 icon: 'bx-history',
                 title: entry.title,
                 description: `${entry.yearsAgo} year${entry.yearsAgo === 1 ? '' : 's'} ago today`,
-                actions: typeof api !== 'undefined' && api.openNote ? [{
+                actions: typeof api !== 'undefined' && api.openNote ? [iconAction({
                     icon: 'bx-link-external',
                     title: `Open ${entry.title}`,
                     onClick: () => api.openNote(entry.noteId),
-                }] : [],
+                })] : [],
             }));
         }
     }

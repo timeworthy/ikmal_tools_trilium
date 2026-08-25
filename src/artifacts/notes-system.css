@@ -43,6 +43,31 @@
     padding: 15px 25px;
 }
 
+.notes-system-shell h1,
+.notes-system-shell h2,
+.notes-system-shell h3,
+.notes-system-shell h4,
+.ns-section-title,
+.ns-card-title,
+.ns-row-label {
+    text-wrap: balance;
+}
+
+.notes-system-shell p,
+.ns-row-desc,
+.ns-help-text,
+.ns-card-desc {
+    text-wrap: pretty;
+}
+
+.ns-btn,
+.ns-badge,
+.ns-pill,
+.ns-tag,
+.ns-tab-btn {
+    white-space: nowrap;
+}
+
 /* The standalone Today note has no outer settings shell. Make the homepage
    itself the responsive boundary so its grid can collapse inside a narrow split. */
 .today-homepage-wrapper {

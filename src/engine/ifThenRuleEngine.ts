@@ -261,6 +261,19 @@ export class IfThenRuleEngine {
                         return false;
                     }
                     break;
+                case 'notContains':
+                    if (typeof val === 'string') {
+                        if (val.includes(String(cond.value))) return false;
+                    } else if (Array.isArray(val)) {
+                        if (val.includes(cond.value)) return false;
+                    }
+                    break;
+                case 'startsWith':
+                    if (typeof val !== 'string' || !val.startsWith(String(cond.value))) return false;
+                    break;
+                case 'endsWith':
+                    if (typeof val !== 'string' || !val.endsWith(String(cond.value))) return false;
+                    break;
                 case 'isEmpty':
                     if (!(val === undefined || val === null || val === '')) return false;
                     break;
@@ -270,10 +283,17 @@ export class IfThenRuleEngine {
                 case 'lessThan':
                     if (Number.isNaN(Number(val)) || Number(val) >= Number(cond.value)) return false;
                     break;
-                case 'isSet':
-                    if (cond.value && (val === undefined || val === null || val === '')) return false;
-                    if (!cond.value && val !== undefined && val !== null && val !== '') return false;
+                case 'isSet': {
+                    const expectSet = cond.value !== false;
+                    const isPresent = val !== undefined && val !== null && val !== '';
+                    if (expectSet !== isPresent) return false;
                     break;
+                }
+                case 'isNotSet':
+                    if (val !== undefined && val !== null && val !== '') return false;
+                    break;
+                default:
+                    return false;
             }
         }
         return true;

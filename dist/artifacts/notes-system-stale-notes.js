@@ -279,11 +279,11 @@
           icon: "bx-time-five",
           title: entry.title,
           description: `Untouched for ${entry.daysSinceModified} days`,
-          actions: typeof api !== "undefined" && api.openNote ? [{
+          actions: typeof api !== "undefined" && api.openNote ? [iconAction({
             icon: "bx-link-external",
             title: `Open ${entry.title}`,
             onClick: () => api.openNote(entry.noteId)
-          }] : []
+          })] : []
         }));
       }
     }

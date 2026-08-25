@@ -133,7 +133,6 @@ export function initNotesSystemInsights(containerEl) {
     });
 
     outerCard.appendChild(grid);
-    shell.appendChild(card);
     containerEl.appendChild(shell);
 }
 

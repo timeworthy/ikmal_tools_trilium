@@ -85,7 +85,11 @@ export function describeWeatherCode(code: number, isDay = true): WeatherConditio
     return condition;
 }
 
-export function buildWeatherUrl({ latitude, longitude, units }: WeatherConfig): string {
+export function buildWeatherUrl(weather: WeatherConfig): string | null {
+    if (!hasLocation(weather)) {
+        return null;
+    }
+    const { latitude, longitude, units } = weather;
     const params = new URLSearchParams({
         latitude: String(latitude),
         longitude: String(longitude),
@@ -171,7 +175,12 @@ export async function fetchWeather(weather: WeatherConfig, signal?: AbortSignal)
     };
 
     try {
-        const response = await fetch(buildWeatherUrl(weather), {
+        const url = buildWeatherUrl(weather);
+        if (!url) {
+            cleanup();
+            throw new Error('Weather location is unset or invalid');
+        }
+        const response = await fetch(url, {
             signal: controller?.signal || signal
         });
         cleanup();

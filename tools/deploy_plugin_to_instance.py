@@ -92,7 +92,14 @@ def note_is_archived(note: dict) -> bool:
 
 
 def set_package_integrity(api: Etapi, note_id: str, artifact: dict) -> None:
-    """Keep local ETAPI installs equivalent to URL-installer artifact notes."""
+    """Keep local ETAPI installs equivalent to URL-installer artifact notes.
+
+    The manifest hash covers the artifact's source bytes, so this only belongs
+    on the note that actually holds them. A render artifact splits across two
+    notes and only the script child qualifies; labelling its parent container,
+    whose content is a fixed empty div, would read as tampered to any verifier
+    that hashes the note it finds the label on.
+    """
     integrity = artifact.get("integrity")
     if integrity:
         api.set_label(note_id, "packageIntegrity", integrity)
@@ -105,7 +112,11 @@ ACTIVATION_LABELS = {"run", "appCss", "widget", "customRequestHandler"}
 
 
 def delete_owned_labels(api: Etapi, note: dict, names: set[str]) -> None:
-    """Remove activation labels before archiving a stale artifact."""
+    """Remove named labels a note owns directly, ignoring inherited ones.
+
+    Used to strip activation labels before archiving a stale artifact, and to
+    retract labels an older deploy set that this one no longer sets.
+    """
     for attribute in note.get("attributes", []):
         if (
             attribute.get("noteId") == note.get("noteId")
@@ -326,7 +337,12 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
             api.set_label(render_note_id, "packageVersion", manifest["version"])
             api.set_label(render_note_id, "packageArtifact", artifact_id)
             api.set_label(render_note_id, "packageEnabled", "true")
-            set_package_integrity(api, render_note_id, artifact)
+            # No packageIntegrity here: the hashed bytes live in the script
+            # child created below, not in this container's fixed empty div.
+            # Earlier deploys did label the container, so retract it rather than
+            # leaving a permanently mismatched hash behind on upgrade.
+            if existing_render:
+                delete_owned_labels(api, existing_render, {"packageIntegrity"})
 
             # Check or create child script note
             script_title = f"{title} (Script)"

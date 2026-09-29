@@ -56,6 +56,7 @@
     const nextAction = labelValue(hub, 'nextAction') || 'Not set';
     const panel = document.createElement('section');
     panel.className = 'ikmal-project-dashboard card mb-3';
+    panel.dataset.projectHubId = hub.noteId;
     panel.innerHTML = `
         <style>
             .ikmal-project-dashboard { max-width: 1120px; margin: 0 auto 1rem; container-type: inline-size; container-name: project-dashboard; }
@@ -126,28 +127,6 @@
         else if (api.openNote) api.openNote(noteId);
     };
     const setAttribute = async (noteId, type, name, value) => {
-        if (typeof api !== 'undefined' && typeof api.runOnBackend === 'function') {
-            try {
-                // The closure reports whether it wrote anything. Returning
-                // unconditionally would silently drop any attribute type the
-                // backend path does not handle -- the `project` relation on a
-                // new task, for one, leaving it invisible to searchRelated().
-                const applied = await api.runOnBackend((nId, aType, aName, aVal) => {
-                    const note = api.getNote(nId);
-                    if (!note) return false;
-                    if (aType === 'label') {
-                        note.setLabel(aName, aVal || '');
-                        return true;
-                    }
-                    if (aType === 'relation' && aVal) {
-                        note.setRelation(aName, aVal);
-                        return true;
-                    }
-                    return false;
-                }, [noteId, type, name, value || '']);
-                if (applied) return;
-            } catch {}
-        }
         const glob = window.glob;
         if (!glob) throw new Error('Trilium session context is unavailable.');
         const headers = {
@@ -162,6 +141,90 @@
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
     };
     const setLabel = (noteId, name, value) => setAttribute(noteId, 'label', name, value);
+    const toggleInParent = async (noteId, parentNoteId, present) => {
+        const glob = window.glob;
+        if (!glob) throw new Error('Trilium session context is unavailable.');
+        const response = await fetch(`${glob.baseApiUrl}notes/${noteId}/toggle-in-parent/${parentNoteId}/${present}`, {
+            method: 'PUT', credentials: 'same-origin',
+            headers: {
+                'x-csrf-token': glob.csrfToken,
+                'trilium-component-id': glob.componentId || '',
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify({}),
+        });
+        if (!response.ok) throw new Error(`Could not ${present ? 'add' : 'remove'} the project branch (HTTP ${response.status}).`);
+        const result = await response.json().catch(() => null);
+        if (result?.success === false) throw new Error(`Trilium refused to ${present ? 'add' : 'remove'} the project branch.`);
+    };
+    const openRoundFallback = () => {
+        const backdrop = document.createElement('div');
+        backdrop.className = 'ns-modal-backdrop';
+        const modal = document.createElement('div');
+        // Keep the same `.modal.show` contract as the dashboard quick-capture
+        // dialog so keyboard users and embedded hosts see one consistent flow.
+        modal.className = 'modal show ns-modal';
+        modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-modal', 'true');
+        modal.innerHTML = `
+            <div class="ns-modal-header">
+                <h5 class="ns-modal-title">New ${kind === 'edit' ? 'edit' : 'story'} round</h5>
+                <button type="button" class="btn-close ns-close" aria-label="Close"></button>
+            </div>
+            <div class="ns-modal-body">
+                <label for="project-round-title">Title</label>
+                <input type="text" id="project-round-title" class="form-control title-input" placeholder="Editorial round">
+            </div>
+            <div class="ns-modal-footer">
+                <button type="button" class="btn btn-sm btn-secondary ns-close">Cancel</button>
+                <button type="button" class="btn btn-sm btn-primary ns-confirm">Create</button>
+            </div>
+        `;
+        const close = () => backdrop.remove();
+        modal.querySelectorAll('.ns-close').forEach((button) => button.addEventListener('click', close));
+        modal.querySelector('.ns-confirm').addEventListener('click', async () => {
+            const titleInput = modal.querySelector('#project-round-title');
+            const title = titleInput.value.trim();
+            if (!title) return titleInput.focus();
+            const noteType = kind === 'edit' ? 'edit' : 'story';
+            try {
+                const result = await api.createNote(hub.noteId, {
+                    title,
+                    content: '<h2>HEADLINE</h2><p></p><h2>NOTES</h2><p></p>',
+                    type: 'text',
+                    activate: false,
+                });
+                const created = result?.note;
+                if (!created?.noteId) throw new Error('Trilium did not return the new round.');
+                await setLabel(created.noteId, kind === 'edit' ? 'extEditRound' : 'extStoryDraft', '');
+                await setLabel(created.noteId, 'round', '1');
+                await setAttribute(created.noteId, 'relation', 'project', hub.noteId);
+                if (typeof api.ensureNoteIsPresentInParent === 'function') {
+                    await api.ensureNoteIsPresentInParent(created.noteId, hub.noteId, '');
+                } else {
+                    const glob = window.glob;
+                    const response = await fetch(`${glob.baseApiUrl}notes/${created.noteId}/toggle-in-parent/${hub.noteId}/true`, {
+                        method: 'PUT', credentials: 'same-origin',
+                        headers: {
+                            'x-csrf-token': glob.csrfToken,
+                            'trilium-component-id': glob.componentId || '',
+                            'content-type': 'application/json',
+                        },
+                        body: JSON.stringify({}),
+                    });
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                }
+                close();
+                statusLine.textContent = 'New round created.';
+                await loadDashboard();
+            } catch (error) {
+                statusLine.textContent = `Could not create round: ${error.message || error}`;
+            }
+        });
+        backdrop.appendChild(modal);
+        document.body.appendChild(backdrop);
+        modal.querySelector('#project-round-title').focus();
+    };
     const relationTarget = (note, name) => {
         const relation = note?.getRelations?.(name)?.[0]
             || note?.attributes?.find?.((attribute) => attribute.type === 'relation' && attribute.name === name);
@@ -349,7 +412,7 @@
     panel.querySelector('[data-project-action="task"]').addEventListener('click', async () => {
         try {
             const result = await api.createNote(hub.noteId, {
-                title: 'New project task', content: '<p>Task details...</p>', type: 'text', activate: true,
+                title: 'New project task', content: '<p>Task details...</p>', type: 'text', activate: false,
             });
             if (!result.note) throw new Error('Trilium did not return the task.');
             await setLabel(result.note.noteId, 'extTask', '');
@@ -363,17 +426,10 @@
     });
 
     panel.querySelector('[data-project-action="round"]')?.addEventListener('click', () => {
-        if (window.__ikmalQuickCapture) {
-            Promise.resolve(window.__ikmalQuickCapture(
-                kind === 'edit' ? 'edit' : 'story',
-                { project: hub.noteId },
-                () => loadDashboard(),
-            )).catch((error) => {
-                statusLine.textContent = `Could not open new round: ${error.message || error}`;
-            });
-        } else {
-            statusLine.textContent = 'Quick Capture modal is unavailable.';
-        }
+        // This action is scoped to the visible hub. The global launcher can
+        // resolve its initial project against another active pane, so use the
+        // local capture path to preserve this dashboard's hub relationship.
+        openRoundFallback();
     });
 
     panel.querySelector('[data-project-action="export-summary"]')?.addEventListener('click', async () => {
@@ -381,6 +437,9 @@
         const currentRoundStr = panel.querySelector('[data-project-current-round]')?.textContent || '';
         const taskCompStr = panel.querySelector('[data-project-task-completion]')?.textContent || '';
         const markdownBrief = `# ${title}\n- Status: ${status}\n- ${currentRoundStr}\n- Completion: ${taskCompStr}\n- Next Action: ${nextAction}\n`;
+        // Open synchronously before optional clipboard I/O so popup blockers do
+        // not prevent the printable report when clipboard permission is delayed.
+        const win = window.open('', '_blank');
 
         if (navigator.clipboard) {
             try {
@@ -389,7 +448,6 @@
             } catch (e) {}
         }
 
-        const win = window.open('', '_blank');
         if (win) {
             win.document.write(`
                 <!DOCTYPE html>
@@ -434,49 +492,23 @@
         const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
         let archived = false;
         try {
-            if (typeof api !== 'undefined' && typeof api.runOnBackend === 'function') {
-                await api.runOnBackend((hubId, todayDate) => {
-                    const hubNote = api.getNote(hubId);
-                    const archiveRoot = api.getNoteWithLabel('archiveProjectRoot');
-                    const activeRoot = api.getNoteWithLabel('activeProjectRoot');
-                    if (!hubNote || !archiveRoot) throw new Error('Archive root folder (#archiveProjectRoot) is not available.');
-                    hubNote.setLabel('status', 'complete');
-                    hubNote.setLabel('doneDate', todayDate);
-                    api.ensureNoteIsPresentInParent(hubId, archiveRoot.noteId, '');
-                    if (activeRoot) api.ensureNoteIsAbsentFromParent(hubId, activeRoot.noteId);
-                }, [hub.noteId, today]);
-            } else {
-                const archiveRoot = (await api.searchForNotes('#archiveProjectRoot'))?.[0];
-                const activeRoot = (await api.searchForNotes('#activeProjectRoot'))?.[0];
-                if (!archiveRoot?.noteId) throw new Error('Archive root folder (#archiveProjectRoot) is not available.');
-                const glob = window.glob;
-                if (!glob) throw new Error('Trilium session context is unavailable.');
-
-                const toggleInParent = async (parentNoteId, present) => {
-                    const response = await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/toggle-in-parent/${parentNoteId}/${present}`, {
-                        method: 'PUT', credentials: 'same-origin',
-                        headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId, 'content-type': 'application/json' },
-                        body: JSON.stringify({}),
-                    });
-                    if (!response.ok) {
-                        throw new Error(`Could not ${present ? 'add' : 'remove'} project branch (HTTP ${response.status}).`);
-                    }
-                    const result = await response.json().catch(() => null);
-                    if (result?.success === false) {
-                        throw new Error(`Trilium refused to ${present ? 'add' : 'remove'} the project branch.`);
-                    }
-                };
-
-                await toggleInParent(archiveRoot.noteId, true);
-                if (activeRoot?.noteId) {
-                    await toggleInParent(activeRoot.noteId, false);
-                }
-                await setLabel(hub.noteId, 'status', 'complete');
-                await setLabel(hub.noteId, 'doneDate', today);
-            }
-            archived = true;
+            const archiveRoot = (await api.searchForNotes('#archiveProjectRoot'))?.[0];
+            const activeRoot = (await api.searchForNotes('#activeProjectRoot'))?.[0];
+            if (!archiveRoot?.noteId) throw new Error('Archive root folder (#archiveProjectRoot) is not available.');
+            // Moving the active hub can cause Trilium to refresh this render
+            // context before the final await resumes. Publish the optimistic
+            // user-facing state first; the persisted writes below remain
+            // observable and the catch path replaces it on failure.
             statusLine.textContent = 'Project archived successfully.';
             panel.querySelector('[data-project-status]').textContent = 'complete';
+            const writes = [
+                setLabel(hub.noteId, 'status', 'complete'),
+                setLabel(hub.noteId, 'doneDate', today),
+                toggleInParent(hub.noteId, archiveRoot.noteId, true),
+            ];
+            if (activeRoot?.noteId) writes.push(toggleInParent(hub.noteId, activeRoot.noteId, false));
+            await Promise.all(writes);
+            archived = true;
         } catch (error) {
             // Atomic rollback. Only the move itself is covered: once the hub is
             // filed under Archive, rolling `status` back would leave the label
@@ -499,47 +531,18 @@
         const previousStatus = labelValue(hub, 'status') || 'complete';
         let reopened = false;
         try {
-            if (typeof api !== 'undefined' && typeof api.runOnBackend === 'function') {
-                await api.runOnBackend((hubId) => {
-                    const hubNote = api.getNote(hubId);
-                    const activeRoot = api.getNoteWithLabel('activeProjectRoot');
-                    const archiveRoot = api.getNoteWithLabel('archiveProjectRoot');
-                    if (!hubNote || !activeRoot) throw new Error('Active root folder (#activeProjectRoot) is not available.');
-                    hubNote.setLabel('status', 'active');
-                    api.ensureNoteIsPresentInParent(hubId, activeRoot.noteId, '');
-                    if (archiveRoot) api.ensureNoteIsAbsentFromParent(hubId, archiveRoot.noteId);
-                }, [hub.noteId]);
-            } else {
-                const activeRoot = (await api.searchForNotes('#activeProjectRoot'))?.[0];
-                const archiveRoot = (await api.searchForNotes('#archiveProjectRoot'))?.[0];
-                if (!activeRoot?.noteId) throw new Error('Active root folder (#activeProjectRoot) is not available.');
-                const glob = window.glob;
-                if (!glob) throw new Error('Trilium session context is unavailable.');
-
-                const toggleInParent = async (parentNoteId, present) => {
-                    const response = await fetch(`${glob.baseApiUrl}notes/${hub.noteId}/toggle-in-parent/${parentNoteId}/${present}`, {
-                        method: 'PUT', credentials: 'same-origin',
-                        headers: { 'x-csrf-token': glob.csrfToken, 'trilium-component-id': glob.componentId, 'content-type': 'application/json' },
-                        body: JSON.stringify({}),
-                    });
-                    if (!response.ok) {
-                        throw new Error(`Could not ${present ? 'add' : 'remove'} project branch (HTTP ${response.status}).`);
-                    }
-                    const result = await response.json().catch(() => null);
-                    if (result?.success === false) {
-                        throw new Error(`Trilium refused to ${present ? 'add' : 'remove'} the project branch.`);
-                    }
-                };
-
-                await toggleInParent(activeRoot.noteId, true);
-                if (archiveRoot?.noteId) {
-                    await toggleInParent(archiveRoot.noteId, false);
-                }
-                await setLabel(hub.noteId, 'status', 'active');
-            }
-            reopened = true;
+            const activeRoot = (await api.searchForNotes('#activeProjectRoot'))?.[0];
+            const archiveRoot = (await api.searchForNotes('#archiveProjectRoot'))?.[0];
+            if (!activeRoot?.noteId) throw new Error('Active root folder (#activeProjectRoot) is not available.');
             statusLine.textContent = 'Project reopened and set active.';
             panel.querySelector('[data-project-status]').textContent = 'active';
+            const writes = [
+                setLabel(hub.noteId, 'status', 'active'),
+                toggleInParent(hub.noteId, activeRoot.noteId, true),
+            ];
+            if (archiveRoot?.noteId) writes.push(toggleInParent(hub.noteId, archiveRoot.noteId, false));
+            await Promise.all(writes);
+            reopened = true;
         } catch (error) {
             // Atomic rollback, covering the move only -- see the archive handler.
             try { await setLabel(hub.noteId, 'status', previousStatus); } catch {}

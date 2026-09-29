@@ -1208,7 +1208,11 @@ ${entry}`);
       return repairPromise;
     };
     async function runFirstRunBootstrapIfNeeded() {
-      const bootstrapped = await searchIncludingHidden("#extBootstrapped");
+      let bootstrapped = await searchIncludingHidden("#extBootstrapped");
+      for (let attempt = 0; (!bootstrapped || bootstrapped.length === 0) && attempt < 3; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500 * (attempt + 1)));
+        bootstrapped = await searchIncludingHidden("#extBootstrapped");
+      }
       if (bootstrapped && bootstrapped.length > 0) return;
       console.log("[Ikmal Tools] First run detected; provisioning the workspace.");
       await window.__ikmal_workspace_repair();

@@ -19,3 +19,12 @@ run `npx playwright install chromium` during setup.
 The suite intentionally uses serial workers and an isolated fixture namespace:
 parallel runs against the same Trilium database would make UI assertions and
 cleanup race with one another.
+
+`acceptance.spec.mjs` is the end-to-end acceptance layer. It drives the shipped
+`dist` render artifacts from user actions and verifies persisted note content,
+labels, relations, branches, YAML/printable browser artifacts, request bodies,
+and visible failure/retry states. Its source notes come from
+`realistic-fixtures.json`; `weather-response.json` is the recorded service
+fixture used for deterministic weather success/retry coverage. The suite
+intentionally keeps setup API-only and never uses that shortcut for the behavior
+under test.

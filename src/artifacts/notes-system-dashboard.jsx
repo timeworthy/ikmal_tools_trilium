@@ -35,7 +35,7 @@ export function initNotesSystemDashboard(containerEl) {
     let activeTab = 'today';
     let todayContentArea = null;
     let yamlEditorSpec;
-    const frontendApi = typeof api !== 'undefined' ? api : null;
+    const frontendApi = (typeof api !== 'undefined' ? api : (globalThis).api) || null;
     const modelReady = loadRuntimeModel(templateEngine, todayEngine, ifThenRuleEngine, settingsEngine, frontendApi);
 
     function renderMain() {
@@ -107,7 +107,6 @@ export function initNotesSystemDashboard(containerEl) {
                     const spec = dumpYamlSpec(todayEngine.getLayout(), templateEngine, relationshipEngine, ifThenRuleEngine);
                     yamlEditorSpec = spec;
                     saveYamlSpecification(spec, frontendApi)
-                        .then(() => renderMain())
                         .catch((error) => console.warn(`[Ikmal Tools] Template changes could not be saved: ${error}`));
                 }, frontendApi);
             } else if (activeTab === 'settings') {

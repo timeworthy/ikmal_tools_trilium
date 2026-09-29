@@ -1428,7 +1428,18 @@
     // One marker search per startup is cheap; the sweep itself runs only while
     // the marker is absent, which on a healthy install means exactly once.
     async function runFirstRunBootstrapIfNeeded() {
-        const bootstrapped = await searchIncludingHidden('#extBootstrapped');
+        // A single search hitting the note index moments after a server
+        // restart can come back empty even on an already-provisioned
+        // workspace -- the same index-lag race `checkTodayAlignment` guards
+        // against for `#todayRoot` below. Here a false negative is far more
+        // expensive: it runs the *entire* first-run sweep, duplicating every
+        // container in ensureSkeletonContainers. Retry with backoff before
+        // concluding this is genuinely a first run.
+        let bootstrapped = await searchIncludingHidden('#extBootstrapped');
+        for (let attempt = 0; (!bootstrapped || bootstrapped.length === 0) && attempt < 3; attempt += 1) {
+            await new Promise((resolve) => window.setTimeout(resolve, 500 * (attempt + 1)));
+            bootstrapped = await searchIncludingHidden('#extBootstrapped');
+        }
         if (bootstrapped && bootstrapped.length > 0) return;
         console.log('[Ikmal Tools] First run detected; provisioning the workspace.');
         await window.__ikmal_workspace_repair();

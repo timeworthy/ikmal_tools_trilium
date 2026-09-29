@@ -45,6 +45,22 @@ function formatOptionLabel(attrName: string, opt: string): string {
     return map[opt] || opt.charAt(0).toUpperCase() + opt.slice(1).replace(/_/g, ' ');
 }
 
+const RELATION_TARGETS: Record<string, string> = {
+    project: 'projectHub',
+    client: 'organization',
+    companyOnBehalf: 'organization',
+    organization: 'organization',
+    employer: 'organization',
+    attendee: 'person',
+    writer: 'person',
+    staff: 'person',
+    aliasOf: 'topic',
+};
+
+function relationTargetTemplateId(attribute: { name: string; targetTemplateId?: string }): string | undefined {
+    return attribute.targetTemplateId || RELATION_TARGETS[attribute.name];
+}
+
 function triliumApi(explicitApi?: TriliumFrontendApi | null): TriliumFrontendApi | null {
     const a = explicitApi || (globalThis as any).api;
     return a && typeof a.searchForNotes === 'function' ? a : null;
@@ -69,7 +85,7 @@ export async function showQuickCaptureModal(
     options?: QuickCaptureOptions,
 ): Promise<void> {
     const isStoryOrEdit = templateId === 'story' || templateId === 'edit';
-    const activeTplId = isStoryOrEdit ? 'story' : templateId;
+    const activeTplId = isStoryOrEdit ? 'story' : (templateId === 'email' ? 'emailDraft' : templateId);
     const template = templateEngine.getTemplate(activeTplId);
     if (!template) return;
 
@@ -100,8 +116,9 @@ export async function showQuickCaptureModal(
         candidateTemplateIds.set(rel.relationName, rel.targetTemplateId);
     }
     for (const attr of template.attributes) {
-        if (attr.dataType === 'relation' && attr.targetTemplateId) {
-            candidateTemplateIds.set(attr.name, attr.targetTemplateId);
+        const targetTemplateId = relationTargetTemplateId(attr);
+        if ((attr.dataType === 'relation' || attr.type === 'relation' || targetTemplateId) && targetTemplateId) {
+            candidateTemplateIds.set(attr.name, targetTemplateId);
         }
     }
 
@@ -195,10 +212,12 @@ export async function showQuickCaptureModal(
                                             ['todo', 'in_progress', 'done', 'cancelled']
                                         ) : undefined
                                     );
-                                    const isRelationPicker = a.dataType === 'relation' && Boolean(a.targetTemplateId);
+                                    const targetTemplateId = relationTargetTemplateId(a);
+                                    const isRelationPicker = Boolean(targetTemplateId)
+                                        && (a.dataType === 'relation' || a.type === 'relation' || Boolean(RELATION_TARGETS[a.name]));
                                     const isOptionPicker = isRelationPicker || a.dataType === 'select' || Boolean(opts);
                                     const relationOptions = isRelationPicker ? (relationCandidates.get(a.name) || []) : [];
-                                    const targetTpl = a.targetTemplateId ? templateEngine.getTemplate(a.targetTemplateId) : undefined;
+                                    const targetTpl = targetTemplateId ? templateEngine.getTemplate(targetTemplateId) : undefined;
                                     return `
                                     <div class="col-md-6">
                                         <label class="form-label tiny text-muted font-weight-bold">#${a.name}</label>
@@ -288,7 +307,9 @@ export async function showQuickCaptureModal(
         const attrDef = template.attributes.find((candidate) => candidate.name === attrName);
         if (!attrName || !attrDef) return;
 
-        const isRelationPicker = attrDef.dataType === 'relation' && Boolean(attrDef.targetTemplateId);
+        const targetTemplateId = relationTargetTemplateId(attrDef);
+        const isRelationPicker = Boolean(targetTemplateId)
+            && (attrDef.dataType === 'relation' || attrDef.type === 'relation' || Boolean(RELATION_TARGETS[attrDef.name]));
         const fallbackOptions = attrDef.name === 'priority' ? ['medium', 'high', 'low']
             : attrDef.name === 'complexity' ? ['simple', 'multi']
                 : attrDef.name === 'kind' ? ['project', 'edit', 'client', 'internal']
@@ -302,7 +323,7 @@ export async function showQuickCaptureModal(
             ? (relationCandidates.get(attrName) || []).map((note) => ({
                 value: note.noteId,
                 label: note.title,
-                icon: attrDef.targetTemplateId ? `bx-${templateEngine.getTemplate(attrDef.targetTemplateId)?.icon || 'file'}` : 'bx-file',
+                icon: targetTemplateId ? `bx-${templateEngine.getTemplate(targetTemplateId)?.icon || 'file'}` : 'bx-file',
             }))
             : (attrDef.options || fallbackOptions).map((option) => ({
                 value: option,
@@ -312,7 +333,7 @@ export async function showQuickCaptureModal(
             id: `attr-${attrName}`,
             value: String(attrDef.defaultValue ?? ''),
             placeholder: isRelationPicker
-                ? (options.length ? `Search ${templateEngine.getTemplate(attrDef.targetTemplateId!)?.title || 'notes'}…` : 'No matching notes found')
+                ? (options.length ? `Search ${templateEngine.getTemplate(targetTemplateId!)?.title || 'notes'}…` : 'No matching notes found')
                 : 'Choose or search…',
             options,
         });

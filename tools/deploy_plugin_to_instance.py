@@ -69,6 +69,24 @@ def owned_artifacts(api: Etapi, owner: str, artifact_id: str) -> list[dict]:
     # Search by owner first. Hidden package notes are not consistently returned
     # by artifact-only searches in every Trilium frontend/cache state.
     candidates = api.search(f'#packageOwner="{owner}"')
+    # A normal search may return visible package artifacts while omitting the
+    # hidden manifest. If the requested artifact is not among those results,
+    # continue to the package-tree fallback instead of treating the package as
+    # manifest-less and creating a duplicate tree.
+    if candidates:
+        matching = [
+            note for note in candidates
+            if any(
+                attr.get("noteId") == note.get("noteId")
+                and attr.get("name") == "packageArtifact"
+                and attr.get("value") == artifact_id
+                for attr in note.get("attributes", [])
+            )
+        ]
+        if matching:
+            return matching
+        candidates = []
+
     if not candidates:
         root_id = COMMUNITY_PACKAGES_ROOT_ID
         try:
@@ -80,6 +98,19 @@ def owned_artifacts(api: Etapi, owner: str, artifact_id: str) -> list[dict]:
             )
         except Exception:
             candidates = []
+    if candidates:
+        matching = [
+            note for note in candidates
+            if any(
+                attr.get("noteId") == note.get("noteId")
+                and attr.get("name") == "packageArtifact"
+                and attr.get("value") == artifact_id
+                for attr in note.get("attributes", [])
+            )
+        ]
+        if matching:
+            return matching
+        candidates = []
     if not candidates:
         candidates = community_package_tree_notes(api)
         candidates = [
@@ -362,8 +393,22 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
 
 
         if artifact_type == "render":
-            # For render notes, create a parent render note + child code note (mime: application/javascript;env=frontend)
-            existing_render = current_artifact(api, pkg_owner, artifact_id)
+            # For render notes, create a parent render note + child code note
+            # whose MIME explicitly opts into Trilium's frontend renderer.
+            artifact_candidates = [
+                note for note in owned_artifacts(api, pkg_owner, artifact_id)
+                if not note_is_archived(note)
+            ]
+            manifest_children = set(api.get_note(pkg_manifest_note_id).get("childNoteIds", []))
+            existing_render = next(
+                (
+                    note for note in artifact_candidates
+                    if note.get("noteId") in manifest_children
+                    and note.get("title") == title
+                    and note.get("type") in {"render", "code"}
+                ),
+                None,
+            )
             render_note_id = existing_render["noteId"] if existing_render else None
 
             if not render_note_id:
@@ -375,6 +420,10 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
                 )
                 print(f"  + Created render container '{title}': {render_note_id}")
             else:
+                # Older deployments could have left the container as a code
+                # note. Reassert the render type on every convergence pass so
+                # its linked frontend child is actually executed.
+                api.set_type(render_note_id, "render")
                 api.set_content(render_note_id, "<div class='notes-system-root'></div>")
                 print(f"  ✓ Updated render container '{title}': {render_note_id}")
 
@@ -392,7 +441,27 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
 
             # Check or create child script note
             script_title = f"{title} (Script)"
-            existing_script = current_artifact(api, pkg_owner, f"{artifact_id}-script")
+            script_candidates = [
+                note for note in owned_artifacts(api, pkg_owner, f"{artifact_id}-script")
+                if not note_is_archived(note)
+            ]
+            render_children = set(api.get_note(render_note_id).get("childNoteIds", []))
+            existing_script = next(
+                (note for note in script_candidates if note.get("noteId") in render_children),
+                None,
+            )
+            if not existing_script:
+                # Legacy trees labelled the direct code child with the parent
+                # artifact id instead of the -script id. Reuse that child on
+                # upgrade rather than leaving a stale executable sibling.
+                existing_script = next(
+                    (
+                        note for note in artifact_candidates
+                        if note.get("noteId") in render_children
+                        and note.get("type") == "code"
+                    ),
+                    None,
+                )
             script_note_id = existing_script["noteId"] if existing_script else None
 
             script_body = code_content
@@ -404,12 +473,13 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
                     title=script_title,
                     content=script_body,
                     note_type="code",
-                    mime="text/jsx",
+                    mime="application/javascript;env=frontend",
                 )
                 print(f"  + Created render script '{script_title}': {script_note_id}")
             else:
+                api.set_title(script_note_id, script_title)
                 api.set_content(script_note_id, script_body)
-                api.set_mime(script_note_id, "text/jsx")
+                api.set_mime(script_note_id, "application/javascript;env=frontend")
                 print(f"  ✓ Updated render script '{script_title}': {script_note_id}")
 
             api.set_label(script_note_id, "packageManaged", "")

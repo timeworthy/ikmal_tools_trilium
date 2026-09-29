@@ -297,7 +297,7 @@ async function resolveParentNoteId(api: TriliumFrontendApi, plan: NoteCreationPl
     }
 
     // Standalone project-scoped notes without a specific project hub target land under Unassigned
-    const isProjectScopedType = ['task', 'projectTask', 'story', 'reportingNotes', 'email', 'meeting', 'meetingPrep', 'scratch'].includes(plan.templateId);
+    const isProjectScopedType = ['task', 'projectTask', 'story', 'reportingNotes', 'emailDraft', 'meeting', 'meetingPrep', 'scratch'].includes(plan.templateId);
     const hasProjectHubRel = plan.relationsToCreate.some((r) => r.name === 'project');
     if (isProjectScopedType && !hasProjectHubRel && plan.templateId !== 'projectHub') {
         const unassigned = await api.searchForNote('#unassignedRoot');

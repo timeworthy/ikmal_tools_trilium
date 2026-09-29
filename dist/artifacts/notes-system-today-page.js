@@ -613,7 +613,8 @@
       const isStoryOrEdit = request.type === "story" || request.type === "edit";
       const relValues = request.relations || {};
       const hasExistingProject = Boolean(relValues.project || request.targetContainerId);
-      let templateId = request.type;
+      const canonicalRequestType = request.type === "email" ? "emailDraft" : request.type;
+      let templateId = canonicalRequestType;
       let rootContainerMarker = "";
       if (isStoryOrEdit && !hasExistingProject) {
         templateId = "projectHub";
@@ -1164,7 +1165,10 @@ ${child.content || ""}`;
     return wrapper;
   }
   function switchRow({ id, checked, onChange, ...rest }) {
-    return row(toggle(id, checked, onChange), { ...rest, htmlFor: id, compact: true });
+    const control = toggle(id, checked, onChange);
+    const input = control.querySelector("input");
+    if (input && rest.label) input.setAttribute("aria-label", rest.label);
+    return row(control, { ...rest, htmlFor: id, compact: true });
   }
   function listItem({ icon, title, description, disabled, actions }) {
     const item = document.createElement("div");
@@ -1528,6 +1532,185 @@ ${child.content || ""}`;
     schedule(now());
     return stop;
   }
+
+  // src/engine/triliumApiBridge.ts
+  var TriliumApiBridge = class {
+    static getGlob() {
+      return globalThis.glob || (typeof window !== "undefined" ? window.glob : null);
+    }
+    static getFrontendApi(explicitApi) {
+      return explicitApi || globalThis.api || (typeof window !== "undefined" ? window.api : null);
+    }
+    static async authenticatedFetch(pathRelative, options = {}) {
+      const glob = this.getGlob();
+      if (!glob) {
+        throw new Error("Trilium session context is unavailable.");
+      }
+      const headers = {
+        "x-csrf-token": glob.csrfToken || "",
+        "trilium-component-id": glob.componentId || "",
+        "content-type": "application/json",
+        ...options.headers || {}
+      };
+      const fetchFn = globalThis.fetch || (typeof window !== "undefined" ? window.fetch : null);
+      if (!fetchFn) {
+        throw new Error("Global fetch API is unavailable.");
+      }
+      const fullPath = `${glob.baseApiUrl}${pathRelative}`;
+      const send = () => fetchFn(fullPath, {
+        credentials: "same-origin",
+        ...options,
+        headers: { ...headers }
+      });
+      let response = await send();
+      if (response.status === 403) {
+        const locSearch = globalThis.location?.search || (typeof window !== "undefined" ? window.location?.search : "") || "";
+        const bootstrapUrl = `./bootstrap${locSearch}`;
+        const bootstrapResp = await fetchFn(bootstrapUrl, { credentials: "same-origin", cache: "no-store" }).catch(() => null);
+        if (bootstrapResp && bootstrapResp.ok) {
+          const refreshed = await bootstrapResp.json().catch(() => null);
+          if (refreshed?.csrfToken) {
+            glob.csrfToken = refreshed.csrfToken;
+            headers["x-csrf-token"] = refreshed.csrfToken;
+            response = await send();
+          }
+        }
+      }
+      return response;
+    }
+    /**
+     * Ensures a child note is attached/cloned under a parent note.
+     */
+    static async ensureNotePresentInParent(childNoteId, parentNoteId, explicitApi) {
+      if (!childNoteId || !parentNoteId) return;
+      const frontendApi = this.getFrontendApi(explicitApi);
+      if (frontendApi && typeof frontendApi.runOnBackend === "function") {
+        try {
+          const applied = await frontendApi.runOnBackend((cId, pId) => {
+            if (typeof api === "undefined" || typeof api.ensureNoteIsPresentInParent !== "function") {
+              return false;
+            }
+            api.ensureNoteIsPresentInParent(cId, pId, "");
+            return true;
+          }, [childNoteId, parentNoteId]);
+          if (applied) return;
+        } catch (err) {
+        }
+      }
+      const response = await this.authenticatedFetch(`notes/${childNoteId}/toggle-in-parent/${parentNoteId}/true`, {
+        method: "PUT",
+        body: JSON.stringify({})
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to clone note ${childNoteId} under ${parentNoteId} (HTTP ${response.status})`);
+      }
+      const result = await response.json().catch(() => null);
+      if (result?.success === false) {
+        throw new Error(`Trilium refused to clone note ${childNoteId} under ${parentNoteId}`);
+      }
+    }
+    /**
+     * Ensures a child note is removed/unlinked from a parent note.
+     */
+    static async ensureNoteAbsentFromParent(childNoteId, parentNoteId, explicitApi) {
+      if (!childNoteId || !parentNoteId) return;
+      const frontendApi = this.getFrontendApi(explicitApi);
+      if (frontendApi && typeof frontendApi.runOnBackend === "function") {
+        try {
+          const applied = await frontendApi.runOnBackend((cId, pId) => {
+            if (typeof api === "undefined" || typeof api.ensureNoteIsAbsentFromParent !== "function") {
+              return false;
+            }
+            api.ensureNoteIsAbsentFromParent(cId, pId);
+            return true;
+          }, [childNoteId, parentNoteId]);
+          if (applied) return;
+        } catch (err) {
+        }
+      }
+      const response = await this.authenticatedFetch(`notes/${childNoteId}/toggle-in-parent/${parentNoteId}/false`, {
+        method: "PUT",
+        body: JSON.stringify({})
+      });
+      if (!response.ok && response.status !== 404) {
+        throw new Error(`Failed to remove note ${childNoteId} from ${parentNoteId} (HTTP ${response.status})`);
+      }
+      if (response.ok) {
+        const result = await response.json().catch(() => null);
+        if (result?.success === false) {
+          throw new Error(`Trilium refused to remove note ${childNoteId} from ${parentNoteId}`);
+        }
+      }
+    }
+    /**
+     * Sets or updates a note attribute (label or relation).
+     */
+    static async setNoteAttribute(noteId, type, name, value, targetNoteId, explicitApi) {
+      if (!noteId || !name) return;
+      const payload = { type, name, isInheritable: false };
+      if (type === "label") payload.value = value || "";
+      if (type === "relation") payload.value = targetNoteId || value || "";
+      const frontendApi = this.getFrontendApi(explicitApi);
+      if (frontendApi && typeof frontendApi.runOnBackend === "function" && !this.getGlob()) {
+        try {
+          const applied = await frontendApi.runOnBackend((nId, aType, aName, aValue) => {
+            if (typeof api === "undefined") return false;
+            const note = api.getNote?.(nId);
+            if (!note) return false;
+            if (aType === "label") note.setLabel(aName, aValue || "");
+            else if (aType === "relation" && aValue) note.setRelation(aName, aValue);
+            else return false;
+            return true;
+          }, [noteId, type, name, payload.value || ""]);
+          if (applied) return;
+        } catch {
+        }
+      }
+      const response = await this.authenticatedFetch(`notes/${noteId}/set-attribute`, {
+        method: "PUT",
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to set attribute '${name}' on note ${noteId} (HTTP ${response.status})`);
+      }
+      const result = await response.json().catch(() => null);
+      if (result?.success === false) {
+        throw new Error(`Trilium refused to set attribute '${name}' on note ${noteId}`);
+      }
+    }
+    /**
+     * Sets a note title.
+     */
+    static async setNoteTitle(noteId, title, explicitApi) {
+      if (!noteId) return;
+      const frontendApi = this.getFrontendApi(explicitApi);
+      if (frontendApi && typeof frontendApi.runOnBackend === "function") {
+        try {
+          const applied = await frontendApi.runOnBackend((nId, newTitle) => {
+            if (typeof api === "undefined") return false;
+            const note = api.getNote?.(nId);
+            if (!note) return false;
+            note.title = newTitle;
+            note.save();
+            return true;
+          }, [noteId, title]);
+          if (applied) return;
+        } catch (err) {
+        }
+      }
+      const response = await this.authenticatedFetch(`notes/${noteId}/title`, {
+        method: "PUT",
+        body: JSON.stringify({ title })
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to set title on note ${noteId} (HTTP ${response.status})`);
+      }
+      const result = await response.json().catch(() => null);
+      if (result?.success === false) {
+        throw new Error(`Trilium refused to set the title on note ${noteId}`);
+      }
+    }
+  };
 
   // src/components/TodayHomepage.tsx
   var SAMPLE_TASKS = [
@@ -1988,13 +2171,17 @@ ${child.content || ""}`;
       }
       const markers = templateEngine.getAllTemplates().map((t) => `#${t.marker}`);
       const notes = await api2.searchForNotes(markers.length ? markers.join(" OR ") : "#extTask");
-      const summaries = notes.map((note) => ({
-        noteId: note.noteId,
-        title: note.title,
-        dateCreated: parseTriliumTimestamp(note.dateCreated),
-        dateModified: parseTriliumTimestamp(note.dateModified),
-        status: typeof note.getLabelValue === "function" ? note.getLabelValue("status") ?? void 0 : void 0
-      }));
+      const summaries = notes.map((note) => {
+        const createdLabel = note.getLabelValue?.("utcDateCreated");
+        const modifiedLabel = note.getLabelValue?.("utcDateModified");
+        return {
+          noteId: note.noteId,
+          title: note.title,
+          dateCreated: parseTriliumTimestamp(createdLabel || note.dateCreated),
+          dateModified: parseTriliumTimestamp(modifiedLabel || note.dateModified),
+          status: typeof note.getLabelValue === "function" ? note.getLabelValue("status") ?? void 0 : void 0
+        };
+      });
       if (generation === dataGeneration) noteSummaryCache = summaries;
       return summaries;
     }
@@ -2231,8 +2418,8 @@ ${child.content || ""}`;
               icon: "bx-show",
               title: "Open Note",
               onClick: () => {
-                const api2 = globalThis.api;
-                if (api2?.activateNote) api2.activateNote(entry.noteId);
+                const frontendApi = triliumApi4();
+                if (frontendApi?.activateNote) frontendApi.activateNote(entry.noteId);
               }
             })
           ]
@@ -2256,21 +2443,26 @@ ${child.content || ""}`;
               icon: "bx-show",
               title: "Open Note",
               onClick: () => {
-                const api2 = globalThis.api;
-                if (api2?.activateNote) api2.activateNote(entry.noteId);
+                const frontendApi = triliumApi4();
+                if (frontendApi?.activateNote) frontendApi.activateNote(entry.noteId);
               }
             }),
             iconAction({
               icon: "bx-check-double",
               title: "Mark Touched",
               onClick: () => {
-                const frontendApi = globalThis.api;
+                const frontendApi = triliumApi4();
                 if (frontendApi?.runOnBackend) {
-                  frontendApi.runOnBackend((id) => {
-                    const n = api.getNote?.(id);
-                    if (n) n.touch?.();
-                  }, [entry.noteId]);
+                  return TriliumApiBridge.setNoteAttribute(
+                    entry.noteId,
+                    "label",
+                    "utcDateModified",
+                    (/* @__PURE__ */ new Date()).toISOString(),
+                    void 0,
+                    frontendApi
+                  );
                 }
+                return Promise.resolve();
               }
             })
           ]
@@ -2401,7 +2593,7 @@ ${child.content || ""}`;
         `;
       filterRow.querySelector("input")?.addEventListener("input", (e) => {
         const query = e.target.value.toLowerCase().trim();
-        const items = parent.querySelectorAll(".ns-kanban-card, .ns-list-item, .ns-row, tr");
+        const items = parent.querySelectorAll(".kanban-card, .ns-kanban-card, .ns-list-item, .ns-row, tr");
         items.forEach((item) => {
           const text = item.textContent?.toLowerCase() || "";
           item.style.display = !query || text.includes(query) ? "" : "none";
@@ -3454,7 +3646,7 @@ ${child.content || ""}`;
     if (plan.templateId === "projectHub" && marker === "projectRoot") {
       marker = "activeProjectRoot";
     }
-    const isProjectScopedType = ["task", "projectTask", "story", "reportingNotes", "email", "meeting", "meetingPrep", "scratch"].includes(plan.templateId);
+    const isProjectScopedType = ["task", "projectTask", "story", "reportingNotes", "emailDraft", "meeting", "meetingPrep", "scratch"].includes(plan.templateId);
     const hasProjectHubRel = plan.relationsToCreate.some((r) => r.name === "project");
     if (isProjectScopedType && !hasProjectHubRel && plan.templateId !== "projectHub") {
       const unassigned = await api2.searchForNote("#unassignedRoot");
@@ -3800,13 +3992,27 @@ ${child.content || ""}`;
     };
     return map[opt] || opt.charAt(0).toUpperCase() + opt.slice(1).replace(/_/g, " ");
   }
+  var RELATION_TARGETS = {
+    project: "projectHub",
+    client: "organization",
+    companyOnBehalf: "organization",
+    organization: "organization",
+    employer: "organization",
+    attendee: "person",
+    writer: "person",
+    staff: "person",
+    aliasOf: "topic"
+  };
+  function relationTargetTemplateId(attribute) {
+    return attribute.targetTemplateId || RELATION_TARGETS[attribute.name];
+  }
   function triliumApi2(explicitApi) {
     const a = explicitApi || globalThis.api;
     return a && typeof a.searchForNotes === "function" ? a : null;
   }
   async function showQuickCaptureModal(templateId, templateEngine, noteCreationEngine, onCreated, initialRelations, options) {
     const isStoryOrEdit = templateId === "story" || templateId === "edit";
-    const activeTplId = isStoryOrEdit ? "story" : templateId;
+    const activeTplId = isStoryOrEdit ? "story" : templateId === "email" ? "emailDraft" : templateId;
     const template = templateEngine.getTemplate(activeTplId);
     if (!template) return;
     const isEditMode = templateId === "edit";
@@ -3828,8 +4034,9 @@ ${child.content || ""}`;
       candidateTemplateIds.set(rel.relationName, rel.targetTemplateId);
     }
     for (const attr of template.attributes) {
-      if (attr.dataType === "relation" && attr.targetTemplateId) {
-        candidateTemplateIds.set(attr.name, attr.targetTemplateId);
+      const targetTemplateId = relationTargetTemplateId(attr);
+      if ((attr.dataType === "relation" || attr.type === "relation" || targetTemplateId) && targetTemplateId) {
+        candidateTemplateIds.set(attr.name, targetTemplateId);
       }
     }
     for (const [fieldName, targetTemplateId] of candidateTemplateIds) {
@@ -3909,10 +4116,11 @@ ${child.content || ""}`;
                             <div class="row g-2 attr-form">
                                 ${template.attributes.filter((a) => !(a.dataType === "relation" && template.relationships.some((rel) => rel.relationName === a.name))).map((a) => {
       const opts = a.options || (a.name === "priority" ? ["medium", "high", "low"] : a.name === "complexity" ? ["simple", "multi"] : a.name === "kind" ? ["project", "edit", "client", "internal"] : a.name === "status" ? templateId === "story" ? ["drafting", "review", "published"] : templateId === "edit" ? ["editing", "approved", "returned"] : templateId === "projectHub" ? ["active", "on_hold", "complete", "archived"] : ["todo", "in_progress", "done", "cancelled"] : void 0);
-      const isRelationPicker = a.dataType === "relation" && Boolean(a.targetTemplateId);
+      const targetTemplateId = relationTargetTemplateId(a);
+      const isRelationPicker = Boolean(targetTemplateId) && (a.dataType === "relation" || a.type === "relation" || Boolean(RELATION_TARGETS[a.name]));
       const isOptionPicker = isRelationPicker || a.dataType === "select" || Boolean(opts);
       const relationOptions = isRelationPicker ? relationCandidates.get(a.name) || [] : [];
-      const targetTpl = a.targetTemplateId ? templateEngine.getTemplate(a.targetTemplateId) : void 0;
+      const targetTpl = targetTemplateId ? templateEngine.getTemplate(targetTemplateId) : void 0;
       return `
                                     <div class="col-md-6">
                                         <label class="form-label tiny text-muted font-weight-bold">#${a.name}</label>
@@ -3994,12 +4202,13 @@ ${child.content || ""}`;
       const attrName = placeholder.dataset.attrPicker;
       const attrDef = template.attributes.find((candidate) => candidate.name === attrName);
       if (!attrName || !attrDef) return;
-      const isRelationPicker = attrDef.dataType === "relation" && Boolean(attrDef.targetTemplateId);
+      const targetTemplateId = relationTargetTemplateId(attrDef);
+      const isRelationPicker = Boolean(targetTemplateId) && (attrDef.dataType === "relation" || attrDef.type === "relation" || Boolean(RELATION_TARGETS[attrDef.name]));
       const fallbackOptions = attrDef.name === "priority" ? ["medium", "high", "low"] : attrDef.name === "complexity" ? ["simple", "multi"] : attrDef.name === "kind" ? ["project", "edit", "client", "internal"] : attrDef.name === "status" ? templateId === "story" ? ["drafting", "review", "published"] : templateId === "edit" ? ["editing", "approved", "returned"] : templateId === "projectHub" ? ["active", "on_hold", "complete", "archived"] : ["todo", "in_progress", "done", "cancelled"] : [];
       const options2 = isRelationPicker ? (relationCandidates.get(attrName) || []).map((note) => ({
         value: note.noteId,
         label: note.title,
-        icon: attrDef.targetTemplateId ? `bx-${templateEngine.getTemplate(attrDef.targetTemplateId)?.icon || "file"}` : "bx-file"
+        icon: targetTemplateId ? `bx-${templateEngine.getTemplate(targetTemplateId)?.icon || "file"}` : "bx-file"
       })) : (attrDef.options || fallbackOptions).map((option) => ({
         value: option,
         label: formatOptionLabel(attrName, option)
@@ -4007,7 +4216,7 @@ ${child.content || ""}`;
       const picker = searchableSelect({
         id: `attr-${attrName}`,
         value: String(attrDef.defaultValue ?? ""),
-        placeholder: isRelationPicker ? options2.length ? `Search ${templateEngine.getTemplate(attrDef.targetTemplateId)?.title || "notes"}\u2026` : "No matching notes found" : "Choose or search\u2026",
+        placeholder: isRelationPicker ? options2.length ? `Search ${templateEngine.getTemplate(targetTemplateId)?.title || "notes"}\u2026` : "No matching notes found" : "Choose or search\u2026",
         options: options2
       });
       placeholder.replaceWith(picker.el);
@@ -4153,7 +4362,9 @@ ${child.content || ""}`;
   async function findManifestNote(explicitApi) {
     const api2 = triliumApi3(explicitApi);
     if (!api2) return null;
-    const notes = await api2.searchForNotes(`#packageOwner="${PACKAGE_ID}" #packageArtifact="manifest"`);
+    const query = `#packageOwner="${PACKAGE_ID}" #packageArtifact="manifest"`;
+    const search = api2.searchForNotesIncludingHidden || api2.searchForNotes;
+    const notes = await search.call(api2, query);
     return notes[0] ?? null;
   }
   function parseStoredBoolean(raw, fallback) {

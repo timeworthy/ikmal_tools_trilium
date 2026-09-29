@@ -812,8 +812,13 @@ export function renderTemplateStudio(
             actions,
         });
 
-        const descContainer = el.querySelector('.ns-list-item-desc');
-        if (descContainer) descContainer.innerHTML = flowDesc;
+        // `listItem` omits an empty description node. Rules still need their
+        // trigger/condition/action summary rendered, so attach the detail row
+        // explicitly instead of relying on that optional node.
+        const detail = document.createElement('div');
+        detail.className = 'ns-list-item-desc';
+        detail.innerHTML = flowDesc;
+        el.querySelector('.ns-list-item-main')?.appendChild(detail);
         return el;
     }
 

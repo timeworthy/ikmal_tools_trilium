@@ -1198,7 +1198,8 @@
       const isStoryOrEdit = request.type === "story" || request.type === "edit";
       const relValues = request.relations || {};
       const hasExistingProject = Boolean(relValues.project || request.targetContainerId);
-      let templateId = request.type;
+      const canonicalRequestType = request.type === "email" ? "emailDraft" : request.type;
+      let templateId = canonicalRequestType;
       let rootContainerMarker = "";
       if (isStoryOrEdit && !hasExistingProject) {
         templateId = "projectHub";
@@ -1517,7 +1518,9 @@ ${child.content || ""}`;
   async function findManifestNote(explicitApi) {
     const api2 = triliumApi(explicitApi);
     if (!api2) return null;
-    const notes = await api2.searchForNotes(`#packageOwner="${PACKAGE_ID}" #packageArtifact="manifest"`);
+    const query = `#packageOwner="${PACKAGE_ID}" #packageArtifact="manifest"`;
+    const search = api2.searchForNotesIncludingHidden || api2.searchForNotes;
+    const notes = await search.call(api2, query);
     return notes[0] ?? null;
   }
   function parseStoredBoolean(raw, fallback) {
@@ -2035,11 +2038,13 @@ ifThenRules: []
     filterRow.querySelectorAll(".filter-pill").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         filterRow.querySelectorAll(".filter-pill").forEach((b) => {
-          b.className = b.className.replace("btn-primary", "btn-outline-primary");
+          b.classList.remove("btn-primary", "btn-outline-primary", "btn-outline-danger", "btn-outline-warning", "btn-outline-secondary");
+          b.classList.add("btn-outline-primary");
         });
         const filter = e.currentTarget.dataset.filter;
         priorityFilter = filter || "all";
-        e.currentTarget.className = e.currentTarget.className.replace("btn-outline-primary", "btn-primary");
+        e.currentTarget.classList.remove("btn-outline-primary");
+        e.currentTarget.classList.add("btn-primary");
         renderColumns();
       });
     });
@@ -2115,17 +2120,16 @@ ifThenRules: []
           const task = taskCache.find((t) => t.id === noteId);
           if (task && task.status !== column.id) {
             task.status = column.id;
-            if (frontendApi?.getNote) {
-              try {
-                const note = frontendApi.getNote(noteId);
-                if (note) {
-                  note.setLabel("status", column.id);
-                  if (column.id === "done") {
-                    note.setLabel("doneDate", (/* @__PURE__ */ new Date()).toISOString().slice(0, 10));
-                  }
+            if (frontendApi?.runOnBackend) {
+              frontendApi.runOnBackend((id, status) => {
+                const note = api.getNote?.(id);
+                if (!note) return;
+                note.setLabel("status", status);
+                if (status === "done") {
+                  note.setLabel("doneDate", (/* @__PURE__ */ new Date()).toISOString().slice(0, 10));
                 }
-              } catch (err) {
-              }
+              }, [noteId, column.id]).catch(() => {
+              });
             }
             renderColumns();
           }
@@ -2178,17 +2182,16 @@ ifThenRules: []
                 if (newStatus === "done") {
                   cardItem.classList.add("ns-card-done-anim");
                 }
-                if (frontendApi?.getNote) {
-                  try {
-                    const note = frontendApi.getNote(t.id);
-                    if (note) {
-                      note.setLabel("status", newStatus);
-                      if (newStatus === "done") {
-                        note.setLabel("doneDate", (/* @__PURE__ */ new Date()).toISOString().slice(0, 10));
-                      }
+                if (frontendApi?.runOnBackend) {
+                  frontendApi.runOnBackend((id, status) => {
+                    const note = api.getNote?.(id);
+                    if (!note) return;
+                    note.setLabel("status", status);
+                    if (status === "done") {
+                      note.setLabel("doneDate", (/* @__PURE__ */ new Date()).toISOString().slice(0, 10));
                     }
-                  } catch (err) {
-                  }
+                  }, [t.id, newStatus]).catch(() => {
+                  });
                 }
                 setTimeout(() => loadTasks(), 250);
               });

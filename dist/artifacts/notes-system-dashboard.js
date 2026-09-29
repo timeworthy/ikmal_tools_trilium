@@ -1198,7 +1198,8 @@
       const isStoryOrEdit = request.type === "story" || request.type === "edit";
       const relValues = request.relations || {};
       const hasExistingProject = Boolean(relValues.project || request.targetContainerId);
-      let templateId = request.type;
+      const canonicalRequestType = request.type === "email" ? "emailDraft" : request.type;
+      let templateId = canonicalRequestType;
       let rootContainerMarker = "";
       if (isStoryOrEdit && !hasExistingProject) {
         templateId = "projectHub";
@@ -1506,33 +1507,25 @@ ${child.content || ""}`;
      */
     static async setNoteAttribute(noteId, type, name, value, targetNoteId, explicitApi) {
       if (!noteId || !name) return;
-      const frontendApi = this.getFrontendApi(explicitApi);
-      if (frontendApi && typeof frontendApi.runOnBackend === "function") {
-        try {
-          const applied = await frontendApi.runOnBackend(
-            (nId, aType, aName, aVal, tId) => {
-              if (typeof api === "undefined") return false;
-              const note = api.getNote?.(nId);
-              if (!note) return false;
-              if (aType === "label") {
-                note.setLabel(aName, aVal || "");
-                return true;
-              }
-              if (aType === "relation" && tId) {
-                note.setRelation(aName, tId);
-                return true;
-              }
-              return false;
-            },
-            [noteId, type, name, value || "", targetNoteId || ""]
-          );
-          if (applied) return;
-        } catch (err) {
-        }
-      }
       const payload = { type, name, isInheritable: false };
       if (type === "label") payload.value = value || "";
       if (type === "relation") payload.value = targetNoteId || value || "";
+      const frontendApi = this.getFrontendApi(explicitApi);
+      if (frontendApi && typeof frontendApi.runOnBackend === "function" && !this.getGlob()) {
+        try {
+          const applied = await frontendApi.runOnBackend((nId, aType, aName, aValue) => {
+            if (typeof api === "undefined") return false;
+            const note = api.getNote?.(nId);
+            if (!note) return false;
+            if (aType === "label") note.setLabel(aName, aValue || "");
+            else if (aType === "relation" && aValue) note.setRelation(aName, aValue);
+            else return false;
+            return true;
+          }, [noteId, type, name, payload.value || ""]);
+          if (applied) return;
+        } catch {
+        }
+      }
       const response = await this.authenticatedFetch(`notes/${noteId}/set-attribute`, {
         method: "PUT",
         body: JSON.stringify(payload)
@@ -1591,7 +1584,9 @@ ${child.content || ""}`;
   async function findManifestNote(explicitApi) {
     const api2 = triliumApi(explicitApi);
     if (!api2) return null;
-    const notes = await api2.searchForNotes(`#packageOwner="${PACKAGE_ID}" #packageArtifact="manifest"`);
+    const query = `#packageOwner="${PACKAGE_ID}" #packageArtifact="manifest"`;
+    const search = api2.searchForNotesIncludingHidden || api2.searchForNotes;
+    const notes = await search.call(api2, query);
     return notes[0] ?? null;
   }
   async function writeLabel(note, name, value, explicitApi) {
@@ -2575,7 +2570,10 @@ ${YamlParser.stringify({ template: dumped })}
     return wrapper;
   }
   function switchRow({ id, checked, onChange, ...rest }) {
-    return row(toggle(id, checked, onChange), { ...rest, htmlFor: id, compact: true });
+    const control = toggle(id, checked, onChange);
+    const input = control.querySelector("input");
+    if (input && rest.label) input.setAttribute("aria-label", rest.label);
+    return row(control, { ...rest, htmlFor: id, compact: true });
   }
   function listItem({ icon, title, description, disabled, actions }) {
     const item = document.createElement("div");
@@ -3440,13 +3438,17 @@ ${YamlParser.stringify({ template: dumped })}
       }
       const markers = templateEngine.getAllTemplates().map((t) => `#${t.marker}`);
       const notes = await api2.searchForNotes(markers.length ? markers.join(" OR ") : "#extTask");
-      const summaries = notes.map((note) => ({
-        noteId: note.noteId,
-        title: note.title,
-        dateCreated: parseTriliumTimestamp(note.dateCreated),
-        dateModified: parseTriliumTimestamp(note.dateModified),
-        status: typeof note.getLabelValue === "function" ? note.getLabelValue("status") ?? void 0 : void 0
-      }));
+      const summaries = notes.map((note) => {
+        const createdLabel = note.getLabelValue?.("utcDateCreated");
+        const modifiedLabel = note.getLabelValue?.("utcDateModified");
+        return {
+          noteId: note.noteId,
+          title: note.title,
+          dateCreated: parseTriliumTimestamp(createdLabel || note.dateCreated),
+          dateModified: parseTriliumTimestamp(modifiedLabel || note.dateModified),
+          status: typeof note.getLabelValue === "function" ? note.getLabelValue("status") ?? void 0 : void 0
+        };
+      });
       if (generation === dataGeneration) noteSummaryCache = summaries;
       return summaries;
     }
@@ -3683,8 +3685,8 @@ ${YamlParser.stringify({ template: dumped })}
               icon: "bx-show",
               title: "Open Note",
               onClick: () => {
-                const api2 = globalThis.api;
-                if (api2?.activateNote) api2.activateNote(entry.noteId);
+                const frontendApi = triliumApi4();
+                if (frontendApi?.activateNote) frontendApi.activateNote(entry.noteId);
               }
             })
           ]
@@ -3708,21 +3710,26 @@ ${YamlParser.stringify({ template: dumped })}
               icon: "bx-show",
               title: "Open Note",
               onClick: () => {
-                const api2 = globalThis.api;
-                if (api2?.activateNote) api2.activateNote(entry.noteId);
+                const frontendApi = triliumApi4();
+                if (frontendApi?.activateNote) frontendApi.activateNote(entry.noteId);
               }
             }),
             iconAction({
               icon: "bx-check-double",
               title: "Mark Touched",
               onClick: () => {
-                const frontendApi = globalThis.api;
+                const frontendApi = triliumApi4();
                 if (frontendApi?.runOnBackend) {
-                  frontendApi.runOnBackend((id) => {
-                    const n = api.getNote?.(id);
-                    if (n) n.touch?.();
-                  }, [entry.noteId]);
+                  return TriliumApiBridge.setNoteAttribute(
+                    entry.noteId,
+                    "label",
+                    "utcDateModified",
+                    (/* @__PURE__ */ new Date()).toISOString(),
+                    void 0,
+                    frontendApi
+                  );
                 }
+                return Promise.resolve();
               }
             })
           ]
@@ -3853,7 +3860,7 @@ ${YamlParser.stringify({ template: dumped })}
         `;
       filterRow.querySelector("input")?.addEventListener("input", (e) => {
         const query = e.target.value.toLowerCase().trim();
-        const items = parent.querySelectorAll(".ns-kanban-card, .ns-list-item, .ns-row, tr");
+        const items = parent.querySelectorAll(".kanban-card, .ns-kanban-card, .ns-list-item, .ns-row, tr");
         items.forEach((item) => {
           const text = item.textContent?.toLowerCase() || "";
           item.style.display = !query || text.includes(query) ? "" : "none";
@@ -4945,8 +4952,10 @@ ${current || ""}`);
         disabled: !rule.enabled,
         actions
       });
-      const descContainer = el.querySelector(".ns-list-item-desc");
-      if (descContainer) descContainer.innerHTML = flowDesc;
+      const detail = document.createElement("div");
+      detail.className = "ns-list-item-desc";
+      detail.innerHTML = flowDesc;
+      el.querySelector(".ns-list-item-main")?.appendChild(detail);
       return el;
     }
     function ruleEngineForManual() {
@@ -6017,7 +6026,7 @@ ${current || ""}`);
     if (plan.templateId === "projectHub" && marker === "projectRoot") {
       marker = "activeProjectRoot";
     }
-    const isProjectScopedType = ["task", "projectTask", "story", "reportingNotes", "email", "meeting", "meetingPrep", "scratch"].includes(plan.templateId);
+    const isProjectScopedType = ["task", "projectTask", "story", "reportingNotes", "emailDraft", "meeting", "meetingPrep", "scratch"].includes(plan.templateId);
     const hasProjectHubRel = plan.relationsToCreate.some((r) => r.name === "project");
     if (isProjectScopedType && !hasProjectHubRel && plan.templateId !== "projectHub") {
       const unassigned = await api2.searchForNote("#unassignedRoot");
@@ -6363,13 +6372,27 @@ ${current || ""}`);
     };
     return map[opt] || opt.charAt(0).toUpperCase() + opt.slice(1).replace(/_/g, " ");
   }
+  var RELATION_TARGETS = {
+    project: "projectHub",
+    client: "organization",
+    companyOnBehalf: "organization",
+    organization: "organization",
+    employer: "organization",
+    attendee: "person",
+    writer: "person",
+    staff: "person",
+    aliasOf: "topic"
+  };
+  function relationTargetTemplateId(attribute) {
+    return attribute.targetTemplateId || RELATION_TARGETS[attribute.name];
+  }
   function triliumApi3(explicitApi) {
     const a = explicitApi || globalThis.api;
     return a && typeof a.searchForNotes === "function" ? a : null;
   }
   async function showQuickCaptureModal(templateId, templateEngine, noteCreationEngine, onCreated, initialRelations, options) {
     const isStoryOrEdit = templateId === "story" || templateId === "edit";
-    const activeTplId = isStoryOrEdit ? "story" : templateId;
+    const activeTplId = isStoryOrEdit ? "story" : templateId === "email" ? "emailDraft" : templateId;
     const template = templateEngine.getTemplate(activeTplId);
     if (!template) return;
     const isEditMode = templateId === "edit";
@@ -6391,8 +6414,9 @@ ${current || ""}`);
       candidateTemplateIds.set(rel.relationName, rel.targetTemplateId);
     }
     for (const attr of template.attributes) {
-      if (attr.dataType === "relation" && attr.targetTemplateId) {
-        candidateTemplateIds.set(attr.name, attr.targetTemplateId);
+      const targetTemplateId = relationTargetTemplateId(attr);
+      if ((attr.dataType === "relation" || attr.type === "relation" || targetTemplateId) && targetTemplateId) {
+        candidateTemplateIds.set(attr.name, targetTemplateId);
       }
     }
     for (const [fieldName, targetTemplateId] of candidateTemplateIds) {
@@ -6472,10 +6496,11 @@ ${current || ""}`);
                             <div class="row g-2 attr-form">
                                 ${template.attributes.filter((a) => !(a.dataType === "relation" && template.relationships.some((rel) => rel.relationName === a.name))).map((a) => {
       const opts = a.options || (a.name === "priority" ? ["medium", "high", "low"] : a.name === "complexity" ? ["simple", "multi"] : a.name === "kind" ? ["project", "edit", "client", "internal"] : a.name === "status" ? templateId === "story" ? ["drafting", "review", "published"] : templateId === "edit" ? ["editing", "approved", "returned"] : templateId === "projectHub" ? ["active", "on_hold", "complete", "archived"] : ["todo", "in_progress", "done", "cancelled"] : void 0);
-      const isRelationPicker = a.dataType === "relation" && Boolean(a.targetTemplateId);
+      const targetTemplateId = relationTargetTemplateId(a);
+      const isRelationPicker = Boolean(targetTemplateId) && (a.dataType === "relation" || a.type === "relation" || Boolean(RELATION_TARGETS[a.name]));
       const isOptionPicker = isRelationPicker || a.dataType === "select" || Boolean(opts);
       const relationOptions = isRelationPicker ? relationCandidates.get(a.name) || [] : [];
-      const targetTpl = a.targetTemplateId ? templateEngine.getTemplate(a.targetTemplateId) : void 0;
+      const targetTpl = targetTemplateId ? templateEngine.getTemplate(targetTemplateId) : void 0;
       return `
                                     <div class="col-md-6">
                                         <label class="form-label tiny text-muted font-weight-bold">#${a.name}</label>
@@ -6557,12 +6582,13 @@ ${current || ""}`);
       const attrName = placeholder.dataset.attrPicker;
       const attrDef = template.attributes.find((candidate) => candidate.name === attrName);
       if (!attrName || !attrDef) return;
-      const isRelationPicker = attrDef.dataType === "relation" && Boolean(attrDef.targetTemplateId);
+      const targetTemplateId = relationTargetTemplateId(attrDef);
+      const isRelationPicker = Boolean(targetTemplateId) && (attrDef.dataType === "relation" || attrDef.type === "relation" || Boolean(RELATION_TARGETS[attrDef.name]));
       const fallbackOptions = attrDef.name === "priority" ? ["medium", "high", "low"] : attrDef.name === "complexity" ? ["simple", "multi"] : attrDef.name === "kind" ? ["project", "edit", "client", "internal"] : attrDef.name === "status" ? templateId === "story" ? ["drafting", "review", "published"] : templateId === "edit" ? ["editing", "approved", "returned"] : templateId === "projectHub" ? ["active", "on_hold", "complete", "archived"] : ["todo", "in_progress", "done", "cancelled"] : [];
       const options2 = isRelationPicker ? (relationCandidates.get(attrName) || []).map((note) => ({
         value: note.noteId,
         label: note.title,
-        icon: attrDef.targetTemplateId ? `bx-${templateEngine.getTemplate(attrDef.targetTemplateId)?.icon || "file"}` : "bx-file"
+        icon: targetTemplateId ? `bx-${templateEngine.getTemplate(targetTemplateId)?.icon || "file"}` : "bx-file"
       })) : (attrDef.options || fallbackOptions).map((option) => ({
         value: option,
         label: formatOptionLabel(attrName, option)
@@ -6570,7 +6596,7 @@ ${current || ""}`);
       const picker = searchableSelect({
         id: `attr-${attrName}`,
         value: String(attrDef.defaultValue ?? ""),
-        placeholder: isRelationPicker ? options2.length ? `Search ${templateEngine.getTemplate(attrDef.targetTemplateId)?.title || "notes"}\u2026` : "No matching notes found" : "Choose or search\u2026",
+        placeholder: isRelationPicker ? options2.length ? `Search ${templateEngine.getTemplate(targetTemplateId)?.title || "notes"}\u2026` : "No matching notes found" : "Choose or search\u2026",
         options: options2
       });
       placeholder.replaceWith(picker.el);
@@ -6763,7 +6789,7 @@ ${current || ""}`);
     let activeTab = "today";
     let todayContentArea = null;
     let yamlEditorSpec;
-    const frontendApi = typeof api !== "undefined" ? api : null;
+    const frontendApi = (typeof api !== "undefined" ? api : globalThis.api) || null;
     const modelReady = loadRuntimeModel(templateEngine, todayEngine, ifThenRuleEngine, settingsEngine, frontendApi);
     function renderMain() {
       disposeTodayHomepage(todayContentArea);
@@ -6817,7 +6843,7 @@ Auto-Clone Target: ${cloneTarget}`);
           renderTemplateStudio(contentArea, templateEngine, ifThenRuleEngine, () => {
             const spec = dumpYamlSpec(todayEngine.getLayout(), templateEngine, relationshipEngine, ifThenRuleEngine);
             yamlEditorSpec = spec;
-            saveYamlSpecification(spec, frontendApi).then(() => renderMain()).catch((error) => console.warn(`[Ikmal Tools] Template changes could not be saved: ${error}`));
+            saveYamlSpecification(spec, frontendApi).catch((error) => console.warn(`[Ikmal Tools] Template changes could not be saved: ${error}`));
           }, frontendApi);
         } else if (activeTab === "settings") {
           renderSettingsStudio(contentArea, todayEngine, templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine, (yamlSpec) => {

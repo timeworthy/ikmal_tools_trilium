@@ -22,7 +22,7 @@
       "id": "ikmal-shortcuts-launcher",
       "type": "frontend",
       "source": "dist/artifacts/notes-system-launcher.js",
-      "integrity": "sha256-wALq/pqbeVSNSq/m2puDUZdVk/8SbOFEME1WbPf7tac=",
+      "integrity": "sha256-xXo3rPnPAQxV6s7clPl7CLl+GF3gprrSJtMVOOnOfsc=",
       "title": "Ikmal Shortcuts & Quick Capture",
       "activation": "startup"
     }

@@ -53,11 +53,13 @@ export function initNotesSystemKanban(containerEl) {
     filterRow.querySelectorAll('.filter-pill').forEach((btn) => {
         btn.addEventListener('click', (e) => {
             filterRow.querySelectorAll('.filter-pill').forEach((b) => {
-                b.className = b.className.replace('btn-primary', 'btn-outline-primary');
+                b.classList.remove('btn-primary', 'btn-outline-primary', 'btn-outline-danger', 'btn-outline-warning', 'btn-outline-secondary');
+                b.classList.add('btn-outline-primary');
             });
             const filter = (e.currentTarget).dataset.filter;
             priorityFilter = filter || 'all';
-            (e.currentTarget).className = (e.currentTarget).className.replace('btn-outline-primary', 'btn-primary');
+            (e.currentTarget).classList.remove('btn-outline-primary');
+            (e.currentTarget).classList.add('btn-primary');
             renderColumns();
         });
     });
@@ -143,16 +145,15 @@ export function initNotesSystemKanban(containerEl) {
                 const task = taskCache.find((t) => t.id === noteId);
                 if (task && task.status !== column.id) {
                     task.status = column.id;
-                    if (frontendApi?.getNote) {
-                        try {
-                            const note = frontendApi.getNote(noteId);
-                            if (note) {
-                                note.setLabel('status', column.id);
-                                if (column.id === 'done') {
-                                    note.setLabel('doneDate', new Date().toISOString().slice(0, 10));
-                                }
+                    if (frontendApi?.runOnBackend) {
+                        frontendApi.runOnBackend((id, status) => {
+                            const note = api.getNote?.(id);
+                            if (!note) return;
+                            note.setLabel('status', status);
+                            if (status === 'done') {
+                                note.setLabel('doneDate', new Date().toISOString().slice(0, 10));
                             }
-                        } catch (err) {}
+                        }, [noteId, column.id]).catch(() => {});
                     }
                     renderColumns();
                 }
@@ -208,16 +209,19 @@ export function initNotesSystemKanban(containerEl) {
                             if (newStatus === 'done') {
                                 cardItem.classList.add('ns-card-done-anim');
                             }
-                            if (frontendApi?.getNote) {
-                                try {
-                                    const note = frontendApi.getNote(t.id);
-                                    if (note) {
-                                        note.setLabel('status', newStatus);
-                                        if (newStatus === 'done') {
-                                            note.setLabel('doneDate', new Date().toISOString().slice(0, 10));
-                                        }
+                            if (frontendApi?.runOnBackend) {
+                                // Frontend FNote objects are read-only. Persist
+                                // the transition through the supported backend
+                                // bridge, where the scoped api returns mutable
+                                // backend notes and setLabel is synchronous.
+                                frontendApi.runOnBackend((id, status) => {
+                                    const note = api.getNote?.(id);
+                                    if (!note) return;
+                                    note.setLabel('status', status);
+                                    if (status === 'done') {
+                                        note.setLabel('doneDate', new Date().toISOString().slice(0, 10));
                                     }
-                                } catch (err) {}
+                                }, [t.id, newStatus]).catch(() => {});
                             }
                             setTimeout(() => loadTasks(), 250);
                         });

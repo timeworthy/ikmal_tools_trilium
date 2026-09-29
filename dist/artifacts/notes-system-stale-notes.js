@@ -193,7 +193,9 @@
   async function findManifestNote(explicitApi) {
     const api2 = triliumApi(explicitApi);
     if (!api2) return null;
-    const notes = await api2.searchForNotes(`#packageOwner="${PACKAGE_ID}" #packageArtifact="manifest"`);
+    const query = `#packageOwner="${PACKAGE_ID}" #packageArtifact="manifest"`;
+    const search = api2.searchForNotesIncludingHidden || api2.searchForNotes;
+    const notes = await search.call(api2, query);
     return notes[0] ?? null;
   }
   function parseStoredBoolean(raw, fallback) {
@@ -279,10 +281,10 @@
           icon: "bx-time-five",
           title: entry.title,
           description: `Untouched for ${entry.daysSinceModified} days`,
-          actions: typeof api !== "undefined" && api.openNote ? [iconAction({
+          actions: typeof api !== "undefined" && api.activateNote ? [iconAction({
             icon: "bx-link-external",
             title: `Open ${entry.title}`,
-            onClick: () => api.openNote(entry.noteId)
+            onClick: () => api.activateNote(entry.noteId)
           })] : []
         }));
       }

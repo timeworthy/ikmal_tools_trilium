@@ -959,7 +959,8 @@
       const isStoryOrEdit = request.type === "story" || request.type === "edit";
       const relValues = request.relations || {};
       const hasExistingProject = Boolean(relValues.project || request.targetContainerId);
-      let templateId = request.type;
+      const canonicalRequestType = request.type === "email" ? "emailDraft" : request.type;
+      let templateId = canonicalRequestType;
       let rootContainerMarker = "";
       if (isStoryOrEdit && !hasExistingProject) {
         templateId = "projectHub";
@@ -1586,7 +1587,7 @@ ${child.content || ""}`;
     if (plan.templateId === "projectHub" && marker === "projectRoot") {
       marker = "activeProjectRoot";
     }
-    const isProjectScopedType = ["task", "projectTask", "story", "reportingNotes", "email", "meeting", "meetingPrep", "scratch"].includes(plan.templateId);
+    const isProjectScopedType = ["task", "projectTask", "story", "reportingNotes", "emailDraft", "meeting", "meetingPrep", "scratch"].includes(plan.templateId);
     const hasProjectHubRel = plan.relationsToCreate.some((r) => r.name === "project");
     if (isProjectScopedType && !hasProjectHubRel && plan.templateId !== "projectHub") {
       const unassigned = await api2.searchForNote("#unassignedRoot");
@@ -2204,13 +2205,27 @@ ${child.content || ""}`;
     };
     return map[opt] || opt.charAt(0).toUpperCase() + opt.slice(1).replace(/_/g, " ");
   }
+  var RELATION_TARGETS = {
+    project: "projectHub",
+    client: "organization",
+    companyOnBehalf: "organization",
+    organization: "organization",
+    employer: "organization",
+    attendee: "person",
+    writer: "person",
+    staff: "person",
+    aliasOf: "topic"
+  };
+  function relationTargetTemplateId(attribute) {
+    return attribute.targetTemplateId || RELATION_TARGETS[attribute.name];
+  }
   function triliumApi2(explicitApi) {
     const a = explicitApi || globalThis.api;
     return a && typeof a.searchForNotes === "function" ? a : null;
   }
   async function showQuickCaptureModal(templateId, templateEngine, noteCreationEngine, onCreated, initialRelations, options) {
     const isStoryOrEdit = templateId === "story" || templateId === "edit";
-    const activeTplId = isStoryOrEdit ? "story" : templateId;
+    const activeTplId = isStoryOrEdit ? "story" : templateId === "email" ? "emailDraft" : templateId;
     const template = templateEngine.getTemplate(activeTplId);
     if (!template) return;
     const isEditMode = templateId === "edit";
@@ -2232,8 +2247,9 @@ ${child.content || ""}`;
       candidateTemplateIds.set(rel.relationName, rel.targetTemplateId);
     }
     for (const attr of template.attributes) {
-      if (attr.dataType === "relation" && attr.targetTemplateId) {
-        candidateTemplateIds.set(attr.name, attr.targetTemplateId);
+      const targetTemplateId = relationTargetTemplateId(attr);
+      if ((attr.dataType === "relation" || attr.type === "relation" || targetTemplateId) && targetTemplateId) {
+        candidateTemplateIds.set(attr.name, targetTemplateId);
       }
     }
     for (const [fieldName, targetTemplateId] of candidateTemplateIds) {
@@ -2313,10 +2329,11 @@ ${child.content || ""}`;
                             <div class="row g-2 attr-form">
                                 ${template.attributes.filter((a) => !(a.dataType === "relation" && template.relationships.some((rel) => rel.relationName === a.name))).map((a) => {
       const opts = a.options || (a.name === "priority" ? ["medium", "high", "low"] : a.name === "complexity" ? ["simple", "multi"] : a.name === "kind" ? ["project", "edit", "client", "internal"] : a.name === "status" ? templateId === "story" ? ["drafting", "review", "published"] : templateId === "edit" ? ["editing", "approved", "returned"] : templateId === "projectHub" ? ["active", "on_hold", "complete", "archived"] : ["todo", "in_progress", "done", "cancelled"] : void 0);
-      const isRelationPicker = a.dataType === "relation" && Boolean(a.targetTemplateId);
+      const targetTemplateId = relationTargetTemplateId(a);
+      const isRelationPicker = Boolean(targetTemplateId) && (a.dataType === "relation" || a.type === "relation" || Boolean(RELATION_TARGETS[a.name]));
       const isOptionPicker = isRelationPicker || a.dataType === "select" || Boolean(opts);
       const relationOptions = isRelationPicker ? relationCandidates.get(a.name) || [] : [];
-      const targetTpl = a.targetTemplateId ? templateEngine.getTemplate(a.targetTemplateId) : void 0;
+      const targetTpl = targetTemplateId ? templateEngine.getTemplate(targetTemplateId) : void 0;
       return `
                                     <div class="col-md-6">
                                         <label class="form-label tiny text-muted font-weight-bold">#${a.name}</label>
@@ -2398,12 +2415,13 @@ ${child.content || ""}`;
       const attrName = placeholder.dataset.attrPicker;
       const attrDef = template.attributes.find((candidate) => candidate.name === attrName);
       if (!attrName || !attrDef) return;
-      const isRelationPicker = attrDef.dataType === "relation" && Boolean(attrDef.targetTemplateId);
+      const targetTemplateId = relationTargetTemplateId(attrDef);
+      const isRelationPicker = Boolean(targetTemplateId) && (attrDef.dataType === "relation" || attrDef.type === "relation" || Boolean(RELATION_TARGETS[attrDef.name]));
       const fallbackOptions = attrDef.name === "priority" ? ["medium", "high", "low"] : attrDef.name === "complexity" ? ["simple", "multi"] : attrDef.name === "kind" ? ["project", "edit", "client", "internal"] : attrDef.name === "status" ? templateId === "story" ? ["drafting", "review", "published"] : templateId === "edit" ? ["editing", "approved", "returned"] : templateId === "projectHub" ? ["active", "on_hold", "complete", "archived"] : ["todo", "in_progress", "done", "cancelled"] : [];
       const options2 = isRelationPicker ? (relationCandidates.get(attrName) || []).map((note) => ({
         value: note.noteId,
         label: note.title,
-        icon: attrDef.targetTemplateId ? `bx-${templateEngine.getTemplate(attrDef.targetTemplateId)?.icon || "file"}` : "bx-file"
+        icon: targetTemplateId ? `bx-${templateEngine.getTemplate(targetTemplateId)?.icon || "file"}` : "bx-file"
       })) : (attrDef.options || fallbackOptions).map((option) => ({
         value: option,
         label: formatOptionLabel(attrName, option)
@@ -2411,7 +2429,7 @@ ${child.content || ""}`;
       const picker = searchableSelect({
         id: `attr-${attrName}`,
         value: String(attrDef.defaultValue ?? ""),
-        placeholder: isRelationPicker ? options2.length ? `Search ${templateEngine.getTemplate(attrDef.targetTemplateId)?.title || "notes"}\u2026` : "No matching notes found" : "Choose or search\u2026",
+        placeholder: isRelationPicker ? options2.length ? `Search ${templateEngine.getTemplate(targetTemplateId)?.title || "notes"}\u2026` : "No matching notes found" : "Choose or search\u2026",
         options: options2
       });
       placeholder.replaceWith(picker.el);
@@ -2557,7 +2575,9 @@ ${child.content || ""}`;
   async function findManifestNote(explicitApi) {
     const api2 = triliumApi3(explicitApi);
     if (!api2) return null;
-    const notes = await api2.searchForNotes(`#packageOwner="${PACKAGE_ID}" #packageArtifact="manifest"`);
+    const query = `#packageOwner="${PACKAGE_ID}" #packageArtifact="manifest"`;
+    const search = api2.searchForNotesIncludingHidden || api2.searchForNotes;
+    const notes = await search.call(api2, query);
     return notes[0] ?? null;
   }
   function parseStoredBoolean(raw, fallback) {

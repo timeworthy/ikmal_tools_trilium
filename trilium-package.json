@@ -74,7 +74,7 @@
       "id": "notes-system-today-page",
       "type": "render",
       "source": "dist/artifacts/notes-system-today-page.js",
-      "integrity": "sha256-2vm9qDbOxrkoQEWTaE8Lkrsg7vraELQAjyySiE80riM=",
+      "integrity": "sha256-nbLfi13a00dn+MdN9ehrC5MI0PGpruyNbbhl5e9YilU=",
       "title": "Ikmal Tools for Trilium: Today",
       "activation": "manual"
     },
@@ -82,7 +82,7 @@
       "id": "notes-system-dashboard",
       "type": "render",
       "source": "dist/artifacts/notes-system-dashboard.js",
-      "integrity": "sha256-ATwWQZKQJiHMoPUJq+FQq5RM7YrXzNh5b2S687lirqA=",
+      "integrity": "sha256-l56GCEb5m73fpzNl22NBJUFbgwG2jX2nrrysBTsF2L0=",
       "title": "Ikmal Tools for Trilium: Today Homepage & Workspace Dashboard",
       "activation": "manual"
     },
@@ -90,7 +90,7 @@
       "id": "notes-system-project-dashboard",
       "type": "render",
       "source": "dist/artifacts/notes-system-project-dashboard.js",
-      "integrity": "sha256-UyAa4Q1ipz0Xccd4Qj7/3h8QOJ+gnyg2qZ0VPFmHKAI=",
+      "integrity": "sha256-NepFroVsdc8mj+PqMq3UHh9VLPbB+zy5CCEZl7jBt/U=",
       "title": "Ikmal Tools for Trilium: Project Dashboard",
       "activation": "manual"
     },
@@ -98,7 +98,7 @@
       "id": "notes-system-kanban",
       "type": "render",
       "source": "dist/artifacts/notes-system-kanban.js",
-      "integrity": "sha256-1+iEoTDyjBPhNYjpwjR6XuicX088TLVCwE2lINcfC1o=",
+      "integrity": "sha256-vug3km52URNiw/diIMmLBwFFEphQHeVfFQLM7pCDXd0=",
       "title": "Ikmal Tools for Trilium: Standalone Task Kanban Board",
       "activation": "manual"
     },
@@ -106,7 +106,7 @@
       "id": "notes-system-insights",
       "type": "render",
       "source": "dist/artifacts/notes-system-insights.js",
-      "integrity": "sha256-3GFl+5Iwj1q0BWzhb4QGMOj0U+2ilWqbS1dmOfNvmqI=",
+      "integrity": "sha256-81Kdpgomjm8WqGK1X45LDDMAm7Jk3P++HDwIdw9mBj4=",
       "title": "Ikmal Tools for Trilium: Standalone Productivity & Writing Insights",
       "activation": "manual"
     },
@@ -114,7 +114,7 @@
       "id": "notes-system-quick-capture",
       "type": "render",
       "source": "dist/artifacts/notes-system-quick-capture.js",
-      "integrity": "sha256-1u9KBTS87Ig+1kkXfytSqNK1t1oCtyQ1CSSfLzTrgII=",
+      "integrity": "sha256-tokhPkCGnMgqAjTB7O4wwG2txgnlmD9SspoGbJYJ6J0=",
       "title": "Ikmal Tools for Trilium: Standalone Quick Capture Toolbar",
       "activation": "manual"
     },
@@ -122,7 +122,7 @@
       "id": "notes-system-weather",
       "type": "render",
       "source": "dist/artifacts/notes-system-weather.js",
-      "integrity": "sha256-3TjIib5ch/XOgEaEVYq9T40Eteo347dhaciclZk4q6U=",
+      "integrity": "sha256-ITRu0QiRqsR+qT+OUQMU9Umsm+eSWo/s9nrF8r1khcM=",
       "title": "Ikmal Tools for Trilium: Standalone Weather & Climate Card",
       "activation": "manual"
     },
@@ -130,7 +130,7 @@
       "id": "notes-system-on-this-day",
       "type": "render",
       "source": "dist/artifacts/notes-system-on-this-day.js",
-      "integrity": "sha256-YnVwHKQXF4KRC1Rfn9y9JpTipotAi3mC0IRgamQSPeQ=",
+      "integrity": "sha256-yLNKPZmnOtSJ+1ENpj/NcWyVVMI4d7d2sXhj3TaWxjk=",
       "title": "Ikmal Tools for Trilium: Standalone Time Machine (On This Day)",
       "activation": "manual"
     },
@@ -138,7 +138,7 @@
       "id": "notes-system-stale-notes",
       "type": "render",
       "source": "dist/artifacts/notes-system-stale-notes.js",
-      "integrity": "sha256-BRnXfkX486UnywRgxYuMWM5D4QNEQSS2vK3ZWO7Zmlk=",
+      "integrity": "sha256-XpnUpgY4PhNW6g7sSB+smOVwhoujbVs6sopCOtUbzaY=",
       "title": "Ikmal Tools for Trilium: Standalone Stale Notes Reviewer",
       "activation": "manual"
     },
@@ -146,7 +146,7 @@
       "id": "notes-system-canvas",
       "type": "render",
       "source": "dist/artifacts/notes-system-canvas.js",
-      "integrity": "sha256-kxKcvj8d+9li3Q98STKiZdnY/Jf9qJiImUCCVUD/g1I=",
+      "integrity": "sha256-pC4xFqPkC7HbF2fZor3ZMA01RSfKMXisZx0zTX0GpVM=",
       "title": "Ikmal Tools for Trilium: Standalone Interactive Canvas (Beta)",
       "activation": "manual"
     },
@@ -154,7 +154,7 @@
       "id": "notes-system-launcher",
       "type": "frontend",
       "source": "dist/artifacts/notes-system-launcher.js",
-      "integrity": "sha256-wALq/pqbeVSNSq/m2puDUZdVk/8SbOFEME1WbPf7tac=",
+      "integrity": "sha256-xXo3rPnPAQxV6s7clPl7CLl+GF3gprrSJtMVOOnOfsc=",
       "title": "Ikmal Tools for Trilium: Header Launcher Bar & Hotkey",
       "activation": "startup"
     },
@@ -170,7 +170,7 @@
       "id": "notes-system-workspace-bootstrap",
       "type": "frontend",
       "source": "dist/artifacts/notes-system-workspace-bootstrap.js",
-      "integrity": "sha256-gjOH07oZNG9uaXSWc2MFEX3ns48DU/0SvUhoWPHKKDI=",
+      "integrity": "sha256-yAI1sNaZXNUmsggFHxd0UV++m5LNpN0EpHucRQOKuZU=",
       "title": "Ikmal Tools for Trilium: Workspace Setup & Repair",
       "activation": "startup"
     },

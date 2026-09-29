@@ -160,35 +160,32 @@ export class TriliumApiBridge {
     ): Promise<void> {
         if (!noteId || !name) return;
 
-        const frontendApi = this.getFrontendApi(explicitApi);
-        if (frontendApi && typeof frontendApi.runOnBackend === 'function') {
-            try {
-                const applied = await frontendApi.runOnBackend(
-                    (nId: string, aType: string, aName: string, aVal: string, tId: string) => {
-                        if (typeof api === 'undefined') return false;
-                        const note = api.getNote?.(nId);
-                        if (!note) return false;
-                        if (aType === 'label') {
-                            note.setLabel(aName, aVal || '');
-                            return true;
-                        }
-                        if (aType === 'relation' && tId) {
-                            note.setRelation(aName, tId);
-                            return true;
-                        }
-                        return false;
-                    },
-                    [noteId, type, name, value || '', targetNoteId || '']
-                );
-                if (applied) return;
-            } catch (err) {
-                // Fall through to REST bridge
-            }
-        }
-
         const payload: Record<string, any> = { type, name, isInheritable: false };
         if (type === 'label') payload.value = value || '';
         if (type === 'relation') payload.value = targetNoteId || value || '';
+
+        // Keep the bridge usable in isolated/unit contexts where a caller
+        // supplies a frontend API stub but there is no authenticated REST
+        // session. In Trilium, prefer the authenticated REST endpoint: the
+        // frontend note objects are read-only and backend shortcuts can report
+        // success without persisting an attribute on hidden manifest notes.
+        const frontendApi = this.getFrontendApi(explicitApi);
+        if (frontendApi && typeof frontendApi.runOnBackend === 'function' && !this.getGlob()) {
+            try {
+                const applied = await frontendApi.runOnBackend((nId: string, aType: string, aName: string, aValue: string) => {
+                    if (typeof api === 'undefined') return false;
+                    const note = api.getNote?.(nId);
+                    if (!note) return false;
+                    if (aType === 'label') note.setLabel(aName, aValue || '');
+                    else if (aType === 'relation' && aValue) note.setRelation(aName, aValue);
+                    else return false;
+                    return true;
+                }, [noteId, type, name, payload.value || '']);
+                if (applied) return;
+            } catch {
+                // Fall through to the authenticated REST bridge.
+            }
+        }
 
         const response = await this.authenticatedFetch(`notes/${noteId}/set-attribute`, {
             method: 'PUT',

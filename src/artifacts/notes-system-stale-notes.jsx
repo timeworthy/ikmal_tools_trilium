@@ -74,10 +74,10 @@ export function initIkmalStaleNotes(containerEl) {
                 icon: 'bx-time-five',
                 title: entry.title,
                 description: `Untouched for ${entry.daysSinceModified} days`,
-                actions: typeof api !== 'undefined' && api.openNote ? [iconAction({
+                actions: typeof api !== 'undefined' && api.activateNote ? [iconAction({
                     icon: 'bx-link-external',
                     title: `Open ${entry.title}`,
-                    onClick: () => api.openNote(entry.noteId),
+                    onClick: () => api.activateNote(entry.noteId),
                 })] : [],
             }));
         }

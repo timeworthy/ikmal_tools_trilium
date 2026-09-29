@@ -200,7 +200,14 @@ export interface SwitchRowOptions extends Omit<RowOptions, 'htmlFor' | 'compact'
 
 /** The common case: a labelled setting whose control is a toggle. */
 export function switchRow({ id, checked, onChange, ...rest }: SwitchRowOptions): HTMLElement {
-    return row(toggle(id, checked, onChange), { ...rest, htmlFor: id, compact: true });
+    const control = toggle(id, checked, onChange);
+    // The generic toggle is also used for unlabeled widget rows, but settings
+    // rows have a real human label. Preserve that accessible name instead of
+    // making every switch announce only the implementation detail "Toggle
+    // setting" to keyboard and browser users.
+    const input = control.querySelector<HTMLInputElement>('input');
+    if (input && rest.label) input.setAttribute('aria-label', rest.label);
+    return row(control, { ...rest, htmlFor: id, compact: true });
 }
 
 export interface ListItemOptions {

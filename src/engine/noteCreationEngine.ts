@@ -86,8 +86,11 @@ export class NoteCreationEngine {
         const isStoryOrEdit = request.type === 'story' || request.type === 'edit';
         const relValues = request.relations || {};
         const hasExistingProject = Boolean(relValues.project || request.targetContainerId);
+        // The public quick-capture action is called "email" while the
+        // persisted/template-registry id is emailDraft.
+        const canonicalRequestType = request.type === 'email' ? 'emailDraft' : request.type;
 
-        let templateId = request.type;
+        let templateId = canonicalRequestType;
         let rootContainerMarker = '';
 
         if (isStoryOrEdit && !hasExistingProject) {

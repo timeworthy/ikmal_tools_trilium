@@ -26,6 +26,7 @@ interface TriliumFNote {
 
 interface TriliumFrontendApi {
     searchForNotes(searchString: string): Promise<TriliumFNote[]>;
+    searchForNotesIncludingHidden?(searchString: string): Promise<TriliumFNote[]>;
 }
 
 function triliumApi(explicitApi?: TriliumFrontendApi | null): TriliumFrontendApi | null {
@@ -36,7 +37,9 @@ function triliumApi(explicitApi?: TriliumFrontendApi | null): TriliumFrontendApi
 async function findManifestNote(explicitApi?: TriliumFrontendApi | null): Promise<TriliumFNote | null> {
     const api = triliumApi(explicitApi);
     if (!api) return null;
-    const notes = await api.searchForNotes(`#packageOwner="${PACKAGE_ID}" #packageArtifact="manifest"`);
+    const query = `#packageOwner="${PACKAGE_ID}" #packageArtifact="manifest"`;
+    const search = api.searchForNotesIncludingHidden || api.searchForNotes;
+    const notes = await search.call(api, query);
     return notes[0] ?? null;
 }
 

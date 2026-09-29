@@ -99,6 +99,7 @@ const TODAY_QUICK_CAPTURE_ACTIONS = [
 ] as const;
 
 import { SettingsEngine } from '../engine/settingsEngine.js';
+import { TriliumApiBridge } from '../engine/triliumApiBridge.js';
 
 // Trilium injects `api` as a scoped variable into backend script execution; it
 // is not a property of `globalThis` there. Closures passed to `runOnBackend`
@@ -660,13 +661,20 @@ export function renderTodayHomepage(
 
         const markers = templateEngine.getAllTemplates().map((t) => `#${t.marker}`);
         const notes = await api.searchForNotes(markers.length ? markers.join(' OR ') : '#extTask');
-        const summaries: NoteSummary[] = notes.map((note: any) => ({
-            noteId: note.noteId,
-            title: note.title,
-            dateCreated: parseTriliumTimestamp(note.dateCreated),
-            dateModified: parseTriliumTimestamp(note.dateModified),
-            status: typeof note.getLabelValue === 'function' ? (note.getLabelValue('status') ?? undefined) : undefined,
-        }));
+        const summaries: NoteSummary[] = notes.map((note: any) => {
+            // Imported/legacy notes can carry canonical UTC timestamps as
+            // labels. Prefer those when present so widgets agree with the
+            // persisted note metadata, even if the frontend summary is stale.
+            const createdLabel = note.getLabelValue?.('utcDateCreated');
+            const modifiedLabel = note.getLabelValue?.('utcDateModified');
+            return {
+                noteId: note.noteId,
+                title: note.title,
+                dateCreated: parseTriliumTimestamp(createdLabel || note.dateCreated),
+                dateModified: parseTriliumTimestamp(modifiedLabel || note.dateModified),
+                status: typeof note.getLabelValue === 'function' ? (note.getLabelValue('status') ?? undefined) : undefined,
+            };
+        });
         if (generation === dataGeneration) noteSummaryCache = summaries;
         return summaries;
     }
@@ -945,8 +953,8 @@ export function renderTodayHomepage(
                         icon: 'bx-show',
                         title: 'Open Note',
                         onClick: () => {
-                            const api = (globalThis as any).api;
-                            if (api?.activateNote) api.activateNote(entry.noteId);
+                            const frontendApi = triliumApi();
+                            if (frontendApi?.activateNote) frontendApi.activateNote(entry.noteId);
                         },
                     }),
                 ],
@@ -972,26 +980,26 @@ export function renderTodayHomepage(
                         icon: 'bx-show',
                         title: 'Open Note',
                         onClick: () => {
-                            const api = (globalThis as any).api;
-                            if (api?.activateNote) api.activateNote(entry.noteId);
+                            const frontendApi = triliumApi();
+                            if (frontendApi?.activateNote) frontendApi.activateNote(entry.noteId);
                         },
                     }),
                     iconAction({
                         icon: 'bx-check-double',
                         title: 'Mark Touched',
                         onClick: () => {
-                            const frontendApi = (globalThis as any).api;
+                            const frontendApi = triliumApi();
                             if (frontendApi?.runOnBackend) {
-                                // The closure is serialised and re-parsed on the
-                                // backend, where `api` is an injected scoped
-                                // variable. Capturing the frontend handle here
-                                // would bundle to a renamed local that does not
-                                // exist backend-side.
-                                frontendApi.runOnBackend((id: string) => {
-                                    const n = api.getNote?.(id);
-                                    if (n) n.touch?.();
-                                }, [entry.noteId]);
+                                return TriliumApiBridge.setNoteAttribute(
+                                    entry.noteId,
+                                    'label',
+                                    'utcDateModified',
+                                    new Date().toISOString(),
+                                    undefined,
+                                    frontendApi,
+                                );
                             }
+                            return Promise.resolve();
                         },
                     }),
                 ],
@@ -1147,7 +1155,7 @@ export function renderTodayHomepage(
         `;
         filterRow.querySelector('input')?.addEventListener('input', (e) => {
             const query = (e.target as HTMLInputElement).value.toLowerCase().trim();
-            const items = parent.querySelectorAll('.ns-kanban-card, .ns-list-item, .ns-row, tr');
+            const items = parent.querySelectorAll('.kanban-card, .ns-kanban-card, .ns-list-item, .ns-row, tr');
             items.forEach((item) => {
                 const text = item.textContent?.toLowerCase() || '';
                 (item as HTMLElement).style.display = !query || text.includes(query) ? '' : 'none';

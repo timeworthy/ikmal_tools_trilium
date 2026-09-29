@@ -139,9 +139,9 @@
                     <button class="btn btn-outline-secondary preset-btn" data-preset="flowchart"><i class="bx bx-git-repo-forked"></i> Flowchart</button>
                     <button class="btn btn-outline-secondary preset-btn" data-preset="architecture"><i class="bx bx-cube-alt"></i> Architecture</button>
                 </div>
-                <div class="btn-group btn-group-sm">
-                    <button class="btn btn-outline-secondary" id="btn-zoom-in"><i class="bx bx-zoom-in"></i></button>
-                    <button class="btn btn-outline-secondary" id="btn-zoom-out"><i class="bx bx-zoom-out"></i></button>
+                <div class="btn-group btn-group-sm" aria-label="Canvas zoom controls">
+                    <button type="button" class="btn btn-outline-secondary" id="btn-zoom-in" aria-label="Zoom in" title="Zoom in"><i class="bx bx-zoom-in"></i></button>
+                    <button type="button" class="btn btn-outline-secondary" id="btn-zoom-out" aria-label="Zoom out" title="Zoom out"><i class="bx bx-zoom-out"></i></button>
                 </div>
             </div>
         </div>
@@ -164,6 +164,24 @@
             <i class="bx bx-info-circle me-1"></i> Interactive drag-and-drop node placement and connection line drawing are currently in Beta.
         </div>
     `;
+    let zoom = 1;
+    const nodes = () => canvasArea.querySelector("#canvas-nodes-container");
+    const applyZoom = () => {
+      const target = nodes();
+      if (target) {
+        target.style.transform = `scale(${zoom})`;
+        target.style.transformOrigin = "center center";
+        target.dataset.zoom = String(zoom);
+      }
+    };
+    canvasArea.querySelector("#btn-zoom-in")?.addEventListener("click", () => {
+      zoom = Math.min(1.5, Number((zoom + 0.1).toFixed(1)));
+      applyZoom();
+    });
+    canvasArea.querySelector("#btn-zoom-out")?.addEventListener("click", () => {
+      zoom = Math.max(0.7, Number((zoom - 0.1).toFixed(1)));
+      applyZoom();
+    });
     canvasArea.querySelectorAll(".preset-btn").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         const preset = e.currentTarget.dataset.preset;

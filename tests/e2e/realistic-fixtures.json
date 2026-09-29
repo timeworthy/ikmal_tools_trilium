@@ -1,0 +1,120 @@
+{
+  "organization": {
+    "title": "Northstar Civic Lab",
+    "content": "<h2>ABOUT</h2><p>Northstar Civic Lab researches practical ways for local governments to make public services easier to use. The team combines field interviews, service design, and careful analysis of resident feedback.</p><h2>KEY CONTACTS</h2><ul><li>Editorial and research partnership</li><li>Quarterly impact review</li></ul>",
+    "attributes": [
+      { "type": "label", "name": "extOrganization", "value": "" },
+      { "type": "label", "name": "website", "value": "https://northstar.example.org" }
+    ]
+  },
+  "person": {
+    "title": "Maya Chen",
+    "content": "<h2>CONTACT INFO</h2><p>Maya leads partnerships and coordinates the research calendar.</p><h2>NOTES</h2><p>Prefers a concise written brief before a working session.</p>",
+    "attributes": [
+      { "type": "label", "name": "extPerson", "value": "" },
+      { "type": "label", "name": "email", "value": "maya.chen@northstar.example.org" },
+      { "type": "relation", "name": "organization", "ref": "organization" }
+    ]
+  },
+  "topic": {
+    "title": "Civic service design",
+    "content": "<h2>DESCRIPTION</h2><p>Research, writing, and implementation patterns for improving the experience of public services.</p>",
+    "attributes": [
+      { "type": "label", "name": "extTopic", "value": "" }
+    ]
+  },
+  "projects": [
+    {
+      "key": "activeProject",
+      "title": "Resident Services Field Guide",
+      "content": "<h2>OVERVIEW</h2><p>A field guide for teams improving resident-facing services, grounded in interviews and repeatable delivery patterns.</p><h2>GOALS</h2><ul><li>Complete the interview synthesis</li><li>Publish a useful first edition</li></ul>",
+      "attributes": [
+        { "type": "label", "name": "extProjectHub", "value": "" },
+        { "type": "label", "name": "kind", "value": "project" },
+        { "type": "label", "name": "status", "value": "active" },
+        { "type": "label", "name": "nextAction", "value": "Review the interview synthesis" },
+        { "type": "relation", "name": "client", "ref": "organization" },
+        { "type": "relation", "name": "topic", "ref": "topic" }
+      ]
+    },
+    {
+      "key": "secondProject",
+      "title": "Transit Access Explainer",
+      "content": "<h2>OVERVIEW</h2><p>An explanatory package that turns transit access data into a clear public story without losing important context.</p><h2>GOALS</h2><ul><li>Validate the data narrative</li><li>Prepare a reader-facing draft</li></ul>",
+      "attributes": [
+        { "type": "label", "name": "extProjectHub", "value": "" },
+        { "type": "label", "name": "kind", "value": "internal" },
+        { "type": "label", "name": "status", "value": "active" },
+        { "type": "label", "name": "nextAction", "value": "Confirm the data sources" }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "key": "researchTask",
+      "title": "Synthesize resident interview themes",
+      "content": "<p>Group the interview notes by recurring service friction, record representative evidence, and identify the questions that still need follow-up.</p>",
+      "attributes": [
+        { "type": "label", "name": "extTask", "value": "" },
+        { "type": "label", "name": "status", "value": "todo" },
+        { "type": "label", "name": "priority", "value": "high" },
+        { "type": "label", "name": "complexity", "value": "multi" },
+        { "type": "relation", "name": "project", "ref": "activeProject" },
+        { "type": "relation", "name": "topic", "ref": "topic" }
+      ]
+    },
+    {
+      "key": "writingTask",
+      "title": "Draft the field guide introduction",
+      "content": "<p>Write an inviting introduction that explains the problem, names the intended audience, and previews how the guide can be used in a real project.</p>",
+      "attributes": [
+        { "type": "label", "name": "extTask", "value": "" },
+        { "type": "label", "name": "status", "value": "in_progress" },
+        { "type": "label", "name": "priority", "value": "medium" },
+        { "type": "relation", "name": "project", "ref": "secondProject" }
+      ]
+    },
+    {
+      "key": "completedTask",
+      "title": "Confirm interview consent language",
+      "content": "<p>Verify that the published guide uses the approved consent language and does not expose identifying details.</p>",
+      "attributes": [
+        { "type": "label", "name": "extTask", "value": "" },
+        { "type": "label", "name": "status", "value": "done" },
+        { "type": "label", "name": "doneDate", "value": "2026-08-20" },
+        { "type": "relation", "name": "project", "ref": "activeProject" }
+      ]
+    },
+    {
+      "key": "staleTask",
+      "title": "Reconcile service taxonomy with the research archive",
+      "content": "<p>Compare the working taxonomy with the archived interview index and document any terms that have drifted since the first research pass.</p>",
+      "attributes": [
+        { "type": "label", "name": "extTask", "value": "" },
+        { "type": "label", "name": "status", "value": "todo" },
+        { "type": "label", "name": "priority", "value": "low" },
+        { "type": "label", "name": "utcDateModified", "value": "dynamic-stale" },
+        { "type": "relation", "name": "project", "ref": "activeProject" }
+      ]
+    }
+  ],
+  "meeting": {
+    "title": "Field guide editorial working session",
+    "content": "<h2>AGENDA</h2><ul><li>Review the interview synthesis</li><li>Decide which examples belong in the first edition</li></ul><h2>NOTES</h2><p>Bring the annotated research summary and the latest outline.</p><h2>ACTION ITEMS</h2><ul><li>[ ] Confirm the next review date</li></ul>",
+    "attributes": [
+      { "type": "label", "name": "extMeeting", "value": "" },
+      { "type": "label", "name": "startDate", "value": "2026-09-04" },
+      { "type": "label", "name": "startTime", "value": "10:30" },
+      { "type": "relation", "name": "project", "ref": "activeProject" },
+      { "type": "relation", "name": "attendee", "ref": "person" }
+    ]
+  },
+  "historical": {
+    "title": "Resident services field observations",
+    "content": "<p>Historical editorial note preserved for the annual review: compare the first field observations with the current service blueprint.</p>",
+    "attributes": [
+      { "type": "label", "name": "extScratch", "value": "" },
+      { "type": "label", "name": "utcDateCreated", "value": "dynamic" }
+    ]
+  }
+}

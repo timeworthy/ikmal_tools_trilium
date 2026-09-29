@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "name": "Ikmal Tools",
   "description": "A selectable bundle of independently managed Ikmal Trilium apps.",
-  "repository": "https://github.com/iansherr/ikmal_tools_trilium",
+  "repository": "https://github.com/timeworthy/ikmal_tools_trilium",
   "staged": true,
   "stagedReason": "Publish after component ownership transfer and bundle lifecycle UI are validated.",
   "components": [

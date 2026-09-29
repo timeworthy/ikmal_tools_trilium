@@ -1,0 +1,52 @@
+name: Merge train trigger
+
+# This completion-triggered workflow checks out trusted base-branch code and uses event fields as API data only.
+on: # zizmor: ignore[dangerous-triggers]
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.ai/**'
+      - 'data/repository_branch_retirements.json'
+      - '.githooks/**'
+      - 'lefthook.yml'
+      - '.gitignore'
+  workflow_run:
+    workflows: ["Agent merge queue"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: merge-train-main
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    name: Autonomous Reactive Merge Train
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted train code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Run reactive merge train scan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          AGENT_QUEUE_BASE_BRANCH: ${{ github.ref_name }}
+        run: node scripts/merge_train_trigger.mjs
+        shell: bash

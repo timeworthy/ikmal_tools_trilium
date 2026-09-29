@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Git commit-msg hook: Enforces Conventional Commits format.
+if [ "${ALLOW_RAW_COMMIT:-0}" = "1" ]; then exit 0; fi
+
+commit_msg_file="$1"
+first_line=$(grep -v '^#' "$commit_msg_file" | head -n 1)
+
+if [ -z "$first_line" ] || [[ "$first_line" =~ ^(Merge|fixup\!|squash\!) ]]; then
+    exit 0
+fi
+
+conventional_regex='^(feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert)(\([a-zA-Z0-9_\.\/-]+\))?!?: .+'
+if ! [[ "$first_line" =~ $conventional_regex ]]; then
+    echo "🛑 [Commit-Msg Blocked] Commit message does not follow Conventional Commits format."
+    echo "   Received: \"$first_line\""
+    echo "   Expected: <type>(<scope>): <subject> (e.g. feat(queue): add merge train)"
+    echo "   (Emergency override: ALLOW_RAW_COMMIT=1 git commit ...)"
+    exit 1
+fi
+exit 0

@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Protect base branches and run relevant local checks before code is pushed.
+set -u
+
+remote="${1:-}"
+url="${2:-}"
+: "$remote" "$url"
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$repo_root" ] || exit 0
+needs_gate=0
+unknown_range=0
+base_ref="${FLEETDEV_PR_BASE_REF:-origin/main}"
+
+while read -r _local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main|refs/heads/master|refs/heads/dev)
+      if [ "${ALLOW_DIRECT_PUSH:-0}" != "1" ]; then
+        echo "🛑 Direct push to protected branch '$remote_ref' is blocked. Push a feature branch and open a pull request." >&2
+        echo "   Emergency recovery only: ALLOW_DIRECT_PUSH=1 git push ..." >&2
+        exit 1
+      fi
+      ;;
+  esac
+  [[ "$local_sha" =~ ^0+$ ]] && continue
+  if ! git -C "$repo_root" cat-file -e "${local_sha}^{commit}" 2>/dev/null; then
+    unknown_range=1
+    continue
+  fi
+  if [[ "$remote_sha" =~ ^0+$ ]]; then
+    if git -C "$repo_root" merge-base "$base_ref" "$local_sha" >/dev/null 2>&1; then
+      compare_range="$base_ref...$local_sha"
+    else
+      unknown_range=1
+      continue
+    fi
+  elif git -C "$repo_root" cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+    compare_range="$remote_sha..$local_sha"
+  else
+    unknown_range=1
+    continue
+  fi
+
+  git -C "$repo_root" diff --quiet "$compare_range" --
+  diff_status=$?
+  if [ "$diff_status" -gt 1 ]; then
+    unknown_range=1
+    continue
+  fi
+  [ "$diff_status" -eq 1 ] || continue
+  while IFS= read -r -d '' path; do
+    case "$path" in
+      docs/*|*.md|.gitignore) ;;
+      *) needs_gate=1; break ;;
+    esac
+  done < <(git -C "$repo_root" diff --name-only -z "$compare_range" --)
+done
+
+if [ "$needs_gate" -eq 0 ] && [ "$unknown_range" -eq 0 ]; then
+  exit 0
+fi
+if [ "${FLEETDEV_SKIP_LOCAL_PR_GATE:-0}" = "1" ]; then
+  echo "⚠️  Local pre-PR checks explicitly bypassed; required CI checks still apply." >&2
+  exit 0
+fi
+
+# Git exports repository-local variables into hooks. Remove them before the
+# gate runs tests that create or inspect separate temporary Git repositories.
+while IFS= read -r git_variable; do
+  unset "$git_variable"
+done < <(git -C "$repo_root" rev-parse --local-env-vars)
+
+echo "🔎 Running local checks before pushing functional changes..."
+if ! (cd "$repo_root" && bash scripts/pre-pr-checks.sh); then
+  echo "🛑 Push blocked. Fix the reported check and retry; you can also run: bash scripts/pre-pr-checks.sh" >&2
+  exit 1
+fi

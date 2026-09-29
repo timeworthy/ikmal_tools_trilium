@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# post-merge
+# ==============================================================================
+# Git post-merge hook:
+# Detects dependency and lockfile drift after `git merge` or `git pull`,
+# alerting developers and AI agents to update their local environments.
+# ==============================================================================
+
+# Check what changed in the merge
+changed_files=$(git diff-tree -r --name-only --no-commit-id HEAD@{1} HEAD 2>/dev/null || true)
+
+if [ -z "$changed_files" ]; then
+    exit 0
+fi
+
+alerts=()
+
+if echo "$changed_files" | grep -qE "(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)"; then
+    alerts+=("📦 Node dependencies changed! Consider running: npm install (or pnpm/yarn install)")
+fi
+
+if echo "$changed_files" | grep -qE "(flake\.nix|flake\.lock)"; then
+    alerts+=("❄️  Nix flake changed! Consider running: nix flake update or direnv reload")
+fi
+
+if echo "$changed_files" | grep -qE "(requirements\.txt|pyproject\.toml|poetry\.lock|Pipfile\.lock)"; then
+    alerts+=("🐍 Python dependencies changed! Consider running: pip install -r requirements.txt (or poetry install)")
+fi
+
+if echo "$changed_files" | grep -qE "(Cargo\.toml|Cargo\.lock)"; then
+    alerts+=("🦀 Rust dependencies changed! Consider running: cargo check")
+fi
+
+if echo "$changed_files" | grep -qE "(go\.mod|go\.sum)"; then
+    alerts+=("🐹 Go dependencies changed! Consider running: go mod tidy")
+fi
+
+if [ ${#alerts[@]} -gt 0 ]; then
+    echo ""
+    echo "🔔 [Post-Merge Notice] Dependency lockfiles were modified in this merge:"
+    for alert in "${alerts[@]}"; do
+        echo "   $alert"
+    done
+    echo ""
+fi
+
+exit 0

@@ -1,0 +1,56 @@
+name: PR failure triage
+
+# This privileged workflow reads logs but checks out only trusted base-branch code.
+on: # zizmor: ignore[dangerous-triggers]
+  workflow_run:
+    workflows: ["PR guardrails"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Failed workflow run ID to triage'
+        required: true
+      pr_number:
+        description: 'Optional PR number override'
+        required: false
+
+permissions:
+  actions: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  triage:
+    if: github.event.workflow_run.conclusion == 'failure' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.x'
+
+      - name: Ensure GitHub CLI is available
+        run: |
+          if ! command -v gh >/dev/null 2>&1; then
+            if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=""; fi
+            $SUDO apt-get update -qq && $SUDO apt-get install -y -qq gh || true
+          fi
+        shell: bash
+
+      - name: Run automated PR failure triage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+          PR_OVERRIDE: ${{ inputs.pr_number }}
+        run: |
+          args=(--run-id "$RUN_ID")
+          if [ -n "$PR_OVERRIDE" ]; then args+=(--pr "$PR_OVERRIDE"); fi
+          python3 scripts/pr_failure_triage.py "${args[@]}"
+        shell: bash

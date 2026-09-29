@@ -1,0 +1,60 @@
+name: Agent merge queue
+
+# This trusted dispatcher checks out only the configured base branch and never runs PR-controlled code.
+on: # zizmor: ignore[dangerous-triggers]
+  pull_request_target:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Optional PR number to enqueue; leave blank to bootstrap labels only.'
+        required: false
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/agent-merge-queue.yml'
+      - 'scripts/agent_merge_queue.mjs'
+      - 'scripts/agent_merge_queue_harness.mjs'
+      - 'docs/AGENT_MERGE_QUEUE.md'
+
+# Enterprise-free serialized merge queue: one active integration slot.
+concurrency:
+  group: fleetdev-agent-merge-queue-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  checks: read
+  statuses: read
+  actions: write
+
+jobs:
+  integrate:
+    if: >-
+      github.event_name != 'pull_request_target' ||
+      (github.event.action == 'labeled' && github.event.label.name == 'merge-ready')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout trusted queue code from main only
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Run serialized integration dispatcher
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AGENT_QUEUE_BASE_BRANCH: main
+          AGENT_QUEUE_MERGE_METHOD: squash
+        run: node scripts/agent_merge_queue.mjs
+        shell: bash

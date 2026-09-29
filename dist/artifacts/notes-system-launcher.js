@@ -3528,9 +3528,29 @@ ifThenRules: []
           note.save();
         }
         try {
+          const todayNote = api.getNoteWithLabel("todayRoot");
+          if (todayNote) {
+            let isVisible = true;
+            try {
+              isVisible = api.getNote("al_openToday").getParentBranches().some((branch) => branch.parentNoteId === "_lbVisibleLaunchers");
+            } catch (error) {
+            }
+            const result = api.createOrUpdateLauncher({
+              id: "openToday",
+              type: "note",
+              title: "Today",
+              icon: "sun",
+              isVisible,
+              targetNoteId: todayNote.noteId
+            });
+            result?.note?.setLabel("iconClass", "bx bx-sun");
+          }
+        } catch (err) {
+        }
+        try {
           const root = api.getNote("_lbVisibleLaunchers");
           if (root) {
-            const extensionIds = launchers.map((l) => `al_${l.id}`);
+            const extensionIds = ["openToday", ...launchers.map((l) => l.id)].map((id) => `al_${id}`);
             const extensionSet = new Set(extensionIds);
             const branches = [];
             for (const childId of root.getChildNoteIds()) {

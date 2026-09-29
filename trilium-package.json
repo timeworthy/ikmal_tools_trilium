@@ -69,6 +69,97 @@
       "default": 500
     }
   ],
+  "surfaces": [
+    {
+      "id": "preferences",
+      "type": "settings",
+      "title": "Preferences",
+      "description": "Journal width, automation, capture and insight defaults. Open full settings for automation rules, the YAML specification, and workspace maintenance.",
+      "icon": "bx bx-slider",
+      "settingKeys": [
+        "defaultJournalWidth",
+        "autoRunIfThenRulesOnCreation",
+        "enableDerivedTopics",
+        "autoJournalClone",
+        "defaultQuickCaptureTemplate",
+        "staleThresholdDays",
+        "writingGoalWords"
+      ],
+      "artifact": "notes-system-settings"
+    },
+    {
+      "id": "today",
+      "type": "page",
+      "title": "Today",
+      "description": "Your daily page: today's journal, open tasks and quick captures.",
+      "icon": "bx bx-sun",
+      "artifact": "notes-system-today-page"
+    },
+    {
+      "id": "workspace",
+      "type": "page",
+      "title": "Workspace dashboard",
+      "description": "Today homepage plus Template Studio for note schemas and automation rules.",
+      "icon": "bx bx-home-alt",
+      "artifact": "notes-system-dashboard"
+    },
+    {
+      "id": "kanban",
+      "type": "page",
+      "title": "Task Kanban",
+      "description": "Live task board sorted by todo, in progress, and completed columns.",
+      "icon": "bx bx-layout",
+      "artifact": "notes-system-kanban"
+    },
+    {
+      "id": "insights",
+      "type": "page",
+      "title": "Writing & Productivity Insights",
+      "description": "Daily word count goal progress, 30-day activity heatmap, and moon phase.",
+      "icon": "bx bx-target-lock",
+      "artifact": "notes-system-insights"
+    },
+    {
+      "id": "quick-capture",
+      "type": "page",
+      "title": "Quick Capture",
+      "description": "1-click note creation toolbar for tasks, meetings, and story packages.",
+      "icon": "bx bx-plus-circle",
+      "artifact": "notes-system-quick-capture"
+    },
+    {
+      "id": "weather",
+      "type": "page",
+      "title": "Weather & Climate",
+      "description": "Open-Meteo forecast, temperature, daylight hours, and moon phase.",
+      "icon": "bx bx-cloud",
+      "artifact": "notes-system-weather"
+    },
+    {
+      "id": "on-this-day",
+      "type": "page",
+      "title": "On This Day",
+      "description": "Notes created on the same calendar day in previous years.",
+      "icon": "bx bx-history",
+      "artifact": "notes-system-on-this-day"
+    },
+    {
+      "id": "stale-notes",
+      "type": "page",
+      "title": "Stale Notes Reviewer",
+      "description": "Active notes unmodified longer than the configured threshold.",
+      "icon": "bx bx-time-five",
+      "artifact": "notes-system-stale-notes"
+    },
+    {
+      "id": "canvas",
+      "type": "page",
+      "title": "Interactive Canvas (Beta)",
+      "description": "Visual whiteboard and node graph for project notes and mind-mapping.",
+      "icon": "bx bx-network-chart",
+      "artifact": "notes-system-canvas"
+    }
+  ],
   "artifacts": [
     {
       "id": "notes-system-today-page",
@@ -82,8 +173,16 @@
       "id": "notes-system-dashboard",
       "type": "render",
       "source": "dist/artifacts/notes-system-dashboard.js",
-      "integrity": "sha256-l56GCEb5m73fpzNl22NBJUFbgwG2jX2nrrysBTsF2L0=",
+      "integrity": "sha256-fAGZqWFWRgV4BsNLJCN/y8Jt5IX4LGOcCaPjBgrjbbQ=",
       "title": "Ikmal Tools for Trilium: Today Homepage & Workspace Dashboard",
+      "activation": "manual"
+    },
+    {
+      "id": "notes-system-settings",
+      "type": "render",
+      "source": "dist/artifacts/notes-system-settings.js",
+      "integrity": "sha256-wap2C3gj6G/1hDnRrwrhjFg98d7gqmQZtZeVwfcPbWc=",
+      "title": "Ikmal Tools for Trilium: Settings",
       "activation": "manual"
     },
     {
@@ -154,7 +253,7 @@
       "id": "notes-system-launcher",
       "type": "frontend",
       "source": "dist/artifacts/notes-system-launcher.js",
-      "integrity": "sha256-xXo3rPnPAQxV6s7clPl7CLl+GF3gprrSJtMVOOnOfsc=",
+      "integrity": "sha256-SYOHZITp0v/aJtvxnXTruvfSfLkZ1KVgXALX89zFPrc=",
       "title": "Ikmal Tools for Trilium: Header Launcher Bar & Hotkey",
       "activation": "startup"
     },

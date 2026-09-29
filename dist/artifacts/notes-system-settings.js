@@ -6786,7 +6786,7 @@ ${current || ""}`);
     const todayEngine = new TodayEngine();
     const settingsEngine = new SettingsEngine();
     const noteCreationEngine = new NoteCreationEngine(templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine);
-    let activeTab = globalThis.__IKMAL_START_TAB__ || "today";
+    let activeTab = "settings";
     let todayContentArea = null;
     let yamlEditorSpec;
     const frontendApi = (typeof api !== "undefined" ? api : globalThis.api) || null;

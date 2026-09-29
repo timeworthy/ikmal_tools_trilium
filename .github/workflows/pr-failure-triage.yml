@@ -40,7 +40,9 @@ jobs:
         run: |
           if ! command -v gh >/dev/null 2>&1; then
             if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=""; fi
-            $SUDO apt-get update -qq && $SUDO apt-get install -y -qq gh || true
+            if $SUDO apt-get update -qq; then
+              $SUDO apt-get install -y -qq gh || true
+            fi
           fi
         shell: bash
 

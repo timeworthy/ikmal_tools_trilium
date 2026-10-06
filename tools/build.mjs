@@ -69,7 +69,10 @@ try {
     console.log('🔨 Bundling dashboard render artifact...');
     execSync('npx esbuild src/artifacts/notes-system-dashboard.jsx --loader:.jsx=tsx --bundle --format=iife --target=es2020 --outfile=dist/artifacts/notes-system-dashboard.js', { stdio: 'inherit' });
 
-    console.log('🔨 Bundling Today page render artifact...');
+    console.log('🔨 Bundling Settings render artifact (dashboard opened on its Settings tab)...');
+execSync('npx esbuild src/artifacts/notes-system-dashboard.jsx --loader:.jsx=tsx --bundle --format=iife --target=es2020 --define:globalThis.__IKMAL_START_TAB__=\\"settings\\" --outfile=dist/artifacts/notes-system-settings.js', { stdio: 'inherit' });
+
+console.log('🔨 Bundling Today page render artifact...');
     execSync('npx esbuild src/artifacts/notes-system-today-page.jsx --loader:.jsx=tsx --bundle --format=iife --target=es2020 --outfile=dist/artifacts/notes-system-today-page.js', { stdio: 'inherit' });
 
     console.log('🔨 Bundling project dashboard render artifact...');

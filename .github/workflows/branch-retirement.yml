@@ -1,0 +1,80 @@
+name: Branch retirement
+
+# Privileged workflow_run work is limited to trusted base-branch code; event data is not executed.
+on: # zizmor: ignore[dangerous-triggers]
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/branch-retirement.yml'
+      - 'data/repository_branch_retirements.json'
+      - 'scripts/branch-retirement-core.mjs'
+      - 'scripts/branch-retirement-harness.mjs'
+      - 'scripts/retire-stale-branches.mjs'
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.ai/**'
+  workflow_run:
+    workflows: ["Agent merge queue"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Delete branches classified as safe to retire'
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('branch-retirement-pr-{0}', github.event.pull_request.number) || 'agent-branch-retirement-main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Verify branch retirement safety contract
+        run: node scripts/branch-retirement-harness.mjs
+        shell: bash
+
+  retire:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Verify branch retirement safety contract
+        run: node scripts/branch-retirement-harness.mjs
+        shell: bash
+      - name: Classify and retire safe remote branches
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH_RETIRE_APPLY: ${{ ((github.event_name == 'push' || github.event_name == 'workflow_run') || inputs.apply) && '1' || '0' }}
+        run: node scripts/retire-stale-branches.mjs
+        shell: bash

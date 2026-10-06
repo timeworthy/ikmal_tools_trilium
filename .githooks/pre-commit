@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Git pre-commit hook (fallback when lefthook is not installed)
+hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$hook_dir/detect-secrets.sh" ]; then
+    "$hook_dir/detect-secrets.sh" || exit 1
+fi
+if [ -x "$hook_dir/check-large-files.sh" ]; then
+    "$hook_dir/check-large-files.sh" || exit 1
+fi
+exit 0

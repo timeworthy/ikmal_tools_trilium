@@ -1,0 +1,44 @@
+# Lefthook and native Git use the same repository scripts.
+skip_output:
+  - meta
+
+pre-commit:
+  parallel: true
+  commands:
+    detect-secrets:
+      tags: security secrets
+      run: .githooks/detect-secrets.sh
+      fail_text: |
+        🛑 Sensitive credentials were detected in the staged files.
+        Remove the value, re-stage the file, and retry. Reviewed local-only bypass:
+        ALLOW_SECRET_SCAN_BYPASS=1 git commit ... (CI does not honor this bypass.)
+    check-large-files:
+      tags: hygiene files
+      run: .githooks/check-large-files.sh
+      fail_text: |
+        🛑 A staged file is larger than 5 MiB. Use an appropriate asset store or
+        Git LFS instead. Reviewed local-only bypass: ALLOW_LARGE_FILES=1 git commit ...
+
+commit-msg:
+  commands:
+    conventional-commit:
+      tags: lint commits
+      run: .githooks/commit-msg {1}
+      fail_text: |
+        Use a Conventional Commit such as feat(api): add a route.
+
+pre-push:
+  parallel: false
+  commands:
+    protect-branches-and-run-local-gate:
+      tags: safety branches tests
+      run: .githooks/pre-push "$@"
+      fail_text: |
+        A protected-branch rule or local pre-PR check blocked this push.
+        Fix the reported issue, then run: bash scripts/pre-pr-checks.sh
+
+post-merge:
+  commands:
+    lockfile-drift:
+      tags: dependencies notify
+      run: .githooks/post-merge

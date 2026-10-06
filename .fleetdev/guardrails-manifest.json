@@ -1,0 +1,215 @@
+{
+  "schemaVersion": 1,
+  "files": {
+    ".githooks/README.md": {
+      "templateSha256": "ea77417f827a4347057b6a48257207f5e91e1f20b5542ff5f04b682fbd402c11",
+      "installedSha256": "ea77417f827a4347057b6a48257207f5e91e1f20b5542ff5f04b682fbd402c11",
+      "mode": 493,
+      "state": "managed"
+    },
+    ".githooks/check-large-files.sh": {
+      "templateSha256": "60cfaeb440157e5fad9ba1af6dd98e19a04c0ee6f69ebde2ed03fe3c1de76e1b",
+      "installedSha256": "60cfaeb440157e5fad9ba1af6dd98e19a04c0ee6f69ebde2ed03fe3c1de76e1b",
+      "mode": 493,
+      "state": "managed"
+    },
+    ".githooks/commit-msg": {
+      "templateSha256": "bf9596164681ba0ef8e5a2decfed3003cd916905e53c6c3a479a251dff9180e1",
+      "installedSha256": "bf9596164681ba0ef8e5a2decfed3003cd916905e53c6c3a479a251dff9180e1",
+      "mode": 493,
+      "state": "managed"
+    },
+    ".githooks/detect-secrets.sh": {
+      "templateSha256": "95fc3e252724d785be87133d025e7322e0d774f5de52468b623aaa1007a82c28",
+      "installedSha256": "95fc3e252724d785be87133d025e7322e0d774f5de52468b623aaa1007a82c28",
+      "mode": 493,
+      "state": "managed"
+    },
+    ".githooks/install-hooks.sh": {
+      "templateSha256": "33abd002ddcc4a1e230d5705f034d8ed79796c4a437fc76019c82dbad45e4915",
+      "installedSha256": "33abd002ddcc4a1e230d5705f034d8ed79796c4a437fc76019c82dbad45e4915",
+      "mode": 493,
+      "state": "managed"
+    },
+    ".githooks/post-merge": {
+      "templateSha256": "a6b3225049c592a8afeed09fc89438bb23033cdec32be0ed924b400960fd6a0b",
+      "installedSha256": "a6b3225049c592a8afeed09fc89438bb23033cdec32be0ed924b400960fd6a0b",
+      "mode": 493,
+      "state": "managed"
+    },
+    ".githooks/pre-commit": {
+      "templateSha256": "b77a6d283058e192de479883d9d9b2170c1036f70563c30b9111e2d21eff9d6b",
+      "installedSha256": "b77a6d283058e192de479883d9d9b2170c1036f70563c30b9111e2d21eff9d6b",
+      "mode": 493,
+      "state": "managed"
+    },
+    ".githooks/pre-push": {
+      "templateSha256": "fdb50368485bb85720ff37722e01d356b4e1c668c669ffe633cd8ca2c17ae95f",
+      "installedSha256": "fdb50368485bb85720ff37722e01d356b4e1c668c669ffe633cd8ca2c17ae95f",
+      "mode": 493,
+      "state": "managed"
+    },
+    ".github/actionlint.yaml": {
+      "templateSha256": "21be77ab2dfef7896e9d56bf2e7cb27bffba87ec02a2aa2eb6ca058f921aacbf",
+      "installedSha256": "21be77ab2dfef7896e9d56bf2e7cb27bffba87ec02a2aa2eb6ca058f921aacbf",
+      "mode": 420,
+      "state": "managed"
+    },
+    ".github/dependabot.yml": {
+      "templateSha256": "da30cae4312d2907ddc21086878e6ca28c809124c63889e8d5f4fd1dc36ed58b",
+      "installedSha256": "da30cae4312d2907ddc21086878e6ca28c809124c63889e8d5f4fd1dc36ed58b",
+      "mode": 420,
+      "state": "managed"
+    },
+    ".github/workflows/agent-merge-queue.yml": {
+      "templateSha256": "9172a9d7c4d127c5be4adf03114b9ba6ac9a726051e23ca9e1ee61f541002680",
+      "installedSha256": "9172a9d7c4d127c5be4adf03114b9ba6ac9a726051e23ca9e1ee61f541002680",
+      "mode": 420,
+      "state": "managed"
+    },
+    ".github/workflows/branch-retirement.yml": {
+      "templateSha256": "42f5768b809d7ab92a58ee9bbb4b2206fc3cba4addf195948cb3fb0f0f00c1e9",
+      "installedSha256": "42f5768b809d7ab92a58ee9bbb4b2206fc3cba4addf195948cb3fb0f0f00c1e9",
+      "mode": 420,
+      "state": "managed"
+    },
+    ".github/workflows/canonical-integration.yml": {
+      "templateSha256": "7e4da3357d0759a062ea9242eb00de24013940e9a3493767fe915f853243a461",
+      "installedSha256": "7e4da3357d0759a062ea9242eb00de24013940e9a3493767fe915f853243a461",
+      "mode": 420,
+      "state": "managed"
+    },
+    ".github/workflows/merge-train-trigger.yml": {
+      "templateSha256": "16d8c93cefbfe8fc8daedbb3a5c849aea359c6a7c01ae892706957c1e0d0a118",
+      "installedSha256": "16d8c93cefbfe8fc8daedbb3a5c849aea359c6a7c01ae892706957c1e0d0a118",
+      "mode": 420,
+      "state": "managed"
+    },
+    ".github/workflows/pr-failure-triage.yml": {
+      "templateSha256": "2476be6f4da8f2c11d5f6ac46a2fbbf497763330ea06907cc9e38b739a061c45",
+      "installedSha256": "2476be6f4da8f2c11d5f6ac46a2fbbf497763330ea06907cc9e38b739a061c45",
+      "mode": 420,
+      "state": "managed"
+    },
+    ".github/workflows/pr-guardrails.yml": {
+      "templateSha256": "b604b09af6015300c715d141d6bafdf428cfdbfa9449f5694765c560522f837b",
+      "installedSha256": "b604b09af6015300c715d141d6bafdf428cfdbfa9449f5694765c560522f837b",
+      "mode": 420,
+      "state": "managed"
+    },
+    "AGENTS.md": {
+      "templateSha256": "097335ef604c98bdb11e8fa89f699b49638603ebc70c0255a7bdeafa53675fe2",
+      "installedSha256": "097335ef604c98bdb11e8fa89f699b49638603ebc70c0255a7bdeafa53675fe2",
+      "mode": 420,
+      "state": "managed"
+    },
+    "data/repository_branch_retirements.json": {
+      "templateSha256": "248e9244aa55d504dd62ddbb9e0047e8b284580ebf06f932177421ae79b40bd9",
+      "installedSha256": "248e9244aa55d504dd62ddbb9e0047e8b284580ebf06f932177421ae79b40bd9",
+      "mode": 420,
+      "state": "managed"
+    },
+    "docs/AGENT_MERGE_QUEUE.md": {
+      "templateSha256": "65bb5227cef09580eb42f4f0c6ea5b9176ea9e2f39774e453080ae98fba93bfb",
+      "installedSha256": "65bb5227cef09580eb42f4f0c6ea5b9176ea9e2f39774e453080ae98fba93bfb",
+      "mode": 420,
+      "state": "managed"
+    },
+    "docs/BRANCH_RETIREMENT.md": {
+      "templateSha256": "f47fa30be721e46be6c07d253420b5eecee10460b3368aa5f7ed7bdb4d204f2e",
+      "installedSha256": "f47fa30be721e46be6c07d253420b5eecee10460b3368aa5f7ed7bdb4d204f2e",
+      "mode": 420,
+      "state": "managed"
+    },
+    "docs/GIT_GUARDRAILS.md": {
+      "templateSha256": "11717d86df769979c399e9cc782c75137cccf6c3d7d9fe34a99005509403cc36",
+      "installedSha256": "11717d86df769979c399e9cc782c75137cccf6c3d7d9fe34a99005509403cc36",
+      "mode": 420,
+      "state": "managed"
+    },
+    "docs/WORKFLOW_TARGETING.md": {
+      "templateSha256": "d5299900f984c57b87b507f73cbcf016c6069d1f75b818a23400920dc3363b4d",
+      "installedSha256": "d5299900f984c57b87b507f73cbcf016c6069d1f75b818a23400920dc3363b4d",
+      "mode": 420,
+      "state": "managed"
+    },
+    "lefthook.yml": {
+      "templateSha256": "25beaf8efd6599fce66a3db31b2fe7c3beca8c5cc2c721bcf8c1771b2a7ba8ee",
+      "installedSha256": "25beaf8efd6599fce66a3db31b2fe7c3beca8c5cc2c721bcf8c1771b2a7ba8ee",
+      "mode": 420,
+      "state": "managed"
+    },
+    "scripts/agent_merge_queue.mjs": {
+      "templateSha256": "e73d3dfd58ee0c73ae76877b78a9bb8678d618a6f30497a810bb6f43a2b7d3f1",
+      "installedSha256": "e73d3dfd58ee0c73ae76877b78a9bb8678d618a6f30497a810bb6f43a2b7d3f1",
+      "mode": 493,
+      "state": "managed"
+    },
+    "scripts/agent_merge_queue_harness.mjs": {
+      "templateSha256": "0b927730b6a2af58a3603916c0c60a01a5cd0c6db92f97112319226dd29575cd",
+      "installedSha256": "0b927730b6a2af58a3603916c0c60a01a5cd0c6db92f97112319226dd29575cd",
+      "mode": 493,
+      "state": "managed"
+    },
+    "scripts/branch-retirement-core.mjs": {
+      "templateSha256": "21c5c99df4ee68d0a49fb3bbecfccedb238ca1db737ce38ecba6cd78f33b65bd",
+      "installedSha256": "21c5c99df4ee68d0a49fb3bbecfccedb238ca1db737ce38ecba6cd78f33b65bd",
+      "mode": 493,
+      "state": "managed"
+    },
+    "scripts/branch-retirement-harness.mjs": {
+      "templateSha256": "69dfbb4e9183267c6785d08950870c1264e55c9cd1774b6913b21202b3531359",
+      "installedSha256": "69dfbb4e9183267c6785d08950870c1264e55c9cd1774b6913b21202b3531359",
+      "mode": 493,
+      "state": "managed"
+    },
+    "scripts/check-actions.sh": {
+      "templateSha256": "501205153f7933bceb1d26a86c7bf6e7e496c272f0a866b8c49872dfd1e77ac6",
+      "installedSha256": "501205153f7933bceb1d26a86c7bf6e7e496c272f0a866b8c49872dfd1e77ac6",
+      "mode": 493,
+      "state": "managed"
+    },
+    "scripts/check-shell-syntax.sh": {
+      "templateSha256": "7ad2a5c99b5864c7581f3ef566b29030955cd07c6720c5cf6b54009fe7b90321",
+      "installedSha256": "7ad2a5c99b5864c7581f3ef566b29030955cd07c6720c5cf6b54009fe7b90321",
+      "mode": 493,
+      "state": "managed"
+    },
+    "scripts/check_pr_guardrails.mjs": {
+      "templateSha256": "8a090353fd06c227d63d5fd7226e514189dca04c118c1b2cdde8c07743901fdf",
+      "installedSha256": "8a090353fd06c227d63d5fd7226e514189dca04c118c1b2cdde8c07743901fdf",
+      "mode": 493,
+      "state": "managed"
+    },
+    "scripts/check_pr_guardrails_harness.mjs": {
+      "templateSha256": "e3902a3714b264fda0582a0c7fcb8dcc69a0d7e9b52b98b04697ff482615bc60",
+      "installedSha256": "e3902a3714b264fda0582a0c7fcb8dcc69a0d7e9b52b98b04697ff482615bc60",
+      "mode": 493,
+      "state": "managed"
+    },
+    "scripts/merge_train_trigger.mjs": {
+      "templateSha256": "865e960bc381fb7aee98ae7d8c8d95d51479e0980495d405932d9eb18e35adec",
+      "installedSha256": "865e960bc381fb7aee98ae7d8c8d95d51479e0980495d405932d9eb18e35adec",
+      "mode": 493,
+      "state": "managed"
+    },
+    "scripts/pr_failure_triage.py": {
+      "templateSha256": "d6673acb447e7d03951631c090cf168598b2e2fdbe05c4871489b12648580933",
+      "installedSha256": "d6673acb447e7d03951631c090cf168598b2e2fdbe05c4871489b12648580933",
+      "mode": 493,
+      "state": "managed"
+    },
+    "scripts/pre-pr-checks.sh": {
+      "templateSha256": "460f9df4ff91e67a57860c6649ac99efe14193013f838720fba222c9e64f61d6",
+      "installedSha256": "460f9df4ff91e67a57860c6649ac99efe14193013f838720fba222c9e64f61d6",
+      "mode": 493,
+      "state": "managed"
+    },
+    "scripts/retire-stale-branches.mjs": {
+      "templateSha256": "fee3d51744ccf9855e532f6ed94ed31895b1a630cce22b98f3507e9ec854899e",
+      "installedSha256": "fee3d51744ccf9855e532f6ed94ed31895b1a630cce22b98f3507e9ec854899e",
+      "mode": 493,
+      "state": "managed"
+    }
+  }
+}

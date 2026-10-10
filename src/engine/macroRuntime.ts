@@ -3,7 +3,7 @@
  * their hotkeys, and hosts the macro palette. Decisions live in macroEngine.ts.
  */
 
-import { buildRegistry, findByHotkey, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput } from './macroEngine.js';
+import { buildRegistry, findByHotkey, matchAbbrev, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput } from './macroEngine.js';
 import { openModal, escapeHtml } from '../components/nativeUi.js';
 
 interface MacroFNote {
@@ -18,7 +18,7 @@ export interface MacroEditor {
     execute(command: string): void;
     data: { processor: { toView(html: string): unknown }; toModel(viewFragment: any): unknown };
     model: {
-        document: { getRoot(): any };
+        document: { getRoot(): any; selection: any };
         insertContent(content: any): void;
         change(callback: (writer: any) => void): void;
     };
@@ -31,7 +31,7 @@ export interface MacroApi {
     showMessage(message: string): void;
 }
 
-const LABEL_NAMES = ['macroMode', 'macroHotkey', 'macroCommand'];
+const LABEL_NAMES = ['macroMode', 'macroHotkey', 'macroAbbrev', 'macroCommand'];
 
 export async function loadMacros(api: MacroApi, isMac: boolean) {
     const notes = await api.searchForNotes('#ikmalMacro');
@@ -58,6 +58,23 @@ function placeCursorOnMark(editor: MacroEditor, mark: string) {
             return;
         }
     });
+}
+
+/** Text in the caret's block up to the caret; a non-text child (soft break, widget) resets it. */
+export function textBeforeCaret(editor: MacroEditor): { text: string; position: any } | null {
+    const selection = editor.model.document.selection;
+    if (!selection.isCollapsed) return null;
+    const position = selection.getFirstPosition();
+    let text = '';
+    for (const child of position.parent.getChildren()) {
+        if (child.startOffset >= position.offset) break;
+        if (!child.is('$text')) {
+            text = '';
+            continue;
+        }
+        text += child.data.slice(0, position.offset - child.startOffset);
+    }
+    return { text, position };
 }
 
 function makeHost(editor: MacroEditor): MacroHost {
@@ -140,6 +157,23 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
             e.stopPropagation();
             void openPalette();
             return;
+        }
+        if (e.key === 'Tab' && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+            const editor = (e.target as { ckeditorInstance?: MacroEditor } | null)?.ckeditorInstance;
+            const before = editor && textBeforeCaret(editor);
+            const hit = before && matchAbbrev(macros, before.text);
+            if (editor && before && hit) {
+                e.preventDefault();
+                e.stopPropagation();
+                const { position } = before;
+                editor.model.change((writer) => {
+                    writer.remove(writer.createRange(position.getShiftedBy(-hit.abbrev!.length), position));
+                });
+                void runMacro(hit, makeHost(editor)).then((r) => {
+                    if (!r.ok) api.showError(`Macro "${hit.name}" failed: ${r.error}`);
+                });
+                return;
+            }
         }
         const macro = findByHotkey(macros, e);
         if (macro) {

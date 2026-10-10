@@ -197,3 +197,92 @@ test('runMacro places the caret only when the content has a cursor token, before
     // A host without placeCursor must not break a macro that has a token.
     assert.deepEqual(await runMacro(buildMacro(note({ body: '{{cursor}}' })).macro, { insertHtml() {}, executeCommand() {} }), { ok: true });
 });
+
+// ---- typed abbreviations ----
+import { matchAbbrev } from '../dist/engine/macroEngine.js';
+
+const abbrevMacros = () => buildRegistry([
+    note({ id: 'a', title: 'Ians', labels: { macroAbbrev: ['ians'] } }),
+    note({ id: 'b', title: 'Ns', labels: { macroAbbrev: ['ns'] } }),
+]).macros;
+
+test('buildMacro validates #macroAbbrev and buildRegistry drops duplicates', () => {
+    assert.equal(buildMacro(note({ labels: { macroAbbrev: ['ians'] } })).macro.abbrev, 'ians');
+    assert.equal(buildMacro(note()).macro.abbrev, null);
+    for (const bad of ['a', 'two words', 'x'.repeat(33)]) {
+        assert.match(buildMacro(note({ labels: { macroAbbrev: [bad] } })).error, /invalid #macroAbbrev/, bad);
+    }
+    const dup = buildRegistry([
+        note({ id: '1', title: 'One', labels: { macroAbbrev: ['sig'] } }),
+        note({ id: '2', title: 'Two', labels: { macroAbbrev: ['sig'] } }),
+    ]);
+    assert.deepEqual(dup.macros.map((m) => m.name), ['One']);
+    assert.match(dup.errors[0], /abbreviation "sig" conflicts/);
+});
+
+test('matchAbbrev only fires at a word start and prefers the longest abbreviation', () => {
+    const macros = abbrevMacros();
+    assert.equal(matchAbbrev(macros, 'ians').name, 'Ians');
+    assert.equal(matchAbbrev(macros, 'hello ians').name, 'Ians');
+    assert.equal(matchAbbrev(macros, '(ians').name, 'Ians');
+    assert.equal(matchAbbrev(macros, 'ns').name, 'Ns');
+    assert.equal(matchAbbrev(macros, 'cousins'), undefined, 'mid-word must not expand');
+    assert.equal(matchAbbrev(macros, 'ians '), undefined, 'caret must be right after the abbreviation');
+    assert.equal(matchAbbrev(macros, 'fiansx'), undefined);
+    assert.equal(matchAbbrev(macros, ''), undefined);
+    assert.equal(matchAbbrev(buildRegistry([note()]).macros, 'anything'), undefined);
+});
+
+// Fake CKEditor with a single paragraph; records removals and insertions.
+function fakeEditor(text, { collapsed = true, offset = text.length } = {}) {
+    const log = { removed: [], inserted: [] };
+    const child = { startOffset: 0, data: text, is: (t) => t === '$text' };
+    const position = {
+        offset, parent: { getChildren: () => [child] },
+        getShiftedBy(n) { return { offset: offset + n }; },
+    };
+    return {
+        log,
+        execute() {},
+        data: { processor: { toView: (h) => ({ view: h }) }, toModel: (v) => ({ model: v.view }) },
+        model: {
+            document: { getRoot: () => ({}), selection: { isCollapsed: collapsed, getFirstPosition: () => position } },
+            insertContent: (m) => log.inserted.push(m.model),
+            change: (cb) => cb({ createRange: (a, b) => [a.offset, b.offset], remove: (r) => log.removed.push(r) }),
+        },
+    };
+}
+
+async function tabIn(editor, { macros = [fnote('m', 'Ians', '<p>Ian Sherr</p>', { macroAbbrev: ['ians'] })], key = 'Tab', init = {} } = {}) {
+    const { dom } = await launcherWithMacros(macros);
+    const el = dom.window.document.createElement('div');
+    el.ckeditorInstance = editor;
+    dom.window.document.body.append(el);
+    const e = new dom.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init });
+    el.dispatchEvent(e);
+    await tick();
+    return e;
+}
+
+test('Tab after a typed abbreviation deletes it and inserts the macro', async () => {
+    const editor = fakeEditor('hello ians');
+    const e = await tabIn(editor);
+    assert.ok(e.defaultPrevented);
+    assert.deepEqual(editor.log.removed, [[6, 10]]);
+    assert.deepEqual(editor.log.inserted, ['<p>Ian Sherr</p>']);
+});
+
+test('Tab does nothing when the text before the caret is not an abbreviation', async () => {
+    for (const text of ['hello cousins', 'hello ians ', 'plain']) {
+        const editor = fakeEditor(text);
+        const e = await tabIn(editor);
+        assert.ok(!e.defaultPrevented, text);
+        assert.deepEqual(editor.log, { removed: [], inserted: [] }, text);
+    }
+});
+
+test('Tab leaves a range selection, other keys, and shift+Tab alone', async () => {
+    assert.ok(!(await tabIn(fakeEditor('ians', { collapsed: false }))).defaultPrevented);
+    assert.ok(!(await tabIn(fakeEditor('ians'), { key: ' ' })).defaultPrevented);
+    assert.ok(!(await tabIn(fakeEditor('ians'), { init: { shiftKey: true } })).defaultPrevented);
+});

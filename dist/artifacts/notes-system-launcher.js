@@ -3117,13 +3117,18 @@ ifThenRules: []
         return { error: `Macro "${name}" hotkey "${rawHotkey}" is reserved by the launcher.` };
       }
     }
+    const abbrev = label("macroAbbrev") || null;
+    if (abbrev && !/^\S{2,32}$/.test(abbrev)) {
+      return { error: `Macro "${name}" has invalid #macroAbbrev "${abbrev}" (2-32 characters, no spaces).` };
+    }
     const commands = (note.labels["macroCommand"] ?? []).map((c) => c.trim()).filter(Boolean);
-    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, commands } };
+    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, commands } };
   }
   function buildRegistry(notes, isMac = false) {
     const macros = [];
     const errors = [];
     const owners = /* @__PURE__ */ new Map();
+    const abbrevOwners = /* @__PURE__ */ new Map();
     for (const note of notes) {
       const result = buildMacro(note, isMac);
       if ("error" in result) {
@@ -3140,12 +3145,30 @@ ifThenRules: []
         }
         owners.set(id, macro.name);
       }
+      if (macro.abbrev) {
+        const owner = abbrevOwners.get(macro.abbrev);
+        if (owner) {
+          errors.push(`Macro "${macro.name}" abbreviation "${macro.abbrev}" conflicts with "${owner}"; macro skipped.`);
+          continue;
+        }
+        abbrevOwners.set(macro.abbrev, macro.name);
+      }
       macros.push(macro);
     }
     return { macros, errors };
   }
   function findByHotkey(macros, e) {
     return macros.find((m) => m.hotkey && matchesHotkey(m.hotkey, e));
+  }
+  function matchAbbrev(macros, textBeforeCaret2) {
+    let best;
+    for (const m of macros) {
+      if (!m.abbrev || !textBeforeCaret2.endsWith(m.abbrev)) continue;
+      const before = textBeforeCaret2.charAt(textBeforeCaret2.length - m.abbrev.length - 1);
+      if (before && /[\p{L}\p{N}_]/u.test(before)) continue;
+      if (!best || m.abbrev.length > best.abbrev.length) best = m;
+    }
+    return best;
   }
   function searchMacros(macros, query) {
     const q = query.trim().toLowerCase();
@@ -3183,7 +3206,7 @@ ifThenRules: []
   }
 
   // src/engine/macroRuntime.ts
-  var LABEL_NAMES = ["macroMode", "macroHotkey", "macroCommand"];
+  var LABEL_NAMES = ["macroMode", "macroHotkey", "macroAbbrev", "macroCommand"];
   async function loadMacros(api2, isMac) {
     const notes = await api2.searchForNotes("#ikmalMacro");
     const inputs = [];
@@ -3207,6 +3230,21 @@ ifThenRules: []
         return;
       }
     });
+  }
+  function textBeforeCaret(editor) {
+    const selection = editor.model.document.selection;
+    if (!selection.isCollapsed) return null;
+    const position = selection.getFirstPosition();
+    let text = "";
+    for (const child of position.parent.getChildren()) {
+      if (child.startOffset >= position.offset) break;
+      if (!child.is("$text")) {
+        text = "";
+        continue;
+      }
+      text += child.data.slice(0, position.offset - child.startOffset);
+    }
+    return { text, position };
   }
   function makeHost(editor) {
     return {
@@ -3280,6 +3318,23 @@ ifThenRules: []
         e.stopPropagation();
         void openPalette();
         return;
+      }
+      if (e.key === "Tab" && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        const editor = e.target?.ckeditorInstance;
+        const before = editor && textBeforeCaret(editor);
+        const hit = before && matchAbbrev(macros, before.text);
+        if (editor && before && hit) {
+          e.preventDefault();
+          e.stopPropagation();
+          const { position } = before;
+          editor.model.change((writer) => {
+            writer.remove(writer.createRange(position.getShiftedBy(-hit.abbrev.length), position));
+          });
+          void runMacro(hit, makeHost(editor)).then((r) => {
+            if (!r.ok) api2.showError(`Macro "${hit.name}" failed: ${r.error}`);
+          });
+          return;
+        }
       }
       const macro = findByHotkey(macros, e);
       if (macro) {

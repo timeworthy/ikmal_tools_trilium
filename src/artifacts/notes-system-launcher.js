@@ -17,6 +17,7 @@ import { showQuickCaptureModal } from '../components/QuickCaptureModal.js';
 import { openModal } from '../components/nativeUi.js';
 import { loadRuntimeModel } from '../engine/runtimeModel.js';
 import { materializeNoteCreation } from '../engine/noteMaterializer.js';
+import { installMacroRuntime } from '../engine/macroRuntime.js';
 
 (function initLauncherBar() {
     if (typeof document === 'undefined') return;
@@ -101,6 +102,7 @@ import { materializeNoteCreation } from '../engine/noteMaterializer.js';
                                     <tr data-action="quick capture task"><td><code>Alt + T</code></td><td>Quick Capture Task</td></tr>
                                     <tr data-action="quick capture story project"><td><code>Alt + S</code></td><td>Quick Capture Story Project</td></tr>
                                     <tr data-action="quick capture meeting"><td><code>Alt + M</code></td><td>Quick Capture Meeting</td></tr>
+                                    <tr data-action="macros palette snippets"><td><code>Cmd / Ctrl + Shift + J</code></td><td>Open Macro Palette</td></tr>
                                     <tr data-action="show hotkey cheatsheet help"><td><code>Cmd / Ctrl + ?</code></td><td>Show Hotkey Cheatsheet</td></tr>
                                     <tr data-action="close active dialog modal cancel"><td><code>Esc</code></td><td>Close Active Dialog / Modal</td></tr>
                                 </tbody>
@@ -127,6 +129,15 @@ import { materializeNoteCreation } from '../engine/noteMaterializer.js';
                 }, 50);
             }
         }, true);
+        // Macro system: #ikmalMacro notes bound to hotkeys, plus the Cmd/Ctrl+Shift+J palette.
+        if (typeof api !== 'undefined' && !window.__ikmalMacros) {
+            const isMac = /Mac|iPhone|iPad/.test(navigator.platform || '');
+            window.__ikmalMacros = installMacroRuntime(
+                api,
+                isMac,
+                (e) => (e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && (e.key === 'J' || e.key === 'j')
+            );
+        }
         window.__ikmalShortcuts = {
             trigger: triggerQuickCapture,
             list: LAUNCHER_ACTIONS,

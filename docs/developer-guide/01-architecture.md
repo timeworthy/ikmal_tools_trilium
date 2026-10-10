@@ -15,6 +15,8 @@ src/
 │   ├── todayEngine.ts        # Dashboard layout management & state persistence
 │   ├── noteCreationEngine.ts # Unified note instantiation planning
 │   ├── noteMaterializer.ts   # ETAPI / frontend script API note creation
+│   ├── macroEngine.ts        # Macro notes -> hotkeys, palette search, insert/command execution
+│   ├── macroRuntime.ts       # Loads #ikmalMacro notes; hotkey listener and palette in the launcher
 │   ├── fleetBridge.ts        # Targeted FleetSync sync payload formatting [BETA / IN DEVELOPMENT]
 │   ├── weatherEngine.ts      # Open-Meteo weather API parsing
 │   └── noteInsightsEngine.ts # Word count, heatmaps, anniversaries, stale notes

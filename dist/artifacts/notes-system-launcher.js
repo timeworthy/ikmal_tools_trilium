@@ -3063,6 +3063,235 @@ ifThenRules: []
     return { yamlSpec };
   }
 
+  // src/engine/macroEngine.ts
+  var CURSOR_MARK = "\uE000";
+  var CURSOR_TOKEN = /\{\{\s*cursor\s*\}\}/gi;
+  var RESERVED_HOTKEYS = ["alt+t", "alt+s", "alt+m", "mod+shift+k", "mod+shift+j", "mod+?"];
+  var MODIFIERS = /* @__PURE__ */ new Set(["alt", "ctrl", "control", "cmd", "meta", "shift", "mod"]);
+  function escapeHtml2(value) {
+    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function parseHotkey(spec, isMac = false) {
+    const parts = spec.toLowerCase().split("+").map((p) => p.trim());
+    if (parts.length === 0 || parts.some((p) => p === "")) {
+      return null;
+    }
+    const key = parts[parts.length - 1];
+    if (MODIFIERS.has(key)) return null;
+    const hotkey = { key, alt: false, ctrl: false, meta: false, shift: false };
+    for (const mod of parts.slice(0, -1)) {
+      if (mod === "alt") hotkey.alt = true;
+      else if (mod === "shift") hotkey.shift = true;
+      else if (mod === "ctrl" || mod === "control") hotkey.ctrl = true;
+      else if (mod === "cmd" || mod === "meta") hotkey.meta = true;
+      else if (mod === "mod") {
+        if (isMac) hotkey.meta = true;
+        else hotkey.ctrl = true;
+      } else return null;
+    }
+    if (!hotkey.alt && !hotkey.ctrl && !hotkey.meta) return null;
+    return hotkey;
+  }
+  function hotkeyId(hotkey) {
+    return [hotkey.ctrl && "ctrl", hotkey.meta && "meta", hotkey.alt && "alt", hotkey.shift && "shift", hotkey.key].filter(Boolean).join("+");
+  }
+  function matchesHotkey(hotkey, e) {
+    return e.key.toLowerCase() === hotkey.key && e.altKey === hotkey.alt && e.ctrlKey === hotkey.ctrl && e.metaKey === hotkey.meta && e.shiftKey === hotkey.shift;
+  }
+  function buildMacro(note, isMac = false) {
+    const label = (name2) => note.labels[name2]?.[0]?.trim() ?? "";
+    const name = note.title.trim();
+    if (!name) return { error: `Macro ${note.id} has no title.` };
+    if (!note.body.trim()) return { error: `Macro "${name}" has an empty body.` };
+    const rawMode = label("macroMode").toLowerCase() || "html";
+    if (rawMode !== "html" && rawMode !== "text") {
+      return { error: `Macro "${name}" has unknown #macroMode "${rawMode}" (use html or text).` };
+    }
+    let hotkey = null;
+    const rawHotkey = label("macroHotkey");
+    if (rawHotkey) {
+      hotkey = parseHotkey(rawHotkey, isMac);
+      if (!hotkey) return { error: `Macro "${name}" has invalid #macroHotkey "${rawHotkey}".` };
+      const reserved = RESERVED_HOTKEYS.map((r) => parseHotkey(r, isMac)).filter((h) => !!h);
+      if (reserved.some((r) => hotkeyId(r) === hotkeyId(hotkey))) {
+        return { error: `Macro "${name}" hotkey "${rawHotkey}" is reserved by the launcher.` };
+      }
+    }
+    const commands = (note.labels["macroCommand"] ?? []).map((c) => c.trim()).filter(Boolean);
+    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, commands } };
+  }
+  function buildRegistry(notes, isMac = false) {
+    const macros = [];
+    const errors = [];
+    const owners = /* @__PURE__ */ new Map();
+    for (const note of notes) {
+      const result = buildMacro(note, isMac);
+      if ("error" in result) {
+        errors.push(result.error);
+        continue;
+      }
+      const { macro } = result;
+      if (macro.hotkey) {
+        const id = hotkeyId(macro.hotkey);
+        const owner = owners.get(id);
+        if (owner) {
+          errors.push(`Macro "${macro.name}" hotkey conflicts with "${owner}"; macro skipped.`);
+          continue;
+        }
+        owners.set(id, macro.name);
+      }
+      macros.push(macro);
+    }
+    return { macros, errors };
+  }
+  function findByHotkey(macros, e) {
+    return macros.find((m) => m.hotkey && matchesHotkey(m.hotkey, e));
+  }
+  function searchMacros(macros, query) {
+    const q = query.trim().toLowerCase();
+    if (!q) return [...macros].sort((a, b) => a.name.localeCompare(b.name));
+    const prefix = [];
+    const contains = [];
+    for (const m of macros) {
+      const n = m.name.toLowerCase();
+      if (n.startsWith(q)) prefix.push(m);
+      else if (n.includes(q)) contains.push(m);
+    }
+    const byName = (a, b) => a.name.localeCompare(b.name);
+    return [...prefix.sort(byName), ...contains.sort(byName)];
+  }
+  function renderHtml(macro) {
+    const source = macro.content.split(CURSOR_MARK).join("");
+    const rendered = macro.mode === "text" ? source.split(/\r?\n/).map((line) => escapeHtml2(line)).join("<br>") : source;
+    let seen = false;
+    return rendered.replace(CURSOR_TOKEN, () => {
+      if (seen) return "";
+      seen = true;
+      return CURSOR_MARK;
+    });
+  }
+  async function runMacro(macro, host) {
+    try {
+      const html = renderHtml(macro);
+      await host.insertHtml(html);
+      if (html.includes(CURSOR_MARK)) await host.placeCursor?.(CURSOR_MARK);
+      for (const command of macro.commands) await host.executeCommand(command);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  // src/engine/macroRuntime.ts
+  var LABEL_NAMES = ["macroMode", "macroHotkey", "macroCommand"];
+  async function loadMacros(api2, isMac) {
+    const notes = await api2.searchForNotes("#ikmalMacro");
+    const inputs = [];
+    for (const note of notes) {
+      const labels = {};
+      for (const name of LABEL_NAMES) labels[name] = note.getLabels(name).map((l) => l.value);
+      inputs.push({ id: note.noteId, title: note.title, body: await note.getContent() ?? "", labels });
+    }
+    return buildRegistry(inputs, isMac);
+  }
+  function placeCursorOnMark(editor, mark) {
+    editor.model.change((writer) => {
+      const root = editor.model.document.getRoot();
+      for (const item of writer.createRangeIn(root).getItems()) {
+        if (!item.is("$textProxy")) continue;
+        const index = item.data.indexOf(mark);
+        if (index === -1) continue;
+        const at = writer.createPositionAt(item.parent, item.startOffset + index);
+        writer.remove(writer.createRange(at, at.getShiftedBy(1)));
+        writer.setSelection(at);
+        return;
+      }
+    });
+  }
+  function makeHost(editor) {
+    return {
+      // api.addTextToActiveContextEditor inserts its argument as plain text, so go through
+      // the editor's own HTML -> model pipeline to get real formatting.
+      insertHtml: (html) => editor.model.insertContent(editor.data.toModel(editor.data.processor.toView(html))),
+      placeCursor: (mark) => placeCursorOnMark(editor, mark),
+      executeCommand: (name) => editor.execute(name)
+    };
+  }
+  async function runInActiveEditor(api2, macro) {
+    const editor = await api2.getActiveContextTextEditor();
+    if (!editor) {
+      api2.showError(`Macro "${macro.name}" needs an open text note with the cursor in it.`);
+      return false;
+    }
+    const result = await runMacro(macro, makeHost(editor));
+    if (!result.ok) api2.showError(`Macro "${macro.name}" failed: ${result.error}`);
+    return result.ok;
+  }
+  function installMacroRuntime(api2, isMac, paletteHotkey) {
+    let macros = [];
+    const refresh = async () => {
+      try {
+        const registry = await loadMacros(api2, isMac);
+        macros = registry.macros;
+        for (const error of registry.errors) console.warn(`[Ikmal Macros] ${error}`);
+      } catch (err) {
+        console.warn("[Ikmal Macros] could not load macros", err);
+      }
+    };
+    const openPalette = async () => {
+      await refresh();
+      const modal = openModal({
+        title: "Macros",
+        icon: "bx-bolt-circle",
+        body: `
+                <input type="text" class="form-control form-control-sm mb-2" id="ikmal-macro-search" placeholder="Search macros\u2026" autocomplete="off">
+                <div id="ikmal-macro-list" class="list-group"></div>`,
+        confirmText: "Run"
+      }, () => {
+        modal.querySelector("#ikmal-macro-list button")?.click();
+        return true;
+      });
+      const input = modal.querySelector("#ikmal-macro-search");
+      const list = modal.querySelector("#ikmal-macro-list");
+      const render = () => {
+        const matches = searchMacros(macros, input.value);
+        list.innerHTML = matches.length ? matches.map((m, i) => `<button type="button" class="list-group-item list-group-item-action py-1" data-i="${i}">${escapeHtml(m.name)}</button>`).join("") : '<div class="text-muted small p-2">No macros found. Create a note labelled <code>#ikmalMacro</code>.</div>';
+        list.querySelectorAll("button").forEach((btn, i) => {
+          btn.addEventListener("click", () => {
+            modal.querySelector(".ns-close")?.click();
+            void runInActiveEditor(api2, matches[i]);
+          });
+        });
+      };
+      input.addEventListener("input", render);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          list.querySelector("button")?.click();
+        }
+      });
+      render();
+      input.focus();
+    };
+    document.addEventListener("keydown", (e) => {
+      if (e.isComposing) return;
+      if (paletteHotkey(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        void openPalette();
+        return;
+      }
+      const macro = findByHotkey(macros, e);
+      if (macro) {
+        e.preventDefault();
+        e.stopPropagation();
+        void runInActiveEditor(api2, macro);
+      }
+    }, true);
+    void refresh();
+    return { refresh, openPalette };
+  }
+
   // src/artifacts/notes-system-launcher.js
   (function initLauncherBar() {
     if (typeof document === "undefined") return;
@@ -3140,6 +3369,7 @@ ifThenRules: []
                                     <tr data-action="quick capture task"><td><code>Alt + T</code></td><td>Quick Capture Task</td></tr>
                                     <tr data-action="quick capture story project"><td><code>Alt + S</code></td><td>Quick Capture Story Project</td></tr>
                                     <tr data-action="quick capture meeting"><td><code>Alt + M</code></td><td>Quick Capture Meeting</td></tr>
+                                    <tr data-action="macros palette snippets"><td><code>Cmd / Ctrl + Shift + J</code></td><td>Open Macro Palette</td></tr>
                                     <tr data-action="show hotkey cheatsheet help"><td><code>Cmd / Ctrl + ?</code></td><td>Show Hotkey Cheatsheet</td></tr>
                                     <tr data-action="close active dialog modal cancel"><td><code>Esc</code></td><td>Close Active Dialog / Modal</td></tr>
                                 </tbody>
@@ -3162,6 +3392,14 @@ ifThenRules: []
           }, 50);
         }
       }, true);
+      if (typeof api !== "undefined" && !window.__ikmalMacros) {
+        const isMac = /Mac|iPhone|iPad/.test(navigator.platform || "");
+        window.__ikmalMacros = installMacroRuntime(
+          api,
+          isMac,
+          (e) => (e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && (e.key === "J" || e.key === "j")
+        );
+      }
       window.__ikmalShortcuts = {
         trigger: triggerQuickCapture,
         list: LAUNCHER_ACTIONS

@@ -3183,9 +3183,11 @@ ifThenRules: []
     }
     return buildRegistry(inputs, isMac);
   }
-  function makeHost(api2, editor) {
+  function makeHost(editor) {
     return {
-      insertHtml: (html) => api2.addTextToActiveContextEditor(html),
+      // api.addTextToActiveContextEditor inserts its argument as plain text, so go through
+      // the editor's own HTML -> model pipeline to get real formatting.
+      insertHtml: (html) => editor.model.insertContent(editor.data.toModel(editor.data.processor.toView(html))),
       executeCommand: (name) => editor.execute(name)
     };
   }
@@ -3195,7 +3197,7 @@ ifThenRules: []
       api2.showError(`Macro "${macro.name}" needs an open text note with the cursor in it.`);
       return false;
     }
-    const result = await runMacro(macro, makeHost(api2, editor));
+    const result = await runMacro(macro, makeHost(editor));
     if (!result.ok) api2.showError(`Macro "${macro.name}" failed: ${result.error}`);
     return result.ok;
   }

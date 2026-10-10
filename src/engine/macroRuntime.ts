@@ -13,10 +13,16 @@ interface MacroFNote {
     getLabels(name: string): Array<{ value: string }>;
 }
 
+/** The slice of the CKEditor instance the macros use. */
+export interface MacroEditor {
+    execute(command: string): void;
+    data: { processor: { toView(html: string): unknown }; toModel(viewFragment: any): unknown };
+    model: { insertContent(content: any): void };
+}
+
 export interface MacroApi {
     searchForNotes(query: string): Promise<MacroFNote[]>;
-    getActiveContextTextEditor(): Promise<{ execute(command: string): void } | null | undefined>;
-    addTextToActiveContextEditor(html: string): void;
+    getActiveContextTextEditor(): Promise<MacroEditor | null | undefined>;
     showError(message: string): void;
     showMessage(message: string): void;
 }
@@ -34,9 +40,11 @@ export async function loadMacros(api: MacroApi, isMac: boolean) {
     return buildRegistry(inputs, isMac);
 }
 
-function makeHost(api: MacroApi, editor: { execute(command: string): void }): MacroHost {
+function makeHost(editor: MacroEditor): MacroHost {
     return {
-        insertHtml: (html) => api.addTextToActiveContextEditor(html),
+        // api.addTextToActiveContextEditor inserts its argument as plain text, so go through
+        // the editor's own HTML -> model pipeline to get real formatting.
+        insertHtml: (html) => editor.model.insertContent(editor.data.toModel(editor.data.processor.toView(html))),
         executeCommand: (name) => editor.execute(name),
     };
 }
@@ -48,7 +56,7 @@ export async function runInActiveEditor(api: MacroApi, macro: Macro): Promise<bo
         api.showError(`Macro "${macro.name}" needs an open text note with the cursor in it.`);
         return false;
     }
-    const result = await runMacro(macro, makeHost(api, editor));
+    const result = await runMacro(macro, makeHost(editor));
     if (!result.ok) api.showError(`Macro "${macro.name}" failed: ${result.error}`);
     return result.ok;
 }

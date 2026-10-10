@@ -98,8 +98,15 @@ import { JSDOM } from 'jsdom';
 
 const launcherBundle = fs.readFileSync(new URL('../dist/artifacts/notes-system-launcher.js', import.meta.url), 'utf8');
 
-async function launcherWithMacros(macroNotes, { editor = { execute() {} } } = {}) {
+async function launcherWithMacros(macroNotes, { editor: editorOverride, onCommand = () => {} } = {}) {
     const inserted = [];
+    // Fake CKEditor: records the HTML that went through the data pipeline and into the model.
+    const defaultEditor = {
+        execute: (c) => onCommand(c),
+        data: { processor: { toView: (html) => ({ view: html }) }, toModel: (v) => ({ model: v.view }) },
+        model: { insertContent: (m) => inserted.push(m.model) },
+    };
+    const editor = editorOverride === undefined ? defaultEditor : editorOverride;
     const errors = [];
     const dom = new JSDOM('<!doctype html><body></body>', { runScripts: 'outside-only' });
     dom.window.api = {
@@ -114,7 +121,6 @@ async function launcherWithMacros(macroNotes, { editor = { execute() {} } } = {}
         createOrUpdateLauncher: () => ({ note: { setRelation() {}, setLabel() {}, setContent() {}, save() {}, labels: {} } }),
         searchForNotes: async (q) => (q === '#ikmalMacro' ? macroNotes : []),
         getActiveContextTextEditor: async () => editor,
-        addTextToActiveContextEditor: (h) => inserted.push(h),
     };
     dom.window.eval(`window.glob = {}; ${launcherBundle}`);
     await dom.window.__ikmalMacros.refresh();
@@ -133,7 +139,7 @@ test('launcher: a macro hotkey inserts the macro and runs its commands', async (
     const cmds = [];
     const { dom, inserted } = await launcherWithMacros(
         [fnote('m1', 'Sig', '<p>Ian</p>', { macroHotkey: ['alt+g'], macroCommand: ['bold'] })],
-        { editor: { execute: (c) => cmds.push(c) } },
+        { onCommand: (c) => cmds.push(c) },
     );
     press(dom, { key: 'g', altKey: true });
     await tick();

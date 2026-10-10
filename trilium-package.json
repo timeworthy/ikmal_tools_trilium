@@ -253,7 +253,7 @@
       "id": "notes-system-launcher",
       "type": "frontend",
       "source": "dist/artifacts/notes-system-launcher.js",
-      "integrity": "sha256-ugRtEKDrjfkCOTxGlQuhutKxYljerz1H79V968J+oIc=",
+      "integrity": "sha256-kLrXdMMqKs2RLCrtX8AMzOaQiFgn0ldNNQ5NF5eoPoU=",
       "title": "Ikmal Tools for Trilium: Header Launcher Bar & Hotkey",
       "activation": "startup"
     },

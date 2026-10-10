@@ -13,6 +13,10 @@ Create a note, give it the label `#ikmalMacro`, and put the content to insert in
 | `#macroHotkey=alt+g` | Optional hotkey. `mod` means Cmd on macOS and Ctrl elsewhere. A hotkey needs Alt, Ctrl or Cmd. Hotkeys the launcher already uses (Alt+T/S/M, Cmd/Ctrl+Shift+K/J, Cmd/Ctrl+?) are rejected. |
 | `#macroCommand=bold` | Optional and repeatable. CKEditor commands run in order after the insert. |
 
+### Placing the cursor
+
+Put `{{cursor}}` anywhere in the body to choose where the caret lands after the insert, for example `<details><summary>{{cursor}}</summary><p></p></details>` leaves you typing in the summary. Only the first token counts and the rest are dropped. Without one, the caret stays at the end of the inserted content.
+
 ## Running a macro
 
 - **Hotkey:** press the macro's `#macroHotkey` with the cursor in a text note.

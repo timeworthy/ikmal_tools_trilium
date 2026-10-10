@@ -11,6 +11,9 @@
  *   #macroMode       -> `html` (default) inserts the body as HTML, `text` inserts it literally
  *   #macroHotkey     -> optional, e.g. `alt+shift+c` or `mod+shift+j` (`mod` = Cmd on macOS, Ctrl elsewhere)
  *   #macroCommand    -> optional, repeatable; editor commands run in order after the insert
+ *
+ * A `{{cursor}}` token in the body marks where the caret lands after the insert (first one wins,
+ * extras are dropped). Without one, the caret stays at the end of the inserted content.
  */
 
 export type MacroMode = 'html' | 'text';
@@ -39,8 +42,14 @@ export interface MacroNoteInput {
     labels: Record<string, string[]>;
 }
 
+/** Private-use character standing in for `{{cursor}}` while the content travels through the editor. */
+export const CURSOR_MARK = '\uE000';
+const CURSOR_TOKEN = /\{\{\s*cursor\s*\}\}/gi;
+
 export interface MacroHost {
     insertHtml(html: string): void | Promise<void>;
+    /** Moves the caret onto CURSOR_MARK, deleting it. Only called when the inserted html contains one. */
+    placeCursor?(mark: string): void | Promise<void>;
     executeCommand(name: string): void | Promise<void>;
 }
 
@@ -182,17 +191,27 @@ export function searchMacros(macros: Macro[], query: string): Macro[] {
 }
 
 export function renderHtml(macro: Macro): string {
-    return macro.mode === 'text'
-        ? macro.content
+    // Drop any literal mark character first so only a real `{{cursor}}` can place the caret.
+    const source = macro.content.split(CURSOR_MARK).join('');
+    const rendered = macro.mode === 'text'
+        ? source
               .split(/\r?\n/)
               .map((line) => escapeHtml(line))
               .join('<br>')
-        : macro.content;
+        : source;
+    let seen = false;
+    return rendered.replace(CURSOR_TOKEN, () => {
+        if (seen) return '';
+        seen = true;
+        return CURSOR_MARK;
+    });
 }
 
 export async function runMacro(macro: Macro, host: MacroHost): Promise<MacroRunResult> {
     try {
-        await host.insertHtml(renderHtml(macro));
+        const html = renderHtml(macro);
+        await host.insertHtml(html);
+        if (html.includes(CURSOR_MARK)) await host.placeCursor?.(CURSOR_MARK);
         for (const command of macro.commands) await host.executeCommand(command);
         return { ok: true };
     } catch (err) {

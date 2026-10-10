@@ -17,7 +17,11 @@ interface MacroFNote {
 export interface MacroEditor {
     execute(command: string): void;
     data: { processor: { toView(html: string): unknown }; toModel(viewFragment: any): unknown };
-    model: { insertContent(content: any): void };
+    model: {
+        document: { getRoot(): any };
+        insertContent(content: any): void;
+        change(callback: (writer: any) => void): void;
+    };
 }
 
 export interface MacroApi {
@@ -40,11 +44,28 @@ export async function loadMacros(api: MacroApi, isMac: boolean) {
     return buildRegistry(inputs, isMac);
 }
 
+/** Finds the first `mark` in the document, deletes it, and puts the caret where it was. */
+function placeCursorOnMark(editor: MacroEditor, mark: string) {
+    editor.model.change((writer) => {
+        const root = editor.model.document.getRoot();
+        for (const item of writer.createRangeIn(root).getItems()) {
+            if (!item.is('$textProxy')) continue;
+            const index = item.data.indexOf(mark);
+            if (index === -1) continue;
+            const at = writer.createPositionAt(item.parent, item.startOffset + index);
+            writer.remove(writer.createRange(at, at.getShiftedBy(1)));
+            writer.setSelection(at);
+            return;
+        }
+    });
+}
+
 function makeHost(editor: MacroEditor): MacroHost {
     return {
         // api.addTextToActiveContextEditor inserts its argument as plain text, so go through
         // the editor's own HTML -> model pipeline to get real formatting.
         insertHtml: (html) => editor.model.insertContent(editor.data.toModel(editor.data.processor.toView(html))),
+        placeCursor: (mark) => placeCursorOnMark(editor, mark),
         executeCommand: (name) => editor.execute(name),
     };
 }

@@ -3064,6 +3064,8 @@ ifThenRules: []
   }
 
   // src/engine/macroEngine.ts
+  var CURSOR_MARK = "\uE000";
+  var CURSOR_TOKEN = /\{\{\s*cursor\s*\}\}/gi;
   var RESERVED_HOTKEYS = ["alt+t", "alt+s", "alt+m", "mod+shift+k", "mod+shift+j", "mod+?"];
   var MODIFIERS = /* @__PURE__ */ new Set(["alt", "ctrl", "control", "cmd", "meta", "shift", "mod"]);
   function escapeHtml2(value) {
@@ -3159,11 +3161,20 @@ ifThenRules: []
     return [...prefix.sort(byName), ...contains.sort(byName)];
   }
   function renderHtml(macro) {
-    return macro.mode === "text" ? macro.content.split(/\r?\n/).map((line) => escapeHtml2(line)).join("<br>") : macro.content;
+    const source = macro.content.split(CURSOR_MARK).join("");
+    const rendered = macro.mode === "text" ? source.split(/\r?\n/).map((line) => escapeHtml2(line)).join("<br>") : source;
+    let seen = false;
+    return rendered.replace(CURSOR_TOKEN, () => {
+      if (seen) return "";
+      seen = true;
+      return CURSOR_MARK;
+    });
   }
   async function runMacro(macro, host) {
     try {
-      await host.insertHtml(renderHtml(macro));
+      const html = renderHtml(macro);
+      await host.insertHtml(html);
+      if (html.includes(CURSOR_MARK)) await host.placeCursor?.(CURSOR_MARK);
       for (const command of macro.commands) await host.executeCommand(command);
       return { ok: true };
     } catch (err) {
@@ -3183,11 +3194,26 @@ ifThenRules: []
     }
     return buildRegistry(inputs, isMac);
   }
+  function placeCursorOnMark(editor, mark) {
+    editor.model.change((writer) => {
+      const root = editor.model.document.getRoot();
+      for (const item of writer.createRangeIn(root).getItems()) {
+        if (!item.is("$textProxy")) continue;
+        const index = item.data.indexOf(mark);
+        if (index === -1) continue;
+        const at = writer.createPositionAt(item.parent, item.startOffset + index);
+        writer.remove(writer.createRange(at, at.getShiftedBy(1)));
+        writer.setSelection(at);
+        return;
+      }
+    });
+  }
   function makeHost(editor) {
     return {
       // api.addTextToActiveContextEditor inserts its argument as plain text, so go through
       // the editor's own HTML -> model pipeline to get real formatting.
       insertHtml: (html) => editor.model.insertContent(editor.data.toModel(editor.data.processor.toView(html))),
+      placeCursor: (mark) => placeCursorOnMark(editor, mark),
       executeCommand: (name) => editor.execute(name)
     };
   }

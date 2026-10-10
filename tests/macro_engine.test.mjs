@@ -177,3 +177,23 @@ test('launcher: the palette lists macros, filters, and runs the chosen one', asy
     await tick();
     assert.deepEqual(inserted, ['<p>S</p>']);
 });
+
+test('{{cursor}} becomes a single caret mark: first wins, extras and literal marks are dropped', () => {
+    const html = buildMacro(note({ body: '<p>a {{cursor}} b {{ CURSOR }} c </p>' })).macro;
+    assert.equal(renderHtml(html), '<p>a  b  c </p>');
+    const text = buildMacro(note({ body: 'x\n{{cursor}}<y>', labels: { macroMode: ['text'] } })).macro;
+    assert.equal(renderHtml(text), 'x<br>&lt;y&gt;');
+    assert.equal(renderHtml(buildMacro(note({ body: '<p>none</p>' })).macro), '<p>none</p>');
+});
+
+test('runMacro places the caret only when the content has a cursor token, before commands run', async () => {
+    const log = [];
+    const host = { insertHtml: (h) => log.push(['html', h]), placeCursor: (m) => log.push(['cursor', m]), executeCommand: (c) => log.push(['cmd', c]) };
+    await runMacro(buildMacro(note({ body: '<p>x{{cursor}}</p>', labels: { macroCommand: ['bold'] } })).macro, host);
+    assert.deepEqual(log.map((e) => e[0]), ['html', 'cursor', 'cmd']);
+    log.length = 0;
+    await runMacro(buildMacro(note()).macro, host);
+    assert.deepEqual(log.map((e) => e[0]), ['html']);
+    // A host without placeCursor must not break a macro that has a token.
+    assert.deepEqual(await runMacro(buildMacro(note({ body: '{{cursor}}' })).macro, { insertHtml() {}, executeCommand() {} }), { ok: true });
+});

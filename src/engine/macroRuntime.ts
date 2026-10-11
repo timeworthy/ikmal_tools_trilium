@@ -3,7 +3,7 @@
  * their hotkeys, and hosts the macro palette. Decisions live in macroEngine.ts.
  */
 
-import { buildRegistry, findByHotkey, matchAbbrev, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput } from './macroEngine.js';
+import { BUTTON_ID_PREFIX, buildRegistry, buttonSpecs, findByHotkey, matchAbbrev, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput } from './macroEngine.js';
 import { openModal, escapeHtml } from '../components/nativeUi.js';
 
 interface MacroFNote {
@@ -29,9 +29,68 @@ export interface MacroApi {
     getActiveContextTextEditor(): Promise<MacroEditor | null | undefined>;
     showError(message: string): void;
     showMessage(message: string): void;
+    runOnBackend?(fn: (...args: any[]) => unknown, args: unknown[]): unknown;
+    currentNote?: { noteId: string };
 }
 
-const LABEL_NAMES = ['macroMode', 'macroHotkey', 'macroAbbrev', 'macroCommand'];
+// The launcher bundle is not a module, so `api` is the Trilium global here.
+declare const api: any;
+
+interface LauncherSpec {
+    id: string;
+    title: string;
+    icon: string;
+    script: string;
+}
+
+/**
+ * Runs on the Trilium backend (runOnBackend serializes the function's source), so it must stay
+ * self-contained and read the global `api`, never a captured variable.
+ * Upserts one script launcher per macro button, keeps the user's visible/hidden choice, and hides
+ * launchers of macros that lost their #macroButton label (never deletes them).
+ */
+function upsertMacroLaunchers(specs: LauncherSpec[], scriptNoteId: string, prefix: string): string[] {
+    const problems: string[] = [];
+    const wanted = new Set(specs.map((spec) => `al_${spec.id}`));
+    for (const spec of specs) {
+        let isVisible = true;
+        try {
+            isVisible = api.getNote(`al_${spec.id}`).getParentBranches()
+                .some((branch: any) => branch.parentNoteId === '_lbVisibleLaunchers');
+        } catch (error) {
+            // First install: nothing to preserve yet, so show it.
+        }
+        const result = api.createOrUpdateLauncher({
+            id: spec.id, title: spec.title, icon: spec.icon, isVisible,
+            type: 'script', scriptNoteId, targetNoteId: 'root',
+        });
+        const note = result?.note;
+        if (!note) continue;
+        note.setRelation('script', scriptNoteId);
+        note.setContent(spec.script);
+        note.setLabel('scriptInLauncherContent');
+        note.mime = 'application/javascript;env=frontend';
+        note.setLabel('iconClass', `bx bx-${spec.icon}`);
+        note.save();
+    }
+    try {
+        for (const child of api.getNote('_lbVisibleLaunchers').getChildNotes()) {
+            const childId: string = child.noteId;
+            if (!childId.startsWith(`al_${prefix}`) || wanted.has(childId)) continue;
+            const stale = api.getNote(childId);
+            api.createOrUpdateLauncher({
+                id: childId.slice(3), title: stale.title, isVisible: false,
+                type: 'script', scriptNoteId, targetNoteId: 'root',
+            });
+        }
+    } catch (error) {
+        // Hiding stale buttons is best effort, but report it rather than failing silently.
+        problems.push(`hiding stale macro buttons: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return problems;
+}
+
+const LABEL_NAMES = ['macroMode', 'macroHotkey', 'macroAbbrev', 'macroButton', 'macroCommand'];
 
 export async function loadMacros(api: MacroApi, isMac: boolean) {
     const notes = await api.searchForNotes('#ikmalMacro');
@@ -112,6 +171,40 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
         }
     };
 
+    let warnedNoButtons = false;
+    const syncButtons = () => {
+        const specs = buttonSpecs(macros);
+        if (!specs.length && !api.runOnBackend) return;
+        try {
+            const launchers = specs.map((spec) => ({
+                id: spec.id, title: spec.title, icon: spec.icon,
+                script: `(() => { if (window.__ikmalMacros) window.__ikmalMacros.runById(${JSON.stringify(spec.macroId)}); else api.showError('Macros are not ready. Reload the frontend.'); })();`,
+            }));
+            const done = api.runOnBackend?.(upsertMacroLaunchers, [launchers, api.currentNote?.noteId, BUTTON_ID_PREFIX]);
+            Promise.resolve(done).then(
+                (problems) => {
+                    if (Array.isArray(problems) && problems.length) console.warn('[Ikmal Macros]', ...problems);
+                },
+                (err) => warnButtons(err, specs.length),
+            );
+        } catch (err) {
+            warnButtons(err, specs.length);
+        }
+    };
+    const warnButtons = (err: unknown, wanted: number) => {
+        // Only worth mentioning to people who actually asked for buttons.
+        if (warnedNoButtons || !wanted) return;
+        warnedNoButtons = true;
+        console.warn('[Ikmal Macros] launcher buttons skipped (backend scripting may be disabled):', err instanceof Error ? err.message : err);
+    };
+
+    const runById = (id: string) => {
+        const macro = macros.find((m) => m.id === id);
+        if (macro) return runInActiveEditor(api, macro);
+        api.showError('That macro no longer exists. Reload the frontend.');
+        return Promise.resolve(false);
+    };
+
     const openPalette = async () => {
         await refresh();
         const modal = openModal({
@@ -183,6 +276,6 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
         }
     }, true);
 
-    void refresh();
-    return { refresh, openPalette };
+    void refresh().then(syncButtons);
+    return { refresh, openPalette, runById, syncButtons };
 }

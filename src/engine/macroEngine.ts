@@ -11,6 +11,7 @@
  *   #macroMode       -> `html` (default) inserts the body as HTML, `text` inserts it literally
  *   #macroHotkey     -> optional, e.g. `alt+shift+c` or `mod+shift+j` (`mod` = Cmd on macOS, Ctrl elsewhere)
  *   #macroAbbrev     -> optional typed abbreviation (e.g. `ians`); typing it then pressing Tab expands the macro
+ *   #macroButton     -> optional launcher-bar button; the value is a Boxicons name (default `bolt-circle`)
  *   #macroCommand    -> optional, repeatable; editor commands run in order after the insert
  *
  * A `{{cursor}}` token in the body marks where the caret lands after the insert (first one wins,
@@ -34,6 +35,8 @@ export interface Macro {
     content: string;
     hotkey: Hotkey | null;
     abbrev: string | null;
+    /** Boxicons name (without the `bx-` prefix) when the macro gets a launcher-bar button. */
+    button: string | null;
     commands: string[];
 }
 
@@ -62,6 +65,8 @@ export interface MacroRunResult {
 
 /** Hotkeys the launcher already owns; a macro may not shadow them. */
 export const RESERVED_HOTKEYS = ['alt+t', 'alt+s', 'alt+m', 'mod+shift+k', 'mod+shift+j', 'mod+?'];
+
+export const DEFAULT_BUTTON_ICON = 'bolt-circle';
 
 const MODIFIERS = new Set(['alt', 'ctrl', 'control', 'cmd', 'meta', 'shift', 'mod']);
 
@@ -143,8 +148,16 @@ export function buildMacro(note: MacroNoteInput, isMac = false): BuildResult {
         return { error: `Macro "${name}" has invalid #macroAbbrev "${abbrev}" (2-32 characters, no spaces).` };
     }
 
+    let button: string | null = null;
+    if (note.labels['macroButton']?.length) {
+        button = note.labels['macroButton'][0].trim().replace(/^bx-/, '') || DEFAULT_BUTTON_ICON;
+        if (!/^[a-z0-9-]+$/.test(button)) {
+            return { error: `Macro "${name}" has invalid #macroButton icon "${note.labels['macroButton'][0]}" (use a Boxicons name like bolt-circle).` };
+        }
+    }
+
     const commands = (note.labels['macroCommand'] ?? []).map((c) => c.trim()).filter(Boolean);
-    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, commands } };
+    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands } };
 }
 
 export interface Registry {
@@ -204,6 +217,22 @@ export function matchAbbrev(macros: Macro[], textBeforeCaret: string): Macro | u
         if (!best || m.abbrev.length > best.abbrev!.length) best = m;
     }
     return best;
+}
+
+export interface ButtonSpec {
+    /** Launcher id; Trilium stores the launcher note as `al_<id>`. */
+    id: string;
+    macroId: string;
+    title: string;
+    icon: string;
+}
+
+export const BUTTON_ID_PREFIX = 'macro_';
+
+export function buttonSpecs(macros: Macro[]): ButtonSpec[] {
+    return macros
+        .filter((m) => m.button)
+        .map((m) => ({ id: `${BUTTON_ID_PREFIX}${m.id}`, macroId: m.id, title: m.name, icon: m.button! }));
 }
 
 /** Case-insensitive palette search: prefix matches rank above substring matches. */

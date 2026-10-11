@@ -98,7 +98,7 @@ import { JSDOM } from 'jsdom';
 
 const launcherBundle = fs.readFileSync(new URL('../dist/artifacts/notes-system-launcher.js', import.meta.url), 'utf8');
 
-async function launcherWithMacros(macroNotes, { editor: editorOverride, onCommand = () => {} } = {}) {
+async function launcherWithMacros(macroNotes, { editor: editorOverride, onCommand = () => {}, launchers = [], visibleChildren = [], backendDisabled = false, warnings = [] } = {}) {
     const inserted = [];
     // Fake CKEditor: records the HTML that went through the data pipeline and into the model.
     const defaultEditor = {
@@ -113,17 +113,31 @@ async function launcherWithMacros(macroNotes, { editor: editorOverride, onComman
         currentNote: { noteId: 's', hasLabel: () => false },
         showError: (m) => errors.push(m),
         showMessage() {},
-        runOnBackend(fn, args) { return fn(...args); },
+        runOnBackend(fn, args) {
+            if (backendDisabled && fn.name === 'upsertMacroLaunchers') throw new Error('Backend script execution is disabled.');
+            return fn(...args);
+        },
         getNoteWithLabel: () => null,
-        getNote() { throw new Error('none'); },
+        getNote(id) {
+            // Mirrors the real BNote: it has getChildNotes(), not getChildNoteIds().
+            if (id === '_lbVisibleLaunchers') return { getChildNotes: () => visibleChildren.map((c) => ({ noteId: c.id, title: c.title })) };
+            const child = visibleChildren.find((c) => c.id === id);
+            if (child) return { title: child.title, getParentBranches: () => [{ parentNoteId: '_lbVisibleLaunchers' }] };
+            throw new Error('none');
+        },
         getBranch: () => null,
         setBranchPosition() {}, refreshNoteOrdering() {},
-        createOrUpdateLauncher: () => ({ note: { setRelation() {}, setLabel() {}, setContent() {}, save() {}, labels: {} } }),
+        createOrUpdateLauncher(opts) {
+            launchers.push(opts);
+            return { note: { setRelation() {}, setLabel() {}, setContent(c) { opts.script = c; }, save() {}, labels: {} } };
+        },
         searchForNotes: async (q) => (q === '#ikmalMacro' ? macroNotes : []),
         getActiveContextTextEditor: async () => editor,
     };
+    dom.window.console.warn = (...a) => warnings.push(a.join(' '));
     dom.window.eval(`window.glob = {}; ${launcherBundle}`);
     await dom.window.__ikmalMacros.refresh();
+    await tick(); // let the startup refresh finish and its button sync run
     return { dom, inserted, errors };
 }
 
@@ -285,4 +299,63 @@ test('Tab leaves a range selection, other keys, and shift+Tab alone', async () =
     assert.ok(!(await tabIn(fakeEditor('ians', { collapsed: false }))).defaultPrevented);
     assert.ok(!(await tabIn(fakeEditor('ians'), { key: ' ' })).defaultPrevented);
     assert.ok(!(await tabIn(fakeEditor('ians'), { init: { shiftKey: true } })).defaultPrevented);
+});
+
+
+// ---- launcher-bar buttons ----
+import { buttonSpecs } from '../dist/engine/macroEngine.js';
+
+test('#macroButton parses to an icon, defaults it, and rejects junk; specs only include buttons', () => {
+    assert.equal(buildMacro(note()).macro.button, null);
+    assert.equal(buildMacro(note({ labels: { macroButton: [''] } })).macro.button, 'bolt-circle');
+    assert.equal(buildMacro(note({ labels: { macroButton: ['bx-star'] } })).macro.button, 'star');
+    assert.match(buildMacro(note({ labels: { macroButton: ['<script>'] } })).error, /invalid #macroButton/);
+    const { macros } = buildRegistry([
+        note({ id: 'a', title: 'A', labels: { macroButton: ['star'] } }),
+        note({ id: 'b', title: 'B' }),
+    ]);
+    assert.deepEqual(buttonSpecs(macros), [{ id: 'macro_a', macroId: 'a', title: 'A', icon: 'star' }]);
+});
+
+test('launcher: a macro button becomes a native script launcher that runs the macro', async () => {
+    const launchers = [];
+    const { dom, inserted } = await launcherWithMacros(
+        [fnote('m1', 'Sig', '<p>Ian</p>', { macroButton: ['star'] }), fnote('m2', 'NoBtn', 'x')],
+        { launchers },
+    );
+    const mine = launchers.filter((l) => l.id.startsWith('macro_'));
+    assert.deepEqual(mine.map((l) => [l.id, l.title, l.icon, l.type, l.isVisible]), [['macro_m1', 'Sig', 'star', 'script', true]]);
+    // The launcher's script, run as Trilium would, triggers the macro.
+    dom.window.eval(mine[0].script);
+    await tick();
+    assert.deepEqual(inserted, ['<p>Ian</p>']);
+});
+
+test('launcher: buttons for macros that lost their label are hidden, never recreated visible or deleted', async () => {
+    const launchers = [];
+    await launcherWithMacros([fnote('m1', 'Keep', 'x', { macroButton: [''] })], {
+        launchers,
+        visibleChildren: [{ id: 'al_macro_gone', title: 'Gone' }, { id: 'al_macro_m1', title: 'Keep' }, { id: 'al_newTask', title: 'Task' }],
+    });
+    const hidden = launchers.filter((l) => l.isVisible === false);
+    assert.deepEqual(hidden.map((l) => [l.id, l.title]), [['macro_gone', 'Gone']]);
+    assert.ok(launchers.some((l) => l.id === 'macro_m1' && l.isVisible === true), 'kept button stays visible');
+});
+
+test('launcher: disabled backend scripting skips buttons with one warning and keeps hotkeys working', async () => {
+    const warnings = [];
+    const { dom, inserted } = await launcherWithMacros(
+        [fnote('m1', 'Sig', '<p>Ian</p>', { macroButton: [''], macroHotkey: ['alt+g'] })],
+        { backendDisabled: true, warnings },
+    );
+    assert.equal(warnings.filter((w) => /launcher buttons skipped/.test(w)).length, 1);
+    press(dom, { key: 'g', altKey: true });
+    await tick();
+    assert.deepEqual(inserted, ['<p>Ian</p>']);
+});
+
+test('launcher: no macro buttons means no warning even when backend scripting is disabled', async () => {
+    const warnings = [];
+    await launcherWithMacros([fnote('m1', 'Sig', 'x')], { backendDisabled: true, warnings });
+    assert.deepEqual(warnings.filter((w) => /launcher buttons/.test(w)), []);
 });

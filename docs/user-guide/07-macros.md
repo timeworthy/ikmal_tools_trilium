@@ -12,6 +12,7 @@ Create a note, give it the label `#ikmalMacro`, and put the content to insert in
 | `#macroMode=html` or `text` | `html` (default) inserts the body as formatted content. `text` inserts it literally, escaping any markup. |
 | `#macroHotkey=alt+g` | Optional hotkey. `mod` means Cmd on macOS and Ctrl elsewhere. A hotkey needs Alt, Ctrl or Cmd. Hotkeys the launcher already uses (Alt+T/S/M, Cmd/Ctrl+Shift+K/J, Cmd/Ctrl+?) are rejected. |
 | `#macroAbbrev=ians` | Optional typed abbreviation, 2 to 32 characters with no spaces. Type it at the start of a word and press **Tab** to replace it with the macro. |
+| `#macroButton=star` | Optional launcher-bar button that runs the macro. The value is a Boxicons name (empty uses `bolt-circle`). Requires backend scripting (see below). |
 | `#macroCommand=bold` | Optional and repeatable. CKEditor commands run in order after the insert. |
 
 ### Placing the cursor
@@ -22,9 +23,16 @@ Put `{{cursor}}` anywhere in the body to choose where the caret lands after the 
 
 - **Hotkey:** press the macro's `#macroHotkey` with the cursor in a text note.
 - **Abbreviation:** type the `#macroAbbrev` (it must start a word, so `cousins` won't trigger `ins`) and press Tab. If the text before the caret isn't an abbreviation, Tab behaves normally. The longest matching abbreviation wins.
+- **Button:** click the macro's launcher-bar button with the cursor in a text note. You can reorder or hide it in Configure Launchbar like any other launcher.
 - **Palette:** press **Cmd/Ctrl+Shift+J**, type to filter, press Enter. Prefix matches rank first.
 
 If no text note is active, you get an error message and nothing is inserted.
+
+## Launcher buttons need backend scripting
+
+Creating launcher-bar buttons runs on Trilium's backend, so it only works when backend scripting is enabled (**Options → Security**, or `backendScriptingEnabled=true` in `config.ini`). If it is disabled, buttons are skipped with one `[Ikmal Macros]` console warning, and hotkeys, the palette and abbreviations keep working.
+
+Removing `#macroButton` from a macro hides its button (moves it to the available launchers); the launcher note is not deleted.
 
 ## Notes
 

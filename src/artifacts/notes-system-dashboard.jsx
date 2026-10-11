@@ -32,7 +32,8 @@ export function initNotesSystemDashboard(containerEl) {
     const settingsEngine = new SettingsEngine();
     const noteCreationEngine = new NoteCreationEngine(templateEngine, relationshipEngine, ifThenRuleEngine, settingsEngine);
 
-    let activeTab = 'today';
+    // The Settings entry point is this same bundle built with __IKMAL_START_TAB__ defined (tools/build.mjs).
+    let activeTab = globalThis.__IKMAL_START_TAB__ || 'today';
     let todayContentArea = null;
     let yamlEditorSpec;
     const frontendApi = (typeof api !== 'undefined' ? api : (globalThis).api) || null;

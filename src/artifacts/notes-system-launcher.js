@@ -577,34 +577,6 @@ import { installMacroRuntime } from '../engine/macroRuntime.js';
             } catch (err) {
                 // A missing Today note must not stop the other launchers from registering.
             }
-
-            try {
-                const root = api.getNote('_lbVisibleLaunchers');
-                if (root) {
-                    const extensionIds = ['openToday', ...launchers.map((l) => l.id)].map((id) => `al_${id}`);
-                    const extensionSet = new Set(extensionIds);
-                    const branches = [];
-                    for (const childId of root.getChildNoteIds()) {
-                        const note = api.getNote(childId);
-                        const branchId = (note.parentBranchIds || []).find(
-                            (bId) => api.getBranch(bId)?.parentNoteId === '_lbVisibleLaunchers'
-                        );
-                        if (branchId) {
-                            branches.push({ noteId: childId, branchId, pos: api.getBranch(branchId)?.notePosition || 0 });
-                        }
-                    }
-                    const nativeMax = Math.max(0, ...branches.filter((b) => !extensionSet.has(b.noteId)).map((b) => b.pos));
-                    extensionIds.forEach((launcherId, idx) => {
-                        const target = branches.find((b) => b.noteId === launcherId);
-                        if (target) {
-                            api.setBranchPosition(target.branchId, nativeMax + (idx + 1) * 10);
-                        }
-                    });
-                    api.refreshNoteOrdering('_lbVisibleLaunchers');
-                }
-            } catch (err) {
-                // Ordering is non-critical if branch manipulation isn't supported
-            }
         }, [LAUNCHER_ACTIONS.map((launcher) => ({
             ...launcher,
             script: launcherScriptFor(launcher.type),

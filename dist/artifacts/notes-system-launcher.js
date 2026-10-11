@@ -3067,6 +3067,7 @@ ifThenRules: []
   var CURSOR_MARK = "\uE000";
   var CURSOR_TOKEN = /\{\{\s*cursor\s*\}\}/gi;
   var RESERVED_HOTKEYS = ["alt+t", "alt+s", "alt+m", "mod+shift+k", "mod+shift+j", "mod+?"];
+  var DEFAULT_BUTTON_ICON = "bolt-circle";
   var MODIFIERS = /* @__PURE__ */ new Set(["alt", "ctrl", "control", "cmd", "meta", "shift", "mod"]);
   function escapeHtml2(value) {
     return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -3121,8 +3122,15 @@ ifThenRules: []
     if (abbrev && !/^\S{2,32}$/.test(abbrev)) {
       return { error: `Macro "${name}" has invalid #macroAbbrev "${abbrev}" (2-32 characters, no spaces).` };
     }
+    let button = null;
+    if (note.labels["macroButton"]?.length) {
+      button = note.labels["macroButton"][0].trim().replace(/^bx-/, "") || DEFAULT_BUTTON_ICON;
+      if (!/^[a-z0-9-]+$/.test(button)) {
+        return { error: `Macro "${name}" has invalid #macroButton icon "${note.labels["macroButton"][0]}" (use a Boxicons name like bolt-circle).` };
+      }
+    }
     const commands = (note.labels["macroCommand"] ?? []).map((c) => c.trim()).filter(Boolean);
-    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, commands } };
+    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands } };
   }
   function buildRegistry(notes, isMac = false) {
     const macros = [];
@@ -3170,6 +3178,10 @@ ifThenRules: []
     }
     return best;
   }
+  var BUTTON_ID_PREFIX = "macro_";
+  function buttonSpecs(macros) {
+    return macros.filter((m) => m.button).map((m) => ({ id: `${BUTTON_ID_PREFIX}${m.id}`, macroId: m.id, title: m.name, icon: m.button }));
+  }
   function searchMacros(macros, query) {
     const q = query.trim().toLowerCase();
     if (!q) return [...macros].sort((a, b) => a.name.localeCompare(b.name));
@@ -3206,7 +3218,53 @@ ifThenRules: []
   }
 
   // src/engine/macroRuntime.ts
-  var LABEL_NAMES = ["macroMode", "macroHotkey", "macroAbbrev", "macroCommand"];
+  function upsertMacroLaunchers(specs, scriptNoteId, prefix) {
+    const problems = [];
+    const wanted = new Set(specs.map((spec) => `al_${spec.id}`));
+    for (const spec of specs) {
+      let isVisible = true;
+      try {
+        isVisible = api.getNote(`al_${spec.id}`).getParentBranches().some((branch) => branch.parentNoteId === "_lbVisibleLaunchers");
+      } catch (error) {
+      }
+      const result = api.createOrUpdateLauncher({
+        id: spec.id,
+        title: spec.title,
+        icon: spec.icon,
+        isVisible,
+        type: "script",
+        scriptNoteId,
+        targetNoteId: "root"
+      });
+      const note = result?.note;
+      if (!note) continue;
+      note.setRelation("script", scriptNoteId);
+      note.setContent(spec.script);
+      note.setLabel("scriptInLauncherContent");
+      note.mime = "application/javascript;env=frontend";
+      note.setLabel("iconClass", `bx bx-${spec.icon}`);
+      note.save();
+    }
+    try {
+      for (const child of api.getNote("_lbVisibleLaunchers").getChildNotes()) {
+        const childId = child.noteId;
+        if (!childId.startsWith(`al_${prefix}`) || wanted.has(childId)) continue;
+        const stale = api.getNote(childId);
+        api.createOrUpdateLauncher({
+          id: childId.slice(3),
+          title: stale.title,
+          isVisible: false,
+          type: "script",
+          scriptNoteId,
+          targetNoteId: "root"
+        });
+      }
+    } catch (error) {
+      problems.push(`hiding stale macro buttons: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return problems;
+  }
+  var LABEL_NAMES = ["macroMode", "macroHotkey", "macroAbbrev", "macroButton", "macroCommand"];
   async function loadMacros(api2, isMac) {
     const notes = await api2.searchForNotes("#ikmalMacro");
     const inputs = [];
@@ -3276,6 +3334,39 @@ ifThenRules: []
         console.warn("[Ikmal Macros] could not load macros", err);
       }
     };
+    let warnedNoButtons = false;
+    const syncButtons = () => {
+      const specs = buttonSpecs(macros);
+      if (!specs.length && !api2.runOnBackend) return;
+      try {
+        const launchers = specs.map((spec) => ({
+          id: spec.id,
+          title: spec.title,
+          icon: spec.icon,
+          script: `(() => { if (window.__ikmalMacros) window.__ikmalMacros.runById(${JSON.stringify(spec.macroId)}); else api.showError('Macros are not ready. Reload the frontend.'); })();`
+        }));
+        const done = api2.runOnBackend?.(upsertMacroLaunchers, [launchers, api2.currentNote?.noteId, BUTTON_ID_PREFIX]);
+        Promise.resolve(done).then(
+          (problems) => {
+            if (Array.isArray(problems) && problems.length) console.warn("[Ikmal Macros]", ...problems);
+          },
+          (err) => warnButtons(err, specs.length)
+        );
+      } catch (err) {
+        warnButtons(err, specs.length);
+      }
+    };
+    const warnButtons = (err, wanted) => {
+      if (warnedNoButtons || !wanted) return;
+      warnedNoButtons = true;
+      console.warn("[Ikmal Macros] launcher buttons skipped (backend scripting may be disabled):", err instanceof Error ? err.message : err);
+    };
+    const runById = (id) => {
+      const macro = macros.find((m) => m.id === id);
+      if (macro) return runInActiveEditor(api2, macro);
+      api2.showError("That macro no longer exists. Reload the frontend.");
+      return Promise.resolve(false);
+    };
     const openPalette = async () => {
       await refresh();
       const modal = openModal({
@@ -3343,8 +3434,8 @@ ifThenRules: []
         void runInActiveEditor(api2, macro);
       }
     }, true);
-    void refresh();
-    return { refresh, openPalette };
+    void refresh().then(syncButtons);
+    return { refresh, openPalette, runById, syncButtons };
   }
 
   // src/artifacts/notes-system-launcher.js

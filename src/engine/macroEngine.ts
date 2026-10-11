@@ -10,6 +10,7 @@
  *   body             -> content to insert
  *   #macroMode       -> `html` (default) inserts the body as HTML, `text` inserts it literally
  *   #macroHotkey     -> optional, e.g. `alt+shift+c` or `mod+shift+j` (`mod` = Cmd on macOS, Ctrl elsewhere)
+ *   #macroAbbrev     -> optional typed abbreviation (e.g. `ians`); typing it then pressing Tab expands the macro
  *   #macroCommand    -> optional, repeatable; editor commands run in order after the insert
  *
  * A `{{cursor}}` token in the body marks where the caret lands after the insert (first one wins,
@@ -32,6 +33,7 @@ export interface Macro {
     mode: MacroMode;
     content: string;
     hotkey: Hotkey | null;
+    abbrev: string | null;
     commands: string[];
 }
 
@@ -136,8 +138,13 @@ export function buildMacro(note: MacroNoteInput, isMac = false): BuildResult {
         }
     }
 
+    const abbrev = label('macroAbbrev') || null;
+    if (abbrev && !/^\S{2,32}$/.test(abbrev)) {
+        return { error: `Macro "${name}" has invalid #macroAbbrev "${abbrev}" (2-32 characters, no spaces).` };
+    }
+
     const commands = (note.labels['macroCommand'] ?? []).map((c) => c.trim()).filter(Boolean);
-    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, commands } };
+    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, commands } };
 }
 
 export interface Registry {
@@ -150,6 +157,7 @@ export function buildRegistry(notes: MacroNoteInput[], isMac = false): Registry 
     const macros: Macro[] = [];
     const errors: string[] = [];
     const owners = new Map<string, string>();
+    const abbrevOwners = new Map<string, string>();
     for (const note of notes) {
         const result = buildMacro(note, isMac);
         if ('error' in result) {
@@ -166,6 +174,14 @@ export function buildRegistry(notes: MacroNoteInput[], isMac = false): Registry 
             }
             owners.set(id, macro.name);
         }
+        if (macro.abbrev) {
+            const owner = abbrevOwners.get(macro.abbrev);
+            if (owner) {
+                errors.push(`Macro "${macro.name}" abbreviation "${macro.abbrev}" conflicts with "${owner}"; macro skipped.`);
+                continue;
+            }
+            abbrevOwners.set(macro.abbrev, macro.name);
+        }
         macros.push(macro);
     }
     return { macros, errors };
@@ -173,6 +189,21 @@ export function buildRegistry(notes: MacroNoteInput[], isMac = false): Registry 
 
 export function findByHotkey(macros: Macro[], e: Parameters<typeof matchesHotkey>[1]): Macro | undefined {
     return macros.find((m) => m.hotkey && matchesHotkey(m.hotkey, e));
+}
+
+/**
+ * The macro whose abbreviation ends `textBeforeCaret`, if it starts a word (start of text or after
+ * whitespace/punctuation). The longest abbreviation wins, so `ians` beats a shorter `ns`.
+ */
+export function matchAbbrev(macros: Macro[], textBeforeCaret: string): Macro | undefined {
+    let best: Macro | undefined;
+    for (const m of macros) {
+        if (!m.abbrev || !textBeforeCaret.endsWith(m.abbrev)) continue;
+        const before = textBeforeCaret.charAt(textBeforeCaret.length - m.abbrev.length - 1);
+        if (before && /[\p{L}\p{N}_]/u.test(before)) continue;
+        if (!best || m.abbrev.length > best.abbrev!.length) best = m;
+    }
+    return best;
 }
 
 /** Case-insensitive palette search: prefix matches rank above substring matches. */

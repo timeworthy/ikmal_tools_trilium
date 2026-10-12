@@ -98,7 +98,7 @@ import { JSDOM } from 'jsdom';
 
 const launcherBundle = fs.readFileSync(new URL('../dist/artifacts/notes-system-launcher.js', import.meta.url), 'utf8');
 
-async function launcherWithMacros(macroNotes, { editor: editorOverride, onCommand = () => {}, launchers = [], visibleChildren = [], backendDisabled = false, warnings = [] } = {}) {
+async function launcherWithMacros(macroNotes, { editor: editorOverride, onCommand = () => {}, launchers = [], visibleChildren = [], backendDisabled = false, warnings = [], clones = [] } = {}) {
     const inserted = [];
     // Fake CKEditor: records the HTML that went through the data pipeline and into the model.
     const defaultEditor = {
@@ -126,10 +126,11 @@ async function launcherWithMacros(macroNotes, { editor: editorOverride, onComman
             throw new Error('none');
         },
         getBranch: () => null,
+        ensureNoteIsPresentInParent(noteId, parentId) { clones.push([noteId, parentId]); },
         setBranchPosition() {}, refreshNoteOrdering() {},
         createOrUpdateLauncher(opts) {
             launchers.push(opts);
-            return { note: { setRelation() {}, setLabel() {}, setContent(c) { opts.script = c; }, save() {}, labels: {} } };
+            return { note: { noteId: `al_${opts.id}`, setRelation() {}, setLabel() {}, setContent(c) { opts.script = c; }, save() {}, labels: {} } };
         },
         searchForNotes: async (q) => (q === '#ikmalMacro' ? macroNotes : []),
         getActiveContextTextEditor: async () => editor,
@@ -323,12 +324,33 @@ test('launcher: a macro button becomes a native script launcher that runs the ma
         [fnote('m1', 'Sig', '<p>Ian</p>', { macroButton: ['star'] }), fnote('m2', 'NoBtn', 'x')],
         { launchers },
     );
-    const mine = launchers.filter((l) => l.id.startsWith('macro_'));
+    const mine = launchers.filter((l) => l.id.startsWith('macro_') && l.id !== 'macro_palette');
     assert.deepEqual(mine.map((l) => [l.id, l.title, l.icon, l.type, l.isVisible]), [['macro_m1', 'Sig', 'star', 'script', true]]);
     // The launcher's script, run as Trilium would, triggers the macro.
     dom.window.eval(mine[0].script);
     await tick();
     assert.deepEqual(inserted, ['<p>Ian</p>']);
+});
+
+test('launcher: an always-present Macros button opens the palette, even with no macro buttons', async () => {
+    const launchers = [];
+    const { dom } = await launcherWithMacros([fnote('m1', 'NoBtn', 'x')], { launchers });
+    const palette = launchers.filter((l) => l.id === 'macro_palette');
+    assert.deepEqual(palette.map((l) => [l.title, l.type, l.isVisible]), [['Macros', 'script', true]]);
+    dom.window.eval(palette[0].script);
+    await tick();
+    assert.ok(dom.window.document.querySelector('#ikmal-macro-list'), 'palette modal opened');
+    assert.match(dom.window.document.querySelector('#ikmal-macro-list').textContent, /NoBtn/);
+});
+
+test('launcher: the Macros button is cloned onto the mobile launch bar once, on first install only', async () => {
+    const first = [];
+    await launcherWithMacros([fnote('m1', 'Sig', 'x', { macroButton: ['star'] })], { clones: first });
+    assert.deepEqual(first, [['al_macro_palette', '_lbMobileVisibleLaunchers']], 'only the palette button, not per-macro buttons');
+
+    const later = [];
+    await launcherWithMacros([], { clones: later, visibleChildren: [{ id: 'al_macro_palette', title: 'Macros' }] });
+    assert.deepEqual(later, [], 'an existing launcher is left where the user put it');
 });
 
 test('launcher: buttons for macros that lost their label are hidden, never recreated visible or deleted', async () => {

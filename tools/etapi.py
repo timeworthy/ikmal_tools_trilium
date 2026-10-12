@@ -280,6 +280,25 @@ class Etapi:
 
     # ---- attributes ----
 
+    def add_label(self, note_id: str, name: str, value: str = "") -> None:
+        """Add a label unless this note already owns one with the same name and value.
+
+        Unlike set_label this allows repeated names, e.g. two `run` labels.
+        """
+        for attribute in self.get_note(note_id).get("attributes", []):
+            if (
+                attribute.get("noteId") == note_id
+                and attribute["type"] == "label"
+                and attribute["name"] == name
+                and attribute.get("value", "") == value
+            ):
+                return
+        self._request(
+            "POST",
+            "/etapi/attributes",
+            {"noteId": note_id, "type": "label", "name": name, "value": value},
+        )
+
     def set_label(
         self,
         note_id: str,

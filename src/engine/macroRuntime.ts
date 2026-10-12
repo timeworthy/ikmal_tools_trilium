@@ -3,7 +3,7 @@
  * their hotkeys, and hosts the macro palette. Decisions live in macroEngine.ts.
  */
 
-import { BUTTON_ID_PREFIX, buildRegistry, buttonSpecs, findByHotkey, matchAbbrev, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput } from './macroEngine.js';
+import { BUTTON_ID_PREFIX, DEFAULT_BUTTON_ICON, buildRegistry, buttonSpecs, findByHotkey, matchAbbrev, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput } from './macroEngine.js';
 import { openModal, escapeHtml } from '../components/nativeUi.js';
 
 interface MacroFNote {
@@ -41,6 +41,8 @@ interface LauncherSpec {
     title: string;
     icon: string;
     script: string;
+    /** Also place the launcher on the mobile launch bar the first time it is created. */
+    mobile?: boolean;
 }
 
 /**
@@ -54,7 +56,9 @@ function upsertMacroLaunchers(specs: LauncherSpec[], scriptNoteId: string, prefi
     const wanted = new Set(specs.map((spec) => `al_${spec.id}`));
     for (const spec of specs) {
         let isVisible = true;
+        let existed = false;
         try {
+            existed = !!api.getNote(`al_${spec.id}`);
             isVisible = api.getNote(`al_${spec.id}`).getParentBranches()
                 .some((branch: any) => branch.parentNoteId === '_lbVisibleLaunchers');
         } catch (error) {
@@ -72,6 +76,14 @@ function upsertMacroLaunchers(specs: LauncherSpec[], scriptNoteId: string, prefi
         note.mime = 'application/javascript;env=frontend';
         note.setLabel('iconClass', `bx bx-${spec.icon}`);
         note.save();
+        if (spec.mobile && !existed) {
+            // Desktop launchers never show on mobile. Clone once; if the user later removes it, leave it removed.
+            try {
+                api.ensureNoteIsPresentInParent(note.noteId, '_lbMobileVisibleLaunchers');
+            } catch (error) {
+                problems.push(`adding ${spec.title} to the mobile launch bar: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
     }
     try {
         for (const child of api.getNote('_lbVisibleLaunchers').getChildNotes()) {
@@ -89,6 +101,8 @@ function upsertMacroLaunchers(specs: LauncherSpec[], scriptNoteId: string, prefi
     }
     return problems;
 }
+
+const PALETTE_BUTTON_ID = `${BUTTON_ID_PREFIX}palette`;
 
 const LABEL_NAMES = ['macroMode', 'macroHotkey', 'macroAbbrev', 'macroButton', 'macroCommand'];
 
@@ -174,12 +188,19 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
     let warnedNoButtons = false;
     const syncButtons = () => {
         const specs = buttonSpecs(macros);
-        if (!specs.length && !api.runOnBackend) return;
+        if (!api.runOnBackend) return;
         try {
-            const launchers = specs.map((spec) => ({
-                id: spec.id, title: spec.title, icon: spec.icon,
-                script: `(() => { if (window.__ikmalMacros) window.__ikmalMacros.runById(${JSON.stringify(spec.macroId)}); else api.showError('Macros are not ready. Reload the frontend.'); })();`,
-            }));
+            // The palette button is always present: on mobile there is no hotkey to open it.
+            const launchers = [
+                {
+                    id: PALETTE_BUTTON_ID, title: 'Macros', icon: DEFAULT_BUTTON_ICON, mobile: true,
+                    script: `(() => { if (window.__ikmalMacros) window.__ikmalMacros.openPalette(); else api.showError('Macros are not ready. Reload the frontend.'); })();`,
+                },
+                ...specs.map((spec) => ({
+                    id: spec.id, title: spec.title, icon: spec.icon,
+                    script: `(() => { if (window.__ikmalMacros) window.__ikmalMacros.runById(${JSON.stringify(spec.macroId)}); else api.showError('Macros are not ready. Reload the frontend.'); })();`,
+                })),
+            ];
             const done = api.runOnBackend?.(upsertMacroLaunchers, [launchers, api.currentNote?.noteId, BUTTON_ID_PREFIX]);
             Promise.resolve(done).then(
                 (problems) => {

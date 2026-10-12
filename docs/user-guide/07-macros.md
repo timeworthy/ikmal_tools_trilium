@@ -46,3 +46,12 @@ Removing `#macroButton` from a macro hides its button (moves it to the available
 `#macroCommand` runs after the insert and the caret placement, so it acts at the caret. Tested against Trilium 0.106.0: `bold`, `blockQuote`, `insertTable` and `bulletedList`. For example, `#macroCommand=bold` with `{{cursor}}` at the end of the body leaves bold switched on for whatever you type next.
 
 An unknown command name shows an error toast (`Macro "<name>" failed: ...`) and the macro's other effects stay in place.
+
+## Mobile
+
+Trilium runs `#run=frontendStartup` scripts on desktop only. The deploy tool therefore also gives the launcher note `#run=mobileStartup` (if you install by hand, add that second label yourself).
+
+On a phone there is no hotkey and no Tab key, so use the **Macros** button: it is created once on the first run with backend scripting enabled and placed on both the desktop and the mobile launch bars. Tap it to open the palette, then tap a macro. If you remove it from the mobile launch bar, it stays removed.
+
+Verified in a 390x844 touch browser emulation of Trilium 0.106.0, not on a physical device.
+

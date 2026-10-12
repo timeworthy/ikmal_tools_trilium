@@ -197,7 +197,8 @@ const shortcutsManifest = {
             source: 'dist/artifacts/notes-system-launcher.js',
             integrity: sriFor('dist/artifacts/notes-system-launcher.js'),
             title: 'Ikmal Shortcuts & Quick Capture',
-            activation: 'startup'
+            activation: 'startup',
+            mobile: true
         }
     ]
 };

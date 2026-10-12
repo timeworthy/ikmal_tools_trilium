@@ -3223,7 +3223,9 @@ ifThenRules: []
     const wanted = new Set(specs.map((spec) => `al_${spec.id}`));
     for (const spec of specs) {
       let isVisible = true;
+      let existed = false;
       try {
+        existed = !!api.getNote(`al_${spec.id}`);
         isVisible = api.getNote(`al_${spec.id}`).getParentBranches().some((branch) => branch.parentNoteId === "_lbVisibleLaunchers");
       } catch (error) {
       }
@@ -3244,6 +3246,13 @@ ifThenRules: []
       note.mime = "application/javascript;env=frontend";
       note.setLabel("iconClass", `bx bx-${spec.icon}`);
       note.save();
+      if (spec.mobile && !existed) {
+        try {
+          api.ensureNoteIsPresentInParent(note.noteId, "_lbMobileVisibleLaunchers");
+        } catch (error) {
+          problems.push(`adding ${spec.title} to the mobile launch bar: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
     }
     try {
       for (const child of api.getNote("_lbVisibleLaunchers").getChildNotes()) {
@@ -3264,6 +3273,7 @@ ifThenRules: []
     }
     return problems;
   }
+  var PALETTE_BUTTON_ID = `${BUTTON_ID_PREFIX}palette`;
   var LABEL_NAMES = ["macroMode", "macroHotkey", "macroAbbrev", "macroButton", "macroCommand"];
   async function loadMacros(api2, isMac) {
     const notes = await api2.searchForNotes("#ikmalMacro");
@@ -3337,14 +3347,23 @@ ifThenRules: []
     let warnedNoButtons = false;
     const syncButtons = () => {
       const specs = buttonSpecs(macros);
-      if (!specs.length && !api2.runOnBackend) return;
+      if (!api2.runOnBackend) return;
       try {
-        const launchers = specs.map((spec) => ({
-          id: spec.id,
-          title: spec.title,
-          icon: spec.icon,
-          script: `(() => { if (window.__ikmalMacros) window.__ikmalMacros.runById(${JSON.stringify(spec.macroId)}); else api.showError('Macros are not ready. Reload the frontend.'); })();`
-        }));
+        const launchers = [
+          {
+            id: PALETTE_BUTTON_ID,
+            title: "Macros",
+            icon: DEFAULT_BUTTON_ICON,
+            mobile: true,
+            script: `(() => { if (window.__ikmalMacros) window.__ikmalMacros.openPalette(); else api.showError('Macros are not ready. Reload the frontend.'); })();`
+          },
+          ...specs.map((spec) => ({
+            id: spec.id,
+            title: spec.title,
+            icon: spec.icon,
+            script: `(() => { if (window.__ikmalMacros) window.__ikmalMacros.runById(${JSON.stringify(spec.macroId)}); else api.showError('Macros are not ready. Reload the frontend.'); })();`
+          }))
+        ];
         const done = api2.runOnBackend?.(upsertMacroLaunchers, [launchers, api2.currentNote?.noteId, BUTTON_ID_PREFIX]);
         Promise.resolve(done).then(
           (problems) => {

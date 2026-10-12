@@ -549,6 +549,9 @@ def deploy(url: str = "http://127.0.0.1:37843", token: str = "dummy", manifest_p
                 api.set_label(art_note_id, "widget", "")
             elif artifact_type == "frontend" and artifact.get("activation") == "startup":
                 api.set_label(art_note_id, "run", "frontendStartup")
+                if artifact.get("mobile"):
+                    # frontendStartup skips mobile; Trilium needs its own label there.
+                    api.add_label(art_note_id, "run", "mobileStartup")
             elif artifact_type == "backend" and artifact.get("activation") == "startup":
                 api.set_label(art_note_id, "run", "backendStartup")
             elif artifact_type == "endpoint" and artifact.get("route"):

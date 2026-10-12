@@ -11,6 +11,7 @@ test('side-effect frontend artifacts are not declared as custom-widget launchers
 
     assert.equal(launcherArtifact?.type, 'frontend');
     assert.equal(launcherArtifact?.activation, 'startup');
+    assert.equal(launcherArtifact?.mobile, true, 'frontendStartup skips mobile, so the launcher must also get mobileStartup');
     assert.equal(wordCountArtifact, undefined);
 });
 
@@ -268,4 +269,10 @@ test('Today has a separate visible page from the workspace settings dashboard', 
     assert.match(homepageSource, /#activeProjectRoot/);
     assert.match(homepageSource, /Membership in the Active branch is authoritative/);
     assert.doesNotMatch(source, /renderSettingsStudio/);
+});
+
+test('deploy adds mobileStartup only for artifacts that opt in', () => {
+    const source = fs.readFileSync(new URL('tools/deploy_plugin_to_instance.py', root), 'utf8');
+
+    assert.match(source, /if artifact\.get\("mobile"\):\s*(#.*\s*)*api\.add_label\(art_note_id, "run", "mobileStartup"\)/);
 });

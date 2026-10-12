@@ -88,6 +88,35 @@ class AttributeUpdateTest(unittest.TestCase):
             },
         )
 
+    def test_add_label_keeps_existing_run_label_and_adds_a_second(self):
+        self.api.get_note.return_value = {
+            "attributes": [{
+                "attributeId": "run1", "noteId": "note", "type": "label",
+                "name": "run", "value": "frontendStartup",
+            }],
+        }
+
+        self.api.add_label("note", "run", "mobileStartup")
+
+        self.api.delete_attribute.assert_not_called()
+        self.api._request.assert_called_once_with(
+            "POST",
+            "/etapi/attributes",
+            {"noteId": "note", "type": "label", "name": "run", "value": "mobileStartup"},
+        )
+
+    def test_add_label_is_idempotent_for_an_owned_duplicate(self):
+        self.api.get_note.return_value = {
+            "attributes": [{
+                "attributeId": "run2", "noteId": "note", "type": "label",
+                "name": "run", "value": "mobileStartup",
+            }],
+        }
+
+        self.api.add_label("note", "run", "mobileStartup")
+
+        self.api._request.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

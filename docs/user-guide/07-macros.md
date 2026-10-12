@@ -55,3 +55,23 @@ On a phone there is no hotkey and no Tab key, so use the **Macros** button: it i
 
 Verified in a 390x844 touch browser emulation of Trilium 0.106.0, not on a physical device.
 
+
+## Starter macros
+
+`data/example_macros.json` ships five ready-made macros:
+
+| Macro | Trigger | What it does |
+| --- | --- | --- |
+| Signature | type `sig`, Tab | Sign-off with the caret after the name. Edit the name in the note. |
+| Changelog entry | Alt+Shift+C, or a launcher button | Collapsible block with the caret in its title. |
+| Meeting notes | type `mtg`, Tab | Heading, attendees, decisions and actions. |
+| Checklist item | Alt+Shift+L | Turns the line into a to-do item (`#macroCommand=todoList`). |
+| Literal snippet | type `snip`, Tab | Text mode: `<b>` and `&` are inserted exactly as written. |
+
+Import them into a running Trilium with:
+
+```sh
+TRILIUM_URL=http://localhost:8080 TRILIUM_TOKEN=... python3 tools/import_example_macros.py
+```
+
+The import is idempotent: a macro whose title already exists is left alone, so your edits survive a re-run. All five were checked end to end in Trilium 0.106.0.

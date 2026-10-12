@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    parseHotkey, matchesHotkey, buildMacro, buildRegistry, findByHotkey, searchMacros, runMacro, renderHtml,
+    parseHotkey, matchesHotkey, buildMacro, buildRegistry, findByHotkey, searchMacros, runMacro, renderHtml, CURSOR_MARK,
 } from '../dist/engine/macroEngine.js';
 
 const note = (over = {}) => ({ id: 'n1', title: 'Changelog', body: '<p>hi</p>', labels: {}, ...over });
@@ -380,4 +380,21 @@ test('launcher: no macro buttons means no warning even when backend scripting is
     const warnings = [];
     await launcherWithMacros([fnote('m1', 'Sig', 'x')], { backendDisabled: true, warnings });
     assert.deepEqual(warnings.filter((w) => /launcher buttons/.test(w)), []);
+});
+
+test('example macros: every shipped example builds, has a distinct trigger, and renders one cursor', () => {
+    const examples = JSON.parse(fs.readFileSync(new URL('../data/example_macros.json', import.meta.url), 'utf8'));
+    const notes = examples.map((e, i) => {
+        const labels = {};
+        for (const [name, value] of e.labels) (labels[name] ??= []).push(value);
+        return { id: `ex${i}`, title: e.title, body: e.body, labels };
+    });
+    const { macros, errors } = buildRegistry(notes);
+    assert.deepEqual(errors, []);
+    assert.equal(macros.length, examples.length, 'none dropped as invalid or conflicting');
+    for (const m of macros) {
+        assert.equal(renderHtml(m).split(CURSOR_MARK).length - 1, 1, `${m.name} places the caret exactly once`);
+    }
+    const literal = macros.find((m) => m.name === 'Literal snippet');
+    assert.match(renderHtml(literal), /Use &lt;b&gt; and &amp; as typed\.<br>/);
 });

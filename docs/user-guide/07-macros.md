@@ -40,3 +40,9 @@ Removing `#macroButton` from a macro hides its button (moves it to the available
 - Invalid macros (empty body, bad mode, bad hotkey, duplicate hotkey) are skipped and logged to the console as `[Ikmal Macros]`. For a duplicate hotkey, the first macro found wins.
 - Not supported: replaying `/` slash-menu keystrokes. Put the resulting HTML in the macro body (for example a `<details>` block) and use `{{cursor}}` to place the caret instead.
 - Duplicate abbreviations are skipped like duplicate hotkeys; the first macro found wins.
+
+## Editor commands
+
+`#macroCommand` runs after the insert and the caret placement, so it acts at the caret. Tested against Trilium 0.106.0: `bold`, `blockQuote`, `insertTable` and `bulletedList`. For example, `#macroCommand=bold` with `{{cursor}}` at the end of the body leaves bold switched on for whatever you type next.
+
+An unknown command name shows an error toast (`Macro "<name>" failed: ...`) and the macro's other effects stay in place.

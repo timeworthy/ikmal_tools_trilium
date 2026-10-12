@@ -1,0 +1,27 @@
+[
+  {
+    "title": "Signature",
+    "body": "<p>Thanks,<br>Your Name{{cursor}}</p>",
+    "labels": [["macroAbbrev", "sig"]]
+  },
+  {
+    "title": "Changelog entry",
+    "body": "<details><summary>{{cursor}}</summary><p>What changed</p></details>",
+    "labels": [["macroHotkey", "alt+shift+c"], ["macroButton", "list-check"]]
+  },
+  {
+    "title": "Meeting notes",
+    "body": "<h3>Meeting: {{cursor}}</h3><p><strong>Attendees:</strong> </p><p><strong>Decisions</strong></p><ul><li></li></ul><p><strong>Actions</strong></p><ul><li></li></ul>",
+    "labels": [["macroAbbrev", "mtg"]]
+  },
+  {
+    "title": "Checklist item",
+    "body": "<p>{{cursor}}</p>",
+    "labels": [["macroHotkey", "alt+shift+l"], ["macroCommand", "todoList"]]
+  },
+  {
+    "title": "Literal snippet",
+    "body": "Use <b> and & as typed.\nSecond line{{cursor}}",
+    "labels": [["macroMode", "text"], ["macroAbbrev", "snip"]]
+  }
+]

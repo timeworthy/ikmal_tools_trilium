@@ -3065,7 +3065,6 @@ ifThenRules: []
 
   // src/engine/macroEngine.ts
   var CURSOR_MARK = "\uE000";
-  var CURSOR_TOKEN = /\{\{\s*cursor\s*\}\}/gi;
   var RESERVED_HOTKEYS = ["alt+t", "alt+s", "alt+m", "mod+shift+k", "mod+shift+j", "mod+?"];
   var DEFAULT_BUTTON_ICON = "bolt-circle";
   var MODIFIERS = /* @__PURE__ */ new Set(["alt", "ctrl", "control", "cmd", "meta", "shift", "mod"]);
@@ -3195,25 +3194,118 @@ ifThenRules: []
     const byName = (a, b) => a.name.localeCompare(b.name);
     return [...prefix.sort(byName), ...contains.sort(byName)];
   }
-  function renderHtml(macro) {
-    const source = macro.content.split(CURSOR_MARK).join("");
-    const rendered = macro.mode === "text" ? source.split(/\r?\n/).map((line) => escapeHtml2(line)).join("<br>") : source;
-    let seen = false;
-    return rendered.replace(CURSOR_TOKEN, () => {
-      if (seen) return "";
-      seen = true;
-      return CURSOR_MARK;
+  var TOKEN = /\{\{\s*([a-z]+)\s*(?::([^}]*))?\}\}/gi;
+  var TOKEN_NAMES = /* @__PURE__ */ new Set(["cursor", "date", "time", "datetime", "clipboard", "prompt"]);
+  var MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  var WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  var DEFAULT_FORMATS = { date: "YYYY-MM-DD", time: "HH:mm", datetime: "YYYY-MM-DD HH:mm" };
+  var pad = (n) => String(n).padStart(2, "0");
+  function formatDate(date, format) {
+    return format.replace(/YYYY|YY|MMMM|MMM|MM|M|dddd|ddd|DD|D|HH|mm|ss/g, (part) => {
+      switch (part) {
+        case "YYYY":
+          return String(date.getFullYear());
+        case "YY":
+          return String(date.getFullYear()).slice(-2);
+        case "MMMM":
+          return MONTHS[date.getMonth()];
+        case "MMM":
+          return MONTHS[date.getMonth()].slice(0, 3);
+        case "MM":
+          return pad(date.getMonth() + 1);
+        case "M":
+          return String(date.getMonth() + 1);
+        case "dddd":
+          return WEEKDAYS[date.getDay()];
+        case "ddd":
+          return WEEKDAYS[date.getDay()].slice(0, 3);
+        case "DD":
+          return pad(date.getDate());
+        case "D":
+          return String(date.getDate());
+        case "HH":
+          return pad(date.getHours());
+        case "mm":
+          return pad(date.getMinutes());
+        default:
+          return pad(date.getSeconds());
+      }
     });
   }
+  function parsePromptArg(arg) {
+    const pipe = arg.indexOf("|");
+    return pipe === -1 ? { label: arg.trim(), defaultValue: "" } : { label: arg.slice(0, pipe).trim(), defaultValue: arg.slice(pipe + 1) };
+  }
+  function promptsIn(content) {
+    const seen = /* @__PURE__ */ new Map();
+    for (const match of content.matchAll(TOKEN)) {
+      if (match[1].toLowerCase() !== "prompt" || match[2] === void 0) continue;
+      const prompt = parsePromptArg(match[2]);
+      if (prompt.label && !seen.has(prompt.label)) seen.set(prompt.label, prompt);
+    }
+    return [...seen.values()];
+  }
+  function needsClipboard(content) {
+    return [...content.matchAll(TOKEN)].some((match) => match[1].toLowerCase() === "clipboard");
+  }
+  var clean = (value) => value.split(CURSOR_MARK).join("");
+  var valueHtml = (value) => escapeHtml2(clean(value)).replace(/\r?\n/g, "<br>");
+  function renderHtml(macro, values = {}) {
+    const source = clean(macro.content);
+    const now = values.now ?? /* @__PURE__ */ new Date();
+    let seenCursor = false;
+    let out = "";
+    let last = 0;
+    const literal = (text) => macro.mode === "text" ? text.split(/\r?\n/).map(escapeHtml2).join("<br>") : text;
+    for (const match of source.matchAll(TOKEN)) {
+      const name = match[1].toLowerCase();
+      out += literal(source.slice(last, match.index));
+      last = match.index + match[0].length;
+      if (!TOKEN_NAMES.has(name)) {
+        out += literal(match[0]);
+        continue;
+      }
+      const arg = match[2];
+      if (name === "cursor") {
+        if (!seenCursor) out += CURSOR_MARK;
+        seenCursor = true;
+      } else if (name === "clipboard") {
+        out += valueHtml(values.clipboard ?? "");
+      } else if (name === "prompt") {
+        const prompt = parsePromptArg(arg ?? "");
+        out += valueHtml(values.prompts?.[prompt.label] ?? prompt.defaultValue);
+      } else {
+        const format = arg?.trim() || DEFAULT_FORMATS[name];
+        out += valueHtml(formatDate(now, format));
+      }
+    }
+    return out + literal(source.slice(last));
+  }
+  var messageOf = (err) => typeof err?.message === "string" ? err.message : String(err);
   async function runMacro(macro, host) {
     try {
-      const html = renderHtml(macro);
+      const warnings = [];
+      const values = { now: host.now?.() ?? /* @__PURE__ */ new Date(), prompts: {} };
+      for (const { label, defaultValue } of promptsIn(macro.content)) {
+        const answer = host.prompt ? await host.prompt(label, defaultValue) : defaultValue;
+        if (answer === null) return { ok: false, cancelled: true };
+        values.prompts[label] = answer;
+      }
+      if (needsClipboard(macro.content)) {
+        try {
+          values.clipboard = await host.readClipboard?.() ?? "";
+        } catch (err) {
+          values.clipboard = "";
+          warnings.push(`Could not read the clipboard: ${messageOf(err)}`);
+        }
+      }
+      const html = renderHtml(macro, values);
       await host.insertHtml(html);
       if (html.includes(CURSOR_MARK)) await host.placeCursor?.(CURSOR_MARK);
       for (const command of macro.commands) await host.executeCommand(command);
-      return { ok: true };
+      return warnings.length ? { ok: true, warnings } : { ok: true };
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      return { ok: false, error: messageOf(err) };
     }
   }
 
@@ -3320,14 +3412,44 @@ ifThenRules: []
     }
     return { text, position };
   }
-  function makeHost(editor) {
+  var ANCHOR = "ikmal-macro-anchor";
+  function dropAnchor(editor, position) {
+    editor.model.change((writer) => {
+      if (!editor.model.markers) return;
+      writer.addMarker(ANCHOR, { range: writer.createRange(position), usingOperation: false, affectsData: false });
+    });
+  }
+  function returnToAnchor(editor) {
+    const marker = editor.model.markers?.get(ANCHOR);
+    if (!marker) return false;
+    editor.model.change((writer) => {
+      writer.setSelection(marker.getStart());
+      writer.removeMarker(ANCHOR);
+    });
+    return true;
+  }
+  function makeHost(editor, api2, macro) {
     return {
+      // A dismissed dialog comes back as null/undefined; both mean "cancel the macro".
+      prompt: async (label, defaultValue) => {
+        if (!api2.showPromptDialog) return defaultValue;
+        const answer = await api2.showPromptDialog({ title: macro.name, message: label, defaultValue });
+        return answer ?? null;
+      },
+      readClipboard: () => navigator.clipboard.readText(),
       // api.addTextToActiveContextEditor inserts its argument as plain text, so go through
       // the editor's own HTML -> model pipeline to get real formatting.
-      insertHtml: (html) => editor.model.insertContent(editor.data.toModel(editor.data.processor.toView(html))),
+      insertHtml: (html) => {
+        returnToAnchor(editor);
+        editor.model.insertContent(editor.data.toModel(editor.data.processor.toView(html)));
+      },
       placeCursor: (mark) => placeCursorOnMark(editor, mark),
       executeCommand: (name) => editor.execute(name)
     };
+  }
+  function reportRun(api2, macro, result) {
+    if (!result.ok && !result.cancelled) api2.showError(`Macro "${macro.name}" failed: ${result.error}`);
+    for (const warning of result.warnings ?? []) api2.showMessage(`Macro "${macro.name}": ${warning}`);
   }
   async function runInActiveEditor(api2, macro) {
     const editor = await api2.getActiveContextTextEditor();
@@ -3335,8 +3457,8 @@ ifThenRules: []
       api2.showError(`Macro "${macro.name}" needs an open text note with the cursor in it.`);
       return false;
     }
-    const result = await runMacro(macro, makeHost(editor));
-    if (!result.ok) api2.showError(`Macro "${macro.name}" failed: ${result.error}`);
+    const result = await runMacro(macro, makeHost(editor, api2, macro));
+    reportRun(api2, macro, result);
     return result.ok;
   }
   function installMacroRuntime(api2, isMac, paletteHotkey) {
@@ -3443,11 +3565,20 @@ ifThenRules: []
           e.preventDefault();
           e.stopPropagation();
           const { position } = before;
+          const start = position.getShiftedBy(-hit.abbrev.length);
           editor.model.change((writer) => {
-            writer.remove(writer.createRange(position.getShiftedBy(-hit.abbrev.length), position));
+            writer.remove(writer.createRange(start, position));
           });
-          void runMacro(hit, makeHost(editor)).then((r) => {
-            if (!r.ok) api2.showError(`Macro "${hit.name}" failed: ${r.error}`);
+          dropAnchor(editor, start);
+          void runMacro(hit, makeHost(editor, api2, hit)).then((r) => {
+            reportRun(api2, hit, r);
+            if (r.cancelled) {
+              returnToAnchor(editor);
+              editor.model.change((writer) => {
+                writer.insertText(hit.abbrev, editor.model.document.selection.getFirstPosition());
+              });
+            }
+            if (editor.model.markers?.get(ANCHOR)) editor.model.change((writer) => writer.removeMarker(ANCHOR));
           });
           return;
         }

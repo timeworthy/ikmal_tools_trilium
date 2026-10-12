@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     parseHotkey, matchesHotkey, buildMacro, buildRegistry, findByHotkey, searchMacros, runMacro, renderHtml, CURSOR_MARK,
+    formatDate, promptsIn,
 } from '../dist/engine/macroEngine.js';
 
 const note = (over = {}) => ({ id: 'n1', title: 'Changelog', body: '<p>hi</p>', labels: {}, ...over });
@@ -98,7 +99,7 @@ import { JSDOM } from 'jsdom';
 
 const launcherBundle = fs.readFileSync(new URL('../dist/artifacts/notes-system-launcher.js', import.meta.url), 'utf8');
 
-async function launcherWithMacros(macroNotes, { editor: editorOverride, onCommand = () => {}, launchers = [], visibleChildren = [], backendDisabled = false, warnings = [], clones = [] } = {}) {
+async function launcherWithMacros(macroNotes, { editor: editorOverride, onCommand = () => {}, launchers = [], visibleChildren = [], backendDisabled = false, warnings = [], clones = [], prompt, clipboard, messages = [] } = {}) {
     const inserted = [];
     // Fake CKEditor: records the HTML that went through the data pipeline and into the model.
     const defaultEditor = {
@@ -113,7 +114,8 @@ async function launcherWithMacros(macroNotes, { editor: editorOverride, onComman
     dom.window.api = {
         currentNote: { noteId: 's', hasLabel: () => false },
         showError: (m) => errors.push(m),
-        showMessage() {},
+        showMessage: (m) => messages.push(m),
+        showPromptDialog: prompt,
         runOnBackend(fn, args) {
             if (backendDisabled && fn.name === 'upsertMacroLaunchers') throw new Error('Backend script execution is disabled.');
             return fn(...args);
@@ -136,6 +138,7 @@ async function launcherWithMacros(macroNotes, { editor: editorOverride, onComman
         searchForNotes: async (q) => (q === '#ikmalMacro' ? macroNotes : []),
         getActiveContextTextEditor: async () => editor,
     };
+    if (clipboard) Object.defineProperty(dom.window.navigator, 'clipboard', { value: { readText: clipboard } });
     dom.window.console.warn = (...a) => warnings.push(a.join(' '));
     dom.window.eval(`window.glob = {}; ${launcherBundle}`);
     await dom.window.__ikmalMacros.refresh();
@@ -251,7 +254,7 @@ test('matchAbbrev only fires at a word start and prefers the longest abbreviatio
 
 // Fake CKEditor with a single paragraph; records removals and insertions.
 function fakeEditor(text, { collapsed = true, offset = text.length } = {}) {
-    const log = { removed: [], inserted: [] };
+    const log = { removed: [], inserted: [], restored: [], selected: [], markers: {} };
     const child = { startOffset: 0, data: text, is: (t) => t === '$text' };
     const position = {
         offset, parent: { getChildren: () => [child] },
@@ -262,9 +265,17 @@ function fakeEditor(text, { collapsed = true, offset = text.length } = {}) {
         execute() {},
         data: { processor: { toView: (h) => ({ view: h }) }, toModel: (v) => ({ model: v.view }) },
         model: {
+            markers: { get: (name) => log.markers[name] },
             document: { getRoot: () => ({}), selection: { isCollapsed: collapsed, getFirstPosition: () => position } },
             insertContent: (m) => log.inserted.push(m.model),
-            change: (cb) => cb({ createRange: (a, b) => [a.offset, b.offset], remove: (r) => log.removed.push(r) }),
+            change: (cb) => cb({
+                createRange: (a, b = a) => [a.offset, b.offset],
+                remove: (r) => log.removed.push(r),
+                insertText: (t) => log.restored.push(t),
+                addMarker: (name, { range }) => { log.markers[name] = { getStart: () => ({ offset: range[0] }) }; },
+                removeMarker: (name) => { delete log.markers[name]; },
+                setSelection: (p) => log.selected.push(p.offset),
+            }),
         },
     };
 }
@@ -293,7 +304,7 @@ test('Tab does nothing when the text before the caret is not an abbreviation', a
         const editor = fakeEditor(text);
         const e = await tabIn(editor);
         assert.ok(!e.defaultPrevented, text);
-        assert.deepEqual(editor.log, { removed: [], inserted: [] }, text);
+        assert.deepEqual(editor.log, { removed: [], inserted: [], restored: [], selected: [], markers: {} }, text);
     }
 });
 
@@ -398,4 +409,161 @@ test('example macros: every shipped example builds, has a distinct trigger, and 
     }
     const literal = macros.find((m) => m.name === 'Literal snippet');
     assert.match(renderHtml(literal), /Use &lt;b&gt; and &amp; as typed\.<br>/);
+});
+
+// ---- tokens ----
+
+const when = new Date(2026, 9, 12, 14, 5, 9); // Mon 12 Oct 2026 14:05:09 local
+const tm = (content, over = {}) => ({ id: 't', name: 'T', mode: 'html', content, hotkey: null, abbrev: null, button: null, commands: [], ...over });
+
+test('formatDate formats the supported parts and leaves other text alone', () => {
+    assert.equal(formatDate(when, 'YYYY-MM-DD'), '2026-10-12');
+    assert.equal(formatDate(when, 'YY/M/D HH:mm:ss'), '26/10/12 14:05:09');
+    assert.equal(formatDate(when, 'dddd, MMMM D'), 'Monday, October 12');
+    assert.equal(formatDate(when, 'ddd MMM DD at HH'), 'Mon Oct 12 at 14');
+});
+
+test('date, time and datetime tokens use sensible defaults and accept a format', () => {
+    const html = renderHtml(tm('{{date}}|{{time}}|{{datetime}}|{{date:ddd, MMM D}}|{{ date : YYYY }}'), { now: when });
+    assert.equal(html, '2026-10-12|14:05|2026-10-12 14:05|Mon, Oct 12|2026');
+});
+
+test('clipboard and prompt values are escaped and cannot become markup or tokens', () => {
+    const html = renderHtml(
+        tm('<p>{{clipboard}} / {{prompt:Name}}</p>'),
+        { clipboard: '<b>x</b> & {{cursor}}\nnext', prompts: { Name: '<img src=x onerror=1>' } },
+    );
+    assert.equal(html, '<p>&lt;b&gt;x&lt;/b&gt; &amp; {{cursor}}<br>next / &lt;img src=x onerror=1&gt;</p>');
+    assert.ok(!html.includes(CURSOR_MARK), 'a {{cursor}} that arrived through the clipboard is just text');
+});
+
+test('a prompt token falls back to its default, and unknown tokens are left as typed', () => {
+    assert.equal(renderHtml(tm('{{prompt:Who|World}}! {{nope}} {{date:}}'), { now: when }), 'World! {{nope}} 2026-10-12');
+    assert.equal(renderHtml(tm('a {{unknown:x}} b', { mode: 'text' })), 'a {{unknown:x}} b');
+});
+
+test('tokens in text mode escape the literal text around them but keep their values on the same rules', () => {
+    const html = renderHtml(tm('1 < 2\n{{prompt:Q}}', { mode: 'text' }), { prompts: { Q: 'a & b' } });
+    assert.equal(html, '1 &lt; 2<br>a &amp; b');
+});
+
+test('promptsIn lists each distinct label once, in order, with its default', () => {
+    assert.deepEqual(promptsIn('{{prompt:A|x}} {{prompt:B}} {{prompt:A|ignored}} {{prompt:}} {{date}}'), [
+        { label: 'A', defaultValue: 'x' },
+        { label: 'B', defaultValue: '' },
+    ]);
+});
+
+function host(over = {}) {
+    const inserted = [];
+    return { inserted, insertHtml: (h) => inserted.push(h), executeCommand() {}, now: () => when, ...over };
+}
+
+test('runMacro asks each distinct prompt once and uses the answers', async () => {
+    const asked = [];
+    const h = host({ prompt: (label, def) => { asked.push([label, def]); return `ans-${label}`; } });
+    const result = await runMacro(tm('{{prompt:A|d}} {{prompt:B}} {{prompt:A}}'), h);
+    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(asked, [['A', 'd'], ['B', '']]);
+    assert.deepEqual(h.inserted, ['ans-A ans-B ans-A']);
+});
+
+test('cancelling a prompt inserts nothing, runs no commands, and is not an error', async () => {
+    const commands = [];
+    const h = host({ prompt: (label) => (label === 'B' ? null : 'x'), executeCommand: (c) => commands.push(c) });
+    const result = await runMacro(tm('{{prompt:A}} {{prompt:B}}', { commands: ['bold'] }), h);
+    assert.deepEqual(result, { ok: false, cancelled: true });
+    assert.deepEqual(h.inserted, []);
+    assert.deepEqual(commands, []);
+});
+
+test('an unreadable clipboard warns but the macro still runs', async () => {
+    const h = host({ readClipboard: () => { throw new Error('denied'); } });
+    const result = await runMacro(tm('[{{clipboard}}]'), h);
+    assert.equal(result.ok, true);
+    assert.match(result.warnings[0], /Could not read the clipboard: denied/);
+    assert.deepEqual(h.inserted, ['[]']);
+});
+
+test('the clipboard is only read when the macro uses it', async () => {
+    let reads = 0;
+    await runMacro(tm('plain'), host({ readClipboard: () => { reads++; return 'x'; } }));
+    assert.equal(reads, 0);
+});
+
+test('hotkey run: the prompt dialog is shown with the macro name and label, and the answer is inserted', async () => {
+    const dialogs = [];
+    const { dom, inserted } = await launcherWithMacros(
+        [fnote('m1', 'Greet', '<p>Hi {{prompt:Name|there}}</p>', { macroHotkey: ['alt+g'] })],
+        { prompt: async (o) => { dialogs.push(o); return 'Ian'; } },
+    );
+    press(dom, { key: 'g', altKey: true });
+    await tick();
+    assert.deepEqual(JSON.parse(JSON.stringify(dialogs)), [{ title: 'Greet', message: 'Name', defaultValue: 'there' }]); // JSON: objects built inside the jsdom realm
+    assert.deepEqual(inserted, ['<p>Hi Ian</p>']);
+});
+
+test('hotkey run: cancelling the prompt shows no error and inserts nothing', async () => {
+    const { dom, inserted, errors } = await launcherWithMacros(
+        [fnote('m1', 'Greet', '<p>{{prompt:Name}}</p>', { macroHotkey: ['alt+g'] })],
+        { prompt: async () => null },
+    );
+    press(dom, { key: 'g', altKey: true });
+    await tick();
+    assert.deepEqual([inserted, errors], [[], []]);
+});
+
+test('hotkey run: clipboard text reaches the editor, and a clipboard failure shows a message', async () => {
+    const ok = await launcherWithMacros(
+        [fnote('m1', 'Paste', '<p>{{clipboard}}</p>', { macroHotkey: ['alt+g'] })],
+        { clipboard: async () => 'copied <x>' },
+    );
+    press(ok.dom, { key: 'g', altKey: true });
+    await tick();
+    assert.deepEqual(ok.inserted, ['<p>copied &lt;x&gt;</p>']);
+
+    const messages = [];
+    const bad = await launcherWithMacros(
+        [fnote('m1', 'Paste', '<p>{{clipboard}}</p>', { macroHotkey: ['alt+g'] })],
+        { clipboard: async () => { throw new Error('blocked'); }, messages },
+    );
+    press(bad.dom, { key: 'g', altKey: true });
+    await tick();
+    assert.deepEqual(bad.inserted, ['<p></p>']);
+    assert.match(messages[0], /Paste.*Could not read the clipboard: blocked/);
+});
+
+test('Tab expansion: cancelling the prompt puts the typed abbreviation back', async () => {
+    const editor = fakeEditor('hello ians');
+    const { dom } = await launcherWithMacros(
+        [fnote('m', 'Ians', '<p>{{prompt:X}}</p>', { macroAbbrev: ['ians'] })],
+        { prompt: async () => null },
+    );
+    const el = dom.window.document.createElement('div');
+    el.ckeditorInstance = editor;
+    dom.window.document.body.append(el);
+    el.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    await tick();
+    assert.deepEqual(editor.log.removed, [[6, 10]]);
+    assert.deepEqual(editor.log.selected, [6], 'the caret goes back to where the abbreviation was typed, not wherever the dialog left it');
+    assert.deepEqual(editor.log.restored, ['ians']);
+    assert.deepEqual(editor.log.inserted, []);
+    assert.deepEqual(editor.log.markers, {}, 'no anchor left behind');
+});
+
+test('Tab expansion: an answered prompt inserts at the anchor and cleans it up', async () => {
+    const editor = fakeEditor('hello ians');
+    const { dom } = await launcherWithMacros(
+        [fnote('m', 'Ians', '<p>{{prompt:X}}</p>', { macroAbbrev: ['ians'] })],
+        { prompt: async () => 'yes' },
+    );
+    const el = dom.window.document.createElement('div');
+    el.ckeditorInstance = editor;
+    dom.window.document.body.append(el);
+    el.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    await tick();
+    assert.deepEqual(editor.log.selected, [6]);
+    assert.deepEqual(editor.log.inserted, ['<p>yes</p>']);
+    assert.deepEqual(editor.log.restored, []);
+    assert.deepEqual(editor.log.markers, {});
 });

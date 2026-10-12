@@ -14,8 +14,12 @@
  *   #macroButton     -> optional launcher-bar button; the value is a Boxicons name (default `bolt-circle`)
  *   #macroCommand    -> optional, repeatable; editor commands run in order after the insert
  *
- * A `{{cursor}}` token in the body marks where the caret lands after the insert (first one wins,
- * extras are dropped). Without one, the caret stays at the end of the inserted content.
+ * Tokens in the body, written `{{name}}` or `{{name:argument}}`:
+ *   {{cursor}}               where the caret lands after the insert (first one wins, extras are dropped)
+ *   {{date}} {{time}} {{datetime}}   current local time; `{{date:ddd, MMM D}}` takes a format (YYYY YY MMMM MMM MM M ddd DD D HH mm ss)
+ *   {{clipboard}}            the clipboard text
+ *   {{prompt:Label}}         asks for a value when the macro runs; `{{prompt:Label|default}}` pre-fills it
+ * Unknown tokens are left as typed. Inserted values are escaped, so clipboard or prompt text is never read as HTML.
  */
 
 export type MacroMode = 'html' | 'text';
@@ -49,9 +53,13 @@ export interface MacroNoteInput {
 
 /** Private-use character standing in for `{{cursor}}` while the content travels through the editor. */
 export const CURSOR_MARK = '\uE000';
-const CURSOR_TOKEN = /\{\{\s*cursor\s*\}\}/gi;
 
 export interface MacroHost {
+    /** Asks the user for a value; null means they cancelled. Without it a prompt token takes its default. */
+    prompt?(label: string, defaultValue: string): string | null | Promise<string | null>;
+    /** The clipboard text. Without it (or if it throws) `{{clipboard}}` inserts nothing. */
+    readClipboard?(): string | Promise<string>;
+    now?(): Date;
     insertHtml(html: string): void | Promise<void>;
     /** Moves the caret onto CURSOR_MARK, deleting it. Only called when the inserted html contains one. */
     placeCursor?(mark: string): void | Promise<void>;
@@ -61,6 +69,10 @@ export interface MacroHost {
 export interface MacroRunResult {
     ok: boolean;
     error?: string;
+    /** The user cancelled a prompt: nothing was inserted, and it is not an error. */
+    cancelled?: boolean;
+    /** Things that did not go to plan but did not stop the macro, e.g. an unreadable clipboard. */
+    warnings?: string[];
 }
 
 /** Hotkeys the launcher already owns; a macro may not shadow them. */
@@ -250,31 +262,131 @@ export function searchMacros(macros: Macro[], query: string): Macro[] {
     return [...prefix.sort(byName), ...contains.sort(byName)];
 }
 
-export function renderHtml(macro: Macro): string {
-    // Drop any literal mark character first so only a real `{{cursor}}` can place the caret.
-    const source = macro.content.split(CURSOR_MARK).join('');
-    const rendered = macro.mode === 'text'
-        ? source
-              .split(/\r?\n/)
-              .map((line) => escapeHtml(line))
-              .join('<br>')
-        : source;
-    let seen = false;
-    return rendered.replace(CURSOR_TOKEN, () => {
-        if (seen) return '';
-        seen = true;
-        return CURSOR_MARK;
+const TOKEN = /\{\{\s*([a-z]+)\s*(?::([^}]*))?\}\}/gi;
+const TOKEN_NAMES = new Set(['cursor', 'date', 'time', 'datetime', 'clipboard', 'prompt']);
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const DEFAULT_FORMATS: Record<string, string> = { date: 'YYYY-MM-DD', time: 'HH:mm', datetime: 'YYYY-MM-DD HH:mm' };
+
+/** Values the host supplies for the non-pure tokens, keyed the way `renderHtml` looks them up. */
+export interface TokenValues {
+    now?: Date;
+    clipboard?: string;
+    prompts?: Record<string, string>;
+}
+
+const pad = (n: number) => String(n).padStart(2, '0');
+
+export function formatDate(date: Date, format: string): string {
+    return format.replace(/YYYY|YY|MMMM|MMM|MM|M|dddd|ddd|DD|D|HH|mm|ss/g, (part) => {
+        switch (part) {
+            case 'YYYY': return String(date.getFullYear());
+            case 'YY': return String(date.getFullYear()).slice(-2);
+            case 'MMMM': return MONTHS[date.getMonth()];
+            case 'MMM': return MONTHS[date.getMonth()].slice(0, 3);
+            case 'MM': return pad(date.getMonth() + 1);
+            case 'M': return String(date.getMonth() + 1);
+            case 'dddd': return WEEKDAYS[date.getDay()];
+            case 'ddd': return WEEKDAYS[date.getDay()].slice(0, 3);
+            case 'DD': return pad(date.getDate());
+            case 'D': return String(date.getDate());
+            case 'HH': return pad(date.getHours());
+            case 'mm': return pad(date.getMinutes());
+            default: return pad(date.getSeconds());
+        }
     });
 }
 
+/** Splits `Label|default` on the first pipe. */
+export function parsePromptArg(arg: string): { label: string; defaultValue: string } {
+    const pipe = arg.indexOf('|');
+    return pipe === -1
+        ? { label: arg.trim(), defaultValue: '' }
+        : { label: arg.slice(0, pipe).trim(), defaultValue: arg.slice(pipe + 1) };
+}
+
+/** Distinct prompt tokens in the order they first appear. */
+export function promptsIn(content: string): Array<{ label: string; defaultValue: string }> {
+    const seen = new Map<string, { label: string; defaultValue: string }>();
+    for (const match of content.matchAll(TOKEN)) {
+        if (match[1].toLowerCase() !== 'prompt' || match[2] === undefined) continue;
+        const prompt = parsePromptArg(match[2]);
+        if (prompt.label && !seen.has(prompt.label)) seen.set(prompt.label, prompt);
+    }
+    return [...seen.values()];
+}
+
+export function needsClipboard(content: string): boolean {
+    return [...content.matchAll(TOKEN)].some((match) => match[1].toLowerCase() === 'clipboard');
+}
+
+const clean = (value: string) => value.split(CURSOR_MARK).join('');
+
+/** An inserted value: escaped, and its line breaks kept. Never interpreted as HTML. */
+const valueHtml = (value: string) => escapeHtml(clean(value)).replace(/\r?\n/g, '<br>');
+
+export function renderHtml(macro: Macro, values: TokenValues = {}): string {
+    const source = clean(macro.content);
+    const now = values.now ?? new Date();
+    let seenCursor = false;
+    let out = '';
+    let last = 0;
+    const literal = (text: string) => (macro.mode === 'text' ? text.split(/\r?\n/).map(escapeHtml).join('<br>') : text);
+
+    for (const match of source.matchAll(TOKEN)) {
+        const name = match[1].toLowerCase();
+        out += literal(source.slice(last, match.index));
+        last = match.index + match[0].length;
+        if (!TOKEN_NAMES.has(name)) {
+            out += literal(match[0]);
+            continue;
+        }
+        const arg = match[2];
+        if (name === 'cursor') {
+            if (!seenCursor) out += CURSOR_MARK;
+            seenCursor = true;
+        } else if (name === 'clipboard') {
+            out += valueHtml(values.clipboard ?? '');
+        } else if (name === 'prompt') {
+            const prompt = parsePromptArg(arg ?? '');
+            out += valueHtml(values.prompts?.[prompt.label] ?? prompt.defaultValue);
+        } else {
+            const format = arg?.trim() || DEFAULT_FORMATS[name];
+            out += valueHtml(formatDate(now, format));
+        }
+    }
+    return out + literal(source.slice(last));
+}
+
+/** Errors from other realms (iframes, DOMException) fail `instanceof Error`, so read `.message` directly. */
+const messageOf = (err: unknown) => (typeof (err as { message?: unknown })?.message === 'string' ? (err as { message: string }).message : String(err));
+
 export async function runMacro(macro: Macro, host: MacroHost): Promise<MacroRunResult> {
     try {
-        const html = renderHtml(macro);
+        const warnings: string[] = [];
+        const values: TokenValues = { now: host.now?.() ?? new Date(), prompts: {} };
+
+        for (const { label, defaultValue } of promptsIn(macro.content)) {
+            const answer = host.prompt ? await host.prompt(label, defaultValue) : defaultValue;
+            if (answer === null) return { ok: false, cancelled: true };
+            values.prompts![label] = answer;
+        }
+        if (needsClipboard(macro.content)) {
+            try {
+                values.clipboard = (await host.readClipboard?.()) ?? '';
+            } catch (err) {
+                values.clipboard = '';
+                warnings.push(`Could not read the clipboard: ${messageOf(err)}`);
+            }
+        }
+
+        const html = renderHtml(macro, values);
         await host.insertHtml(html);
         if (html.includes(CURSOR_MARK)) await host.placeCursor?.(CURSOR_MARK);
         for (const command of macro.commands) await host.executeCommand(command);
-        return { ok: true };
+        return warnings.length ? { ok: true, warnings } : { ok: true };
     } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        return { ok: false, error: messageOf(err) };
     }
 }

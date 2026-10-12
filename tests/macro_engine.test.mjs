@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    parseHotkey, matchesHotkey, buildMacro, buildRegistry, findByHotkey, searchMacros, runMacro, renderHtml, CURSOR_MARK,
+    buildLibrary, parseHotkey, matchesHotkey, buildMacro, buildRegistry, findByHotkey, searchMacros, runMacro, renderHtml, CURSOR_MARK,
     formatDate, promptsIn,
 } from '../dist/engine/macroEngine.js';
 
@@ -99,7 +99,7 @@ import { JSDOM } from 'jsdom';
 
 const launcherBundle = fs.readFileSync(new URL('../dist/artifacts/notes-system-launcher.js', import.meta.url), 'utf8');
 
-async function launcherWithMacros(macroNotes, { editor: editorOverride, onCommand = () => {}, launchers = [], visibleChildren = [], backendDisabled = false, warnings = [], clones = [], prompt, clipboard, messages = [] } = {}) {
+async function launcherWithMacros(macroNotes, { editor: editorOverride, onCommand = () => {}, launchers = [], visibleChildren = [], backendDisabled = false, warnings = [], clones = [], prompt, clipboard, messages = [], store } = {}) {
     const inserted = [];
     // Fake CKEditor: records the HTML that went through the data pipeline and into the model.
     const defaultEditor = {
@@ -122,6 +122,8 @@ async function launcherWithMacros(macroNotes, { editor: editorOverride, onComman
         },
         getNoteWithLabel: () => null,
         getNote(id) {
+            const stored = store?.find((n) => n.noteId === id);
+            if (stored) return stored;
             // Mirrors the real BNote: it has getChildNotes(), not getChildNoteIds().
             if (id === '_lbVisibleLaunchers') return { getChildNotes: () => visibleChildren.map((c) => ({ noteId: c.id, title: c.title })) };
             const child = visibleChildren.find((c) => c.id === id);
@@ -135,7 +137,7 @@ async function launcherWithMacros(macroNotes, { editor: editorOverride, onComman
             launchers.push(opts);
             return { note: { noteId: `al_${opts.id}`, setRelation() {}, setLabel() {}, setContent(c) { opts.script = c; }, save() {}, labels: {} } };
         },
-        searchForNotes: async (q) => (q === '#ikmalMacro' ? macroNotes : []),
+        searchForNotes: async (q) => (store ? store.filter((n) => n.getLabels(q.slice(1)).length) : q === '#ikmalMacro' ? macroNotes : []),
         getActiveContextTextEditor: async () => editor,
     };
     if (clipboard) Object.defineProperty(dom.window.navigator, 'clipboard', { value: { readText: clipboard } });
@@ -566,4 +568,132 @@ test('Tab expansion: an answered prompt inserts at the anchor and cleans it up',
     assert.deepEqual(editor.log.inserted, ['<p>yes</p>']);
     assert.deepEqual(editor.log.restored, []);
     assert.deepEqual(editor.log.markers, {});
+});
+
+// ---- library ----
+
+const lib = (id, title, labels = {}, enabled = false, body = '<p>x</p>') => ({ id, title, body, labels: { macroGroup: ['Writing'], ...labels }, enabled });
+
+test('buildLibrary groups and sorts entries and reports enabled state and triggers', () => {
+    const entries = buildLibrary([
+        lib('b', 'Zebra', { macroGroup: ['Writing'], macroAbbrev: ['zb'] }),
+        lib('a', 'Alpha', { macroGroup: ['Writing'], macroSummary: ['First one'], macroHotkey: ['alt+shift+a'], macroButton: [''] }, true),
+        lib('c', 'Table', { macroGroup: ['Editor'] }),
+        lib('d', 'Loose', { macroGroup: [] }),
+    ]);
+    assert.deepEqual(entries.map((e) => [e.group, e.name, e.enabled]), [
+        ['Editor', 'Table', false], ['Other', 'Loose', false], ['Writing', 'Alpha', true], ['Writing', 'Zebra', false],
+    ]);
+    const alpha = entries.find((e) => e.id === 'a');
+    assert.deepEqual([alpha.summary, alpha.hotkey, alpha.abbrev, alpha.button], ['First one', 'alt+shift+a', null, 'bolt-circle']);
+    assert.equal(entries.find((e) => e.id === 'b').abbrev, 'zb');
+});
+
+test('buildLibrary blocks an entry that is not a valid macro, saying why', () => {
+    const entries = buildLibrary([
+        lib('bad', 'Bad hotkey', { macroHotkey: ['alt+t'] }),
+        lib('empty', 'Empty', {}, false, '  '),
+        lib('ok', 'Fine'),
+    ]);
+    assert.match(entries.find((e) => e.id === 'bad').blocked, /reserved by the launcher/);
+    assert.match(entries.find((e) => e.id === 'empty').blocked, /empty body/);
+    assert.equal(entries.find((e) => e.id === 'ok').blocked, undefined);
+});
+
+test('buildLibrary blocks an entry whose hotkey or abbreviation an enabled macro already uses', () => {
+    const entries = buildLibrary([
+        lib('on', 'Already on', { macroHotkey: ['alt+shift+x'], macroAbbrev: ['sig'] }, true),
+        lib('h', 'Same hotkey', { macroHotkey: ['Alt+Shift+X'] }),
+        lib('a', 'Same abbrev', { macroAbbrev: ['sig'] }),
+        lib('free', 'Free', { macroHotkey: ['alt+shift+y'], macroAbbrev: ['other'] }),
+    ]);
+    assert.match(entries.find((e) => e.id === 'h').blocked, /Hotkey Alt\+Shift\+X is already used by "Already on"/);
+    assert.match(entries.find((e) => e.id === 'a').blocked, /Abbreviation "sig" is already used by "Already on"/);
+    assert.equal(entries.find((e) => e.id === 'free').blocked, undefined);
+    assert.equal(entries.find((e) => e.id === 'on').blocked, undefined, 'an enabled entry is never blocked by itself');
+});
+
+test('two disabled entries that clash are both allowed; enabling one then blocks the other', () => {
+    const clash = { macroAbbrev: ['sig'] };
+    assert.ok(buildLibrary([lib('1', 'One', clash), lib('2', 'Two', clash)]).every((e) => !e.blocked));
+    const after = buildLibrary([lib('1', 'One', clash, true), lib('2', 'Two', clash)]);
+    assert.match(after.find((e) => e.id === '2').blocked, /already used by "One"/);
+});
+
+// Mutable notes shaped like what the frontend (getLabels) and the backend (hasLabel/setLabel/removeLabel) both see.
+function storeNote(id, title, body, labels = {}) {
+    const store = Object.fromEntries(Object.entries(labels).map(([k, v]) => [k, [...v]]));
+    return {
+        noteId: id, title, store,
+        getContent: async () => body,
+        getLabels: (n) => (store[n] ?? []).map((value) => ({ value })),
+        hasLabel: (n) => (store[n] ?? []).length > 0,
+        setLabel: (n, v = '') => { store[n] = [v]; },
+        removeLabel: (n) => { delete store[n]; },
+    };
+}
+
+test('setEnabled switches a library macro on, makes it usable at once, and off again, keeping its note intact', async () => {
+    const note = storeNote('lib1', 'Greeter', '<p>Hello</p>', { ikmalMacroLibrary: [''], macroGroup: ['Writing'], macroAbbrev: ['hi'], macroSummary: ['Says hello'] });
+    const { dom } = await launcherWithMacros([], { store: [note] });
+    const rt = dom.window.__ikmalMacros;
+
+    assert.deepEqual(JSON.parse(JSON.stringify((await rt.library()).map((e) => [e.name, e.enabled]))), [['Greeter', false]]); // JSON: arrays built in the jsdom realm
+    assert.equal(await rt.setEnabled('lib1', true), null);
+    assert.ok(note.hasLabel('ikmalMacro'));
+    assert.equal((await rt.library())[0].enabled, true);
+
+    assert.equal(await rt.setEnabled('lib1', true), null, 'enabling twice is harmless');
+    assert.deepEqual(note.store.ikmalMacro, ['']);
+
+    assert.equal(await rt.setEnabled('lib1', false), null);
+    assert.ok(!note.hasLabel('ikmalMacro'));
+    assert.equal(await rt.setEnabled('lib1', false), null, 'disabling twice is harmless');
+    assert.deepEqual([note.store.macroAbbrev, note.store.macroGroup, note.store.macroSummary, note.store.ikmalMacroLibrary], [['hi'], ['Writing'], ['Says hello'], ['']]);
+    assert.equal(await note.getContent(), '<p>Hello</p>');
+});
+
+test('an enabled library macro runs through its abbreviation, and stops once disabled', async () => {
+    const note = storeNote('lib1', 'Greeter', '<p>Hello</p>', { ikmalMacroLibrary: [''], macroAbbrev: ['hi'] });
+    const { dom } = await launcherWithMacros([], { store: [note] });
+    const rt = dom.window.__ikmalMacros;
+    const tab = async () => {
+        const editor = fakeEditor('hi');
+        const el = dom.window.document.createElement('div');
+        el.ckeditorInstance = editor;
+        dom.window.document.body.append(el);
+        el.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+        await tick();
+        return editor.log.inserted;
+    };
+    assert.deepEqual(await tab(), [], 'not enabled yet');
+    await rt.setEnabled('lib1', true);
+    assert.deepEqual(await tab(), ['<p>Hello</p>']);
+    await rt.setEnabled('lib1', false);
+    assert.deepEqual(await tab(), [], 'disabled again');
+});
+
+test('setEnabled refuses a blocked entry without touching the note, and says why', async () => {
+    const taken = storeNote('on', 'Already on', '<p>a</p>', { ikmalMacro: [''], ikmalMacroLibrary: [''], macroAbbrev: ['hi'] });
+    const clash = storeNote('lib1', 'Greeter', '<p>b</p>', { ikmalMacroLibrary: [''], macroAbbrev: ['hi'] });
+    const { dom } = await launcherWithMacros([], { store: [taken, clash] });
+    const message = await dom.window.__ikmalMacros.setEnabled('lib1', true);
+    assert.match(message, /Abbreviation "hi" is already used by "Already on"/);
+    assert.ok(!clash.hasLabel('ikmalMacro'));
+});
+
+test('setEnabled only touches library notes', async () => {
+    const plain = storeNote('p', 'Plain macro', '<p>x</p>', { ikmalMacro: [''] });
+    const { dom } = await launcherWithMacros([], { store: [plain] });
+    const rt = dom.window.__ikmalMacros;
+    assert.match(await rt.setEnabled('p', false), /Only library macros/);
+    assert.ok(plain.hasLabel('ikmalMacro'), 'a hand-made macro is never switched off by this');
+    assert.match(await rt.setEnabled('ghost', true), /no longer exists|none/i);
+});
+
+test('setEnabled reports a backend failure instead of throwing', async () => {
+    const note = storeNote('lib1', 'Greeter', '<p>x</p>', { ikmalMacroLibrary: [''] });
+    const { dom } = await launcherWithMacros([], { store: [note], backendDisabled: false });
+    dom.window.api.runOnBackend = () => { throw new Error('Backend script execution is disabled.'); };
+    assert.match(await dom.window.__ikmalMacros.setEnabled('lib1', true), /Could not enable the macro: Backend script execution is disabled/);
 });

@@ -3131,6 +3131,41 @@ ifThenRules: []
     const commands = (note.labels["macroCommand"] ?? []).map((c) => c.trim()).filter(Boolean);
     return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands } };
   }
+  var LIBRARY_LABEL = "ikmalMacroLibrary";
+  var DEFAULT_LIBRARY_GROUP = "Other";
+  function buildLibrary(notes, isMac = false) {
+    const parsed = notes.map((note) => ({ note, result: buildMacro(note, isMac) }));
+    const hotkeyOwners = /* @__PURE__ */ new Map();
+    const abbrevOwners = /* @__PURE__ */ new Map();
+    for (const { note, result } of parsed) {
+      if (!note.enabled || "error" in result) continue;
+      if (result.macro.hotkey) hotkeyOwners.set(hotkeyId(result.macro.hotkey), note.id);
+      if (result.macro.abbrev) abbrevOwners.set(result.macro.abbrev, note.id);
+    }
+    const entries = parsed.map(({ note, result }) => {
+      const label = (name) => note.labels[name]?.[0]?.trim() ?? "";
+      const entry = {
+        id: note.id,
+        name: note.title.trim() || note.id,
+        group: label("macroGroup") || DEFAULT_LIBRARY_GROUP,
+        summary: label("macroSummary"),
+        enabled: note.enabled,
+        hotkey: label("macroHotkey") || null,
+        abbrev: label("macroAbbrev") || null,
+        button: note.labels["macroButton"]?.length ? label("macroButton") || DEFAULT_BUTTON_ICON : null
+      };
+      if (note.enabled) return entry;
+      if ("error" in result) return { ...entry, blocked: result.error };
+      const { macro } = result;
+      const hotkeyOwner = macro.hotkey && hotkeyOwners.get(hotkeyId(macro.hotkey));
+      if (hotkeyOwner) return { ...entry, blocked: `Hotkey ${entry.hotkey} is already used by "${nameOf(notes, hotkeyOwner)}".` };
+      const abbrevOwner = macro.abbrev && abbrevOwners.get(macro.abbrev);
+      if (abbrevOwner) return { ...entry, blocked: `Abbreviation "${macro.abbrev}" is already used by "${nameOf(notes, abbrevOwner)}".` };
+      return entry;
+    });
+    return entries.sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name));
+  }
+  var nameOf = (notes, id) => notes.find((n) => n.id === id)?.title.trim() || id;
   function buildRegistry(notes, isMac = false) {
     const macros = [];
     const errors = [];
@@ -3373,6 +3408,18 @@ ifThenRules: []
   }
   var PALETTE_BUTTON_ID = `${BUTTON_ID_PREFIX}palette`;
   var LABEL_NAMES = ["macroMode", "macroHotkey", "macroAbbrev", "macroButton", "macroCommand"];
+  var LIBRARY_LABEL_NAMES = [...LABEL_NAMES, "macroGroup", "macroSummary"];
+  function setMacroEnabled(noteId, enabled, libraryLabel) {
+    const note = api.getNote(noteId);
+    if (!note) return "That macro no longer exists.";
+    if (!note.hasLabel(libraryLabel)) return "Only library macros can be switched on and off here.";
+    if (enabled) {
+      if (!note.hasLabel("ikmalMacro")) note.setLabel("ikmalMacro");
+    } else {
+      note.removeLabel("ikmalMacro");
+    }
+    return null;
+  }
   async function loadMacros(api2, isMac) {
     const notes = await api2.searchForNotes("#ikmalMacro");
     const inputs = [];
@@ -3382,6 +3429,22 @@ ifThenRules: []
       inputs.push({ id: note.noteId, title: note.title, body: await note.getContent() ?? "", labels });
     }
     return buildRegistry(inputs, isMac);
+  }
+  async function loadLibrary(api2, isMac) {
+    const notes = await api2.searchForNotes(`#${LIBRARY_LABEL}`);
+    const inputs = [];
+    for (const note of notes) {
+      const labels = {};
+      for (const name of LIBRARY_LABEL_NAMES) labels[name] = note.getLabels(name).map((l) => l.value);
+      inputs.push({
+        id: note.noteId,
+        title: note.title,
+        body: await note.getContent() ?? "",
+        labels,
+        enabled: note.getLabels("ikmalMacro").length > 0
+      });
+    }
+    return buildLibrary(inputs, isMac);
   }
   function placeCursorOnMark(editor, mark) {
     editor.model.change((writer) => {
@@ -3508,6 +3571,24 @@ ifThenRules: []
       warnedNoButtons = true;
       console.warn("[Ikmal Macros] launcher buttons skipped (backend scripting may be disabled):", err instanceof Error ? err.message : err);
     };
+    const library = () => loadLibrary(api2, isMac);
+    const setEnabled = async (id, enabled) => {
+      if (!api2.runOnBackend) return "Switching macros on and off needs backend scripting.";
+      if (enabled) {
+        const entry = (await library()).find((e) => e.id === id);
+        if (entry?.blocked) return entry.blocked;
+      }
+      let failure;
+      try {
+        failure = await api2.runOnBackend(setMacroEnabled, [id, enabled, LIBRARY_LABEL]);
+      } catch (err) {
+        return `Could not ${enabled ? "enable" : "disable"} the macro: ${err?.message ?? err}`;
+      }
+      if (failure) return failure;
+      await refresh();
+      syncButtons();
+      return null;
+    };
     const runById = (id) => {
       const macro = macros.find((m) => m.id === id);
       if (macro) return runInActiveEditor(api2, macro);
@@ -3591,7 +3672,7 @@ ifThenRules: []
       }
     }, true);
     void refresh().then(syncButtons);
-    return { refresh, openPalette, runById, syncButtons };
+    return { refresh, openPalette, runById, syncButtons, library, setEnabled };
   }
 
   // src/artifacts/notes-system-launcher.js

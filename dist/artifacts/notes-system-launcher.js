@@ -3165,6 +3165,11 @@ ifThenRules: []
     });
     return entries.sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name));
   }
+  function filterLibrary(entries, query) {
+    const q = query.trim().toLowerCase();
+    if (!q) return entries;
+    return entries.filter((e) => [e.name, e.group, e.summary, e.abbrev ?? "", e.hotkey ?? ""].some((field) => field.toLowerCase().includes(q)));
+  }
   var nameOf = (notes, id) => notes.find((n) => n.id === id)?.title.trim() || id;
   function buildRegistry(notes, isMac = false) {
     const macros = [];
@@ -3595,6 +3600,67 @@ ifThenRules: []
       api2.showError("That macro no longer exists. Reload the frontend.");
       return Promise.resolve(false);
     };
+    const openLibrary = async () => {
+      let entries = await library();
+      const modal = openModal({
+        title: "Macro library",
+        icon: "bx-bolt-circle",
+        body: `
+                <input type="text" class="form-control form-control-sm mb-2" id="ikmal-library-search" placeholder="Search the library\u2026" autocomplete="off">
+                <div id="ikmal-library-list" class="ns-lib-list"></div>`,
+        confirmText: "Done"
+      }, () => true);
+      modal.querySelector(".ns-modal-footer .ns-close")?.remove();
+      const input = modal.querySelector("#ikmal-library-search");
+      const list = modal.querySelector("#ikmal-library-list");
+      const chips = (e) => [
+        e.abbrev && `<code title="Type it, then press Tab">${escapeHtml(e.abbrev)}</code>`,
+        e.hotkey && `<kbd>${escapeHtml(e.hotkey)}</kbd>`,
+        e.button && `<span class="bx bx-${escapeHtml(e.button)}" title="Launch bar button"></span>`
+      ].filter(Boolean).join(" ");
+      const render = () => {
+        const shown = filterLibrary(entries, input.value);
+        let group = "";
+        list.innerHTML = shown.length ? shown.map((e, i) => {
+          const heading = e.group !== group ? `<h6 class="ns-lib-group text-muted">${escapeHtml(group = e.group)}</h6>` : "";
+          const blocked = !e.enabled && e.blocked;
+          return `${heading}
+                        <div class="ns-lib-row" data-id="${escapeHtml(e.id)}">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" id="ikmal-lib-${i}" ${e.enabled ? "checked" : ""} ${blocked ? "disabled" : ""}>
+                                <label class="form-check-label" for="ikmal-lib-${i}">${escapeHtml(e.name)}</label>
+                                <span class="ns-lib-chips">${chips(e)}</span>
+                            </div>
+                            ${e.summary ? `<div class="text-muted small">${escapeHtml(e.summary)}</div>` : ""}
+                            ${blocked ? `<div class="ns-lib-blocked small">${escapeHtml(e.blocked)}</div>` : ""}
+                            <div class="text-danger small ns-lib-error" hidden></div>
+                        </div>`;
+        }).join("") : `<div class="text-muted small p-2">${entries.length ? "Nothing matches." : "The library is empty."}</div>`;
+      };
+      list.addEventListener("change", async (event) => {
+        const box = event.target;
+        const row = box.closest(".ns-lib-row");
+        if (!row) return;
+        const wanted = box.checked;
+        box.disabled = true;
+        const failure = await setEnabled(row.dataset.id, wanted);
+        if (failure) {
+          box.checked = !wanted;
+          box.disabled = false;
+          const error = row.querySelector(".ns-lib-error");
+          error.textContent = failure;
+          error.hidden = false;
+          return;
+        }
+        const scroll = list.scrollTop;
+        entries = await library();
+        render();
+        list.scrollTop = scroll;
+      });
+      input.addEventListener("input", render);
+      render();
+      input.focus();
+    };
     const openPalette = async () => {
       await refresh();
       const modal = openModal({
@@ -3602,7 +3668,8 @@ ifThenRules: []
         icon: "bx-bolt-circle",
         body: `
                 <input type="text" class="form-control form-control-sm mb-2" id="ikmal-macro-search" placeholder="Search macros\u2026" autocomplete="off">
-                <div id="ikmal-macro-list" class="list-group"></div>`,
+                <div id="ikmal-macro-list" class="list-group"></div>
+                <button type="button" class="btn btn-link btn-sm px-0 mt-2" id="ikmal-macro-library-link">Manage macro library\u2026</button>`,
         confirmText: "Run"
       }, () => {
         modal.querySelector("#ikmal-macro-list button")?.click();
@@ -3612,7 +3679,7 @@ ifThenRules: []
       const list = modal.querySelector("#ikmal-macro-list");
       const render = () => {
         const matches = searchMacros(macros, input.value);
-        list.innerHTML = matches.length ? matches.map((m, i) => `<button type="button" class="list-group-item list-group-item-action py-1" data-i="${i}">${escapeHtml(m.name)}</button>`).join("") : '<div class="text-muted small p-2">No macros found. Create a note labelled <code>#ikmalMacro</code>.</div>';
+        list.innerHTML = matches.length ? matches.map((m, i) => `<button type="button" class="list-group-item list-group-item-action py-1" data-i="${i}">${escapeHtml(m.name)}</button>`).join("") : '<div class="text-muted small p-2">No macros yet. Switch some on in the macro library, or create a note labelled <code>#ikmalMacro</code>.</div>';
         list.querySelectorAll("button").forEach((btn, i) => {
           btn.addEventListener("click", () => {
             modal.querySelector(".ns-close")?.click();
@@ -3620,6 +3687,10 @@ ifThenRules: []
           });
         });
       };
+      modal.querySelector("#ikmal-macro-library-link").addEventListener("click", () => {
+        modal.querySelector(".ns-close")?.click();
+        void openLibrary();
+      });
       input.addEventListener("input", render);
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
@@ -3672,7 +3743,7 @@ ifThenRules: []
       }
     }, true);
     void refresh().then(syncButtons);
-    return { refresh, openPalette, runById, syncButtons, library, setEnabled };
+    return { refresh, openPalette, openLibrary, runById, syncButtons, library, setEnabled };
   }
 
   // src/artifacts/notes-system-launcher.js

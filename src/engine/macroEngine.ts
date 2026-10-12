@@ -232,6 +232,13 @@ export function buildLibrary(notes: LibraryNoteInput[], isMac = false): LibraryE
     return entries.sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name));
 }
 
+/** Case-insensitive match on name, group, summary and triggers; an empty query keeps everything. */
+export function filterLibrary(entries: LibraryEntry[], query: string): LibraryEntry[] {
+    const q = query.trim().toLowerCase();
+    if (!q) return entries;
+    return entries.filter((e) => [e.name, e.group, e.summary, e.abbrev ?? '', e.hotkey ?? ''].some((field) => field.toLowerCase().includes(q)));
+}
+
 const nameOf = (notes: LibraryNoteInput[], id: string) => notes.find((n) => n.id === id)?.title.trim() || id;
 
 export interface Registry {

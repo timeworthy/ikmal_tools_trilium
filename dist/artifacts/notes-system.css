@@ -1330,3 +1330,12 @@ body[dir="rtl"] .ns-switch .ns-switch-button.on::after {
         width: 100% !important;
     }
 }
+
+/* Macro library screen */
+.ns-lib-list { max-height: 55vh; overflow-y: auto; }
+.ns-lib-group { margin: 0.9rem 0 0.2rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.ns-lib-group:first-child { margin-top: 0; }
+.ns-lib-row { padding: 0.45rem 0; border-bottom: 1px solid var(--main-border-color, rgba(128, 128, 128, 0.25)); }
+.ns-lib-row .form-check { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
+.ns-lib-chips { display: inline-flex; gap: 0.35rem; align-items: center; font-size: 0.8em; }
+.ns-lib-blocked { color: #b45309; } /* amber reads on both light and dark themes; Bootstrap's text-warning yellow does not */

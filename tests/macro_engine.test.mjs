@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    buildLibrary, parseHotkey, matchesHotkey, buildMacro, buildRegistry, findByHotkey, searchMacros, runMacro, renderHtml, CURSOR_MARK,
+    buildLibrary, filterLibrary, parseHotkey, matchesHotkey, buildMacro, buildRegistry, findByHotkey, searchMacros, runMacro, renderHtml, CURSOR_MARK,
     formatDate, promptsIn,
 } from '../dist/engine/macroEngine.js';
 
@@ -696,4 +696,115 @@ test('setEnabled reports a backend failure instead of throwing', async () => {
     const { dom } = await launcherWithMacros([], { store: [note], backendDisabled: false });
     dom.window.api.runOnBackend = () => { throw new Error('Backend script execution is disabled.'); };
     assert.match(await dom.window.__ikmalMacros.setEnabled('lib1', true), /Could not enable the macro: Backend script execution is disabled/);
+});
+
+test('filterLibrary matches name, group, summary and triggers, case-insensitively', () => {
+    const entries = buildLibrary([
+        lib('1', 'Signature', { macroGroup: ['Writing'], macroAbbrev: ['sig'], macroSummary: ['Sign off'] }),
+        lib('2', 'Table', { macroGroup: ['Editor'], macroHotkey: ['alt+shift+t'] }),
+    ]);
+    const names = (q) => filterLibrary(entries, q).map((e) => e.name);
+    assert.deepEqual(names(''), ['Table', 'Signature']);
+    assert.deepEqual(names('SIGN'), ['Signature']);
+    assert.deepEqual(names('editor'), ['Table']);
+    assert.deepEqual(names('alt+shift'), ['Table']);
+    assert.deepEqual(names('nothing'), []);
+});
+
+// ---- library screen ----
+
+async function openLibraryScreen(notes, opts = {}) {
+    const { dom } = await launcherWithMacros([], { store: notes, ...opts });
+    await dom.window.__ikmalMacros.openLibrary();
+    const doc = dom.window.document;
+    return {
+        dom, doc,
+        rows: () => [...doc.querySelectorAll('.ns-lib-row')],
+        names: () => [...doc.querySelectorAll('.ns-lib-row label')].map((l) => l.textContent),
+        box: (name) => [...doc.querySelectorAll('.ns-lib-row')].find((r) => r.querySelector('label').textContent === name).querySelector('input'),
+        toggle: async (name) => { const b = [...doc.querySelectorAll('.ns-lib-row')].find((r) => r.querySelector('label').textContent === name).querySelector('input'); b.click(); await tick(); await tick(); },
+    };
+}
+
+const libNote = (id, title, labels = {}, body = '<p>x</p>') => storeNote(id, title, body, { ikmalMacroLibrary: [''], ...labels });
+
+test('library screen: lists entries by group with summary and trigger chips', async () => {
+    const ui = await openLibraryScreen([
+        libNote('1', 'Signature', { macroGroup: ['Writing'], macroAbbrev: ['sig'], macroSummary: ['Sign off'] }),
+        libNote('2', 'Table', { macroGroup: ['Editor'], macroHotkey: ['alt+shift+t'], macroButton: ['table'] }),
+    ]);
+    assert.deepEqual([...ui.doc.querySelectorAll('.ns-lib-group')].map((h) => h.textContent), ['Editor', 'Writing']);
+    assert.deepEqual(ui.names(), ['Table', 'Signature']);
+    const text = ui.doc.querySelector('#ikmal-library-list').textContent;
+    assert.match(text, /Sign off/);
+    assert.ok(ui.doc.querySelector('.ns-lib-row code').textContent === 'sig' || ui.doc.querySelector('.ns-lib-row').textContent.includes('alt+shift+t'));
+    assert.ok(ui.doc.querySelector('.ns-lib-row .bx-table'), 'button icon chip');
+    assert.ok([...ui.doc.querySelectorAll('input[role=switch]')].every((b) => !b.checked));
+});
+
+test('library screen: flipping a switch enables the macro, and flipping it back disables it', async () => {
+    const note = libNote('1', 'Greeter', { macroAbbrev: ['hi'] });
+    const ui = await openLibraryScreen([note]);
+    await ui.toggle('Greeter');
+    assert.ok(note.hasLabel('ikmalMacro'));
+    assert.equal(ui.box('Greeter').checked, true);
+    await ui.toggle('Greeter');
+    assert.ok(!note.hasLabel('ikmalMacro'));
+    assert.equal(ui.box('Greeter').checked, false);
+});
+
+test('library screen: a blocked entry is disabled and says why; enabling the other one blocks it live', async () => {
+    const one = libNote('1', 'One', { macroAbbrev: ['hi'] });
+    const two = libNote('2', 'Two', { macroAbbrev: ['hi'] });
+    const ui = await openLibraryScreen([one, two]);
+    assert.equal(ui.box('Two').disabled, false);
+    await ui.toggle('One');
+    assert.equal(ui.box('Two').disabled, true, 'Two is blocked as soon as One is on');
+    assert.match(ui.doc.querySelector('#ikmal-library-list').textContent, /Abbreviation "hi" is already used by "One"/);
+    assert.ok(!two.hasLabel('ikmalMacro'));
+    await ui.toggle('One'); // switch One off again
+    assert.equal(ui.box('Two').disabled, false, 'and unblocked again');
+});
+
+test('library screen: a failed switch flips back and shows the error in that row', async () => {
+    const note = libNote('1', 'Greeter');
+    const ui = await openLibraryScreen([note]);
+    ui.dom.window.api.runOnBackend = () => { throw new Error('Backend script execution is disabled.'); };
+    await ui.toggle('Greeter');
+    assert.equal(ui.box('Greeter').checked, false);
+    assert.equal(ui.box('Greeter').disabled, false, 'can be tried again');
+    const error = ui.doc.querySelector('.ns-lib-error');
+    assert.equal(error.hidden, false);
+    assert.match(error.textContent, /Could not enable the macro: Backend script execution is disabled/);
+});
+
+test('library screen: search filters live, and names are escaped', async () => {
+    const ui = await openLibraryScreen([
+        libNote('1', 'Signature', { macroGroup: ['Writing'] }),
+        libNote('2', '<img src=x onerror=alert(1)>', { macroGroup: ['Editor'], macroSummary: ['<b>bold</b>'] }),
+    ]);
+    assert.equal(ui.doc.querySelector('.ns-lib-list img'), null, 'no injected element');
+    assert.equal(ui.doc.querySelector('.ns-lib-list b'), null);
+    const search = ui.doc.querySelector('#ikmal-library-search');
+    search.value = 'sign';
+    search.dispatchEvent(new ui.dom.window.Event('input', { bubbles: true }));
+    assert.deepEqual(ui.names(), ['Signature']);
+    search.value = 'zzz';
+    search.dispatchEvent(new ui.dom.window.Event('input', { bubbles: true }));
+    assert.match(ui.doc.querySelector('#ikmal-library-list').textContent, /Nothing matches/);
+});
+
+test('library screen: an empty library says so, and the palette links to the library', async () => {
+    const ui = await openLibraryScreen([]);
+    assert.match(ui.doc.querySelector('#ikmal-library-list').textContent, /The library is empty/);
+    ui.doc.querySelector('.ns-confirm').click();
+    assert.equal(ui.doc.querySelector('.ns-modal'), null, 'Done closes it');
+
+    const note = libNote('1', 'Greeter');
+    const { dom } = await launcherWithMacros([], { store: [note] });
+    await dom.window.__ikmalMacros.openPalette();
+    dom.window.document.querySelector('#ikmal-macro-library-link').click();
+    await tick(); await tick();
+    assert.ok(dom.window.document.querySelector('#ikmal-library-list'), 'the library opened from the palette');
+    assert.equal(dom.window.document.querySelector('#ikmal-macro-list'), null, 'and the palette closed');
 });

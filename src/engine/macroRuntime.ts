@@ -3,7 +3,7 @@
  * their hotkeys, and hosts the macro palette. Decisions live in macroEngine.ts.
  */
 
-import { BUTTON_ID_PREFIX, DEFAULT_BUTTON_ICON, buildRegistry, buttonSpecs, findByHotkey, matchAbbrev, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput, type MacroRunResult } from './macroEngine.js';
+import { BUTTON_ID_PREFIX, DEFAULT_BUTTON_ICON, LIBRARY_LABEL, buildLibrary, type LibraryEntry, type LibraryNoteInput, buildRegistry, buttonSpecs, findByHotkey, matchAbbrev, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput, type MacroRunResult } from './macroEngine.js';
 import { openModal, escapeHtml } from '../components/nativeUi.js';
 
 interface MacroFNote {
@@ -116,6 +116,24 @@ function upsertMacroLaunchers(specs: LauncherSpec[], scriptNoteId: string, prefi
 const PALETTE_BUTTON_ID = `${BUTTON_ID_PREFIX}palette`;
 
 const LABEL_NAMES = ['macroMode', 'macroHotkey', 'macroAbbrev', 'macroButton', 'macroCommand'];
+const LIBRARY_LABEL_NAMES = [...LABEL_NAMES, 'macroGroup', 'macroSummary'];
+
+/**
+ * Runs on the Trilium backend (so it must stay self-contained and read the global `api`).
+ * Switches a library macro on or off by adding or removing `#ikmalMacro`. Nothing else about the note
+ * changes, so its body and the user's edits survive. Safe to repeat. Returns an error message or null.
+ */
+function setMacroEnabled(noteId: string, enabled: boolean, libraryLabel: string): string | null {
+    const note = api.getNote(noteId);
+    if (!note) return 'That macro no longer exists.';
+    if (!note.hasLabel(libraryLabel)) return 'Only library macros can be switched on and off here.';
+    if (enabled) {
+        if (!note.hasLabel('ikmalMacro')) note.setLabel('ikmalMacro');
+    } else {
+        note.removeLabel('ikmalMacro');
+    }
+    return null;
+}
 
 export async function loadMacros(api: MacroApi, isMac: boolean) {
     const notes = await api.searchForNotes('#ikmalMacro');
@@ -126,6 +144,20 @@ export async function loadMacros(api: MacroApi, isMac: boolean) {
         inputs.push({ id: note.noteId, title: note.title, body: (await note.getContent()) ?? '', labels });
     }
     return buildRegistry(inputs, isMac);
+}
+
+export async function loadLibrary(api: MacroApi, isMac: boolean): Promise<LibraryEntry[]> {
+    const notes = await api.searchForNotes(`#${LIBRARY_LABEL}`);
+    const inputs: LibraryNoteInput[] = [];
+    for (const note of notes) {
+        const labels: Record<string, string[]> = {};
+        for (const name of LIBRARY_LABEL_NAMES) labels[name] = note.getLabels(name).map((l) => l.value);
+        inputs.push({
+            id: note.noteId, title: note.title, body: (await note.getContent()) ?? '', labels,
+            enabled: note.getLabels('ikmalMacro').length > 0,
+        });
+    }
+    return buildLibrary(inputs, isMac);
 }
 
 /** Finds the first `mark` in the document, deletes it, and puts the caret where it was. */
@@ -270,6 +302,27 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
         console.warn('[Ikmal Macros] launcher buttons skipped (backend scripting may be disabled):', err instanceof Error ? err.message : err);
     };
 
+    const library = () => loadLibrary(api, isMac);
+
+    /** Switches a library macro on or off, then reloads macros and launcher buttons. Returns an error message or null. */
+    const setEnabled = async (id: string, enabled: boolean): Promise<string | null> => {
+        if (!api.runOnBackend) return 'Switching macros on and off needs backend scripting.';
+        if (enabled) {
+            const entry = (await library()).find((e) => e.id === id);
+            if (entry?.blocked) return entry.blocked;
+        }
+        let failure: string | null;
+        try {
+            failure = (await api.runOnBackend(setMacroEnabled, [id, enabled, LIBRARY_LABEL])) as string | null;
+        } catch (err) {
+            return `Could not ${enabled ? 'enable' : 'disable'} the macro: ${(err as { message?: string })?.message ?? err}`;
+        }
+        if (failure) return failure;
+        await refresh();
+        syncButtons();
+        return null;
+    };
+
     const runById = (id: string) => {
         const macro = macros.find((m) => m.id === id);
         if (macro) return runInActiveEditor(api, macro);
@@ -360,5 +413,5 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
     }, true);
 
     void refresh().then(syncButtons);
-    return { refresh, openPalette, runById, syncButtons };
+    return { refresh, openPalette, runById, syncButtons, library, setEnabled };
 }

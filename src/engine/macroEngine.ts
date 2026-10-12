@@ -172,6 +172,68 @@ export function buildMacro(note: MacroNoteInput, isMac = false): BuildResult {
     return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands } };
 }
 
+/** A library note as read from Trilium: a macro note that may or may not be switched on. */
+export interface LibraryNoteInput extends MacroNoteInput {
+    /** Whether the note currently carries `#ikmalMacro`. */
+    enabled: boolean;
+}
+
+export interface LibraryEntry {
+    id: string;
+    name: string;
+    group: string;
+    summary: string;
+    enabled: boolean;
+    hotkey: string | null;
+    abbrev: string | null;
+    button: string | null;
+    /** Why it cannot be switched on (invalid macro, or a trigger already used by an enabled macro). Always unset when enabled. */
+    blocked?: string;
+}
+
+export const LIBRARY_LABEL = 'ikmalMacroLibrary';
+export const DEFAULT_LIBRARY_GROUP = 'Other';
+
+/**
+ * Library entries for the library screen: grouped, sorted, with the reason an entry cannot be switched on.
+ * An entry is blocked when it is not a valid macro, or when its hotkey or abbreviation is already taken by
+ * a different enabled macro; enabling it would otherwise have the registry silently drop one of the two.
+ */
+export function buildLibrary(notes: LibraryNoteInput[], isMac = false): LibraryEntry[] {
+    const parsed = notes.map((note) => ({ note, result: buildMacro(note, isMac) }));
+    const hotkeyOwners = new Map<string, string>();
+    const abbrevOwners = new Map<string, string>();
+    for (const { note, result } of parsed) {
+        if (!note.enabled || 'error' in result) continue;
+        if (result.macro.hotkey) hotkeyOwners.set(hotkeyId(result.macro.hotkey), note.id);
+        if (result.macro.abbrev) abbrevOwners.set(result.macro.abbrev, note.id);
+    }
+    const entries = parsed.map(({ note, result }): LibraryEntry => {
+        const label = (name: string) => note.labels[name]?.[0]?.trim() ?? '';
+        const entry: LibraryEntry = {
+            id: note.id,
+            name: note.title.trim() || note.id,
+            group: label('macroGroup') || DEFAULT_LIBRARY_GROUP,
+            summary: label('macroSummary'),
+            enabled: note.enabled,
+            hotkey: label('macroHotkey') || null,
+            abbrev: label('macroAbbrev') || null,
+            button: note.labels['macroButton']?.length ? (label('macroButton') || DEFAULT_BUTTON_ICON) : null,
+        };
+        if (note.enabled) return entry;
+        if ('error' in result) return { ...entry, blocked: result.error };
+        const { macro } = result;
+        const hotkeyOwner = macro.hotkey && hotkeyOwners.get(hotkeyId(macro.hotkey));
+        if (hotkeyOwner) return { ...entry, blocked: `Hotkey ${entry.hotkey} is already used by "${nameOf(notes, hotkeyOwner)}".` };
+        const abbrevOwner = macro.abbrev && abbrevOwners.get(macro.abbrev);
+        if (abbrevOwner) return { ...entry, blocked: `Abbreviation "${macro.abbrev}" is already used by "${nameOf(notes, abbrevOwner)}".` };
+        return entry;
+    });
+    return entries.sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name));
+}
+
+const nameOf = (notes: LibraryNoteInput[], id: string) => notes.find((n) => n.id === id)?.title.trim() || id;
+
 export interface Registry {
     macros: Macro[];
     errors: string[];

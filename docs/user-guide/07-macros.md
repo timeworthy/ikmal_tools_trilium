@@ -28,6 +28,23 @@ Put `{{cursor}}` anywhere in the body to choose where the caret lands after the 
 
 If no text note is active, you get an error message and nothing is inserted.
 
+## Tokens
+
+Write a token as `{{name}}` or `{{name:argument}}` anywhere in a macro's body.
+
+| Token | Inserts |
+| --- | --- |
+| `{{cursor}}` | Nothing; the caret lands here afterwards. The first one wins. |
+| `{{date}}`, `{{time}}`, `{{datetime}}` | Your local date (`2026-10-12`), time (`14:05`) or both. |
+| `{{date:ddd, MMM D}}` | The same with your own format. Parts: `YYYY YY MMMM MMM MM M dddd ddd DD D HH mm ss`. Month and day names are English. |
+| `{{clipboard}}` | The clipboard text. |
+| `{{prompt:Label}}` | Asks you for text when the macro runs. `{{prompt:Label\|default}}` pre-fills the answer. |
+
+- A prompt used twice with the same label asks once. Cancelling any prompt stops the macro with nothing inserted and no error. If you ran it by typing an abbreviation, what you typed is put back where it was.
+- Clipboard and prompt text is always inserted as plain text, never as HTML, so pasted `<b>` stays literal. Line breaks are kept.
+- If the browser blocks clipboard access, the macro still runs, `{{clipboard}}` inserts nothing, and a message says why.
+- A token with an unknown name is left as you typed it.
+
 ## Launcher buttons need backend scripting
 
 Creating launcher-bar buttons runs on Trilium's backend, so it only works when backend scripting is enabled (**Options → Security**, or `backendScriptingEnabled=true` in `config.ini`). If it is disabled, buttons are skipped with one `[Ikmal Macros]` console warning, and hotkeys, the palette and abbreviations keep working.

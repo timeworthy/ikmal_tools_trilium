@@ -3,7 +3,7 @@
  * their hotkeys, and hosts the macro palette. Decisions live in macroEngine.ts.
  */
 
-import { BUTTON_ID_PREFIX, DEFAULT_BUTTON_ICON, buildRegistry, buttonSpecs, findByHotkey, matchAbbrev, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput } from './macroEngine.js';
+import { BUTTON_ID_PREFIX, DEFAULT_BUTTON_ICON, buildRegistry, buttonSpecs, findByHotkey, matchAbbrev, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput, type MacroRunResult } from './macroEngine.js';
 import { openModal, escapeHtml } from '../components/nativeUi.js';
 
 interface MacroFNote {
@@ -18,6 +18,7 @@ export interface MacroEditor {
     execute(command: string): void;
     data: { processor: { toView(html: string): unknown }; toModel(viewFragment: any): unknown };
     model: {
+        markers?: { get(name: string): any };
         document: { getRoot(): any; selection: any };
         insertContent(content: any): void;
         change(callback: (writer: any) => void): void;
@@ -29,6 +30,7 @@ export interface MacroApi {
     getActiveContextTextEditor(): Promise<MacroEditor | null | undefined>;
     showError(message: string): void;
     showMessage(message: string): void;
+    showPromptDialog?(options: { title?: string; message?: string; defaultValue?: string }): Promise<string | null | undefined>;
     runOnBackend?(fn: (...args: any[]) => unknown, args: unknown[]): unknown;
     currentNote?: { noteId: string };
 }
@@ -159,14 +161,54 @@ export function textBeforeCaret(editor: MacroEditor): { text: string; position: 
     return { text, position };
 }
 
-function makeHost(editor: MacroEditor): MacroHost {
+/**
+ * A prompt dialog takes focus and the editor does not keep its caret, so an abbreviation expansion
+ * remembers where it was typed with a marker (which follows later edits) and goes back to it.
+ */
+const ANCHOR = 'ikmal-macro-anchor';
+
+function dropAnchor(editor: MacroEditor, position: any) {
+    editor.model.change((writer) => {
+        if (!editor.model.markers) return;
+        writer.addMarker(ANCHOR, { range: writer.createRange(position), usingOperation: false, affectsData: false });
+    });
+}
+
+/** Moves the caret back to the anchor and removes it; returns whether there was one. */
+function returnToAnchor(editor: MacroEditor): boolean {
+    const marker = editor.model.markers?.get(ANCHOR);
+    if (!marker) return false;
+    editor.model.change((writer) => {
+        writer.setSelection(marker.getStart());
+        writer.removeMarker(ANCHOR);
+    });
+    return true;
+}
+
+function makeHost(editor: MacroEditor, api: MacroApi, macro: Macro): MacroHost {
     return {
+        // A dismissed dialog comes back as null/undefined; both mean "cancel the macro".
+        prompt: async (label, defaultValue) => {
+            if (!api.showPromptDialog) return defaultValue;
+            const answer = await api.showPromptDialog({ title: macro.name, message: label, defaultValue });
+            return answer ?? null;
+        },
+        readClipboard: () => navigator.clipboard.readText(),
         // api.addTextToActiveContextEditor inserts its argument as plain text, so go through
         // the editor's own HTML -> model pipeline to get real formatting.
-        insertHtml: (html) => editor.model.insertContent(editor.data.toModel(editor.data.processor.toView(html))),
+        insertHtml: (html) => {
+            returnToAnchor(editor);
+            editor.model.insertContent(editor.data.toModel(editor.data.processor.toView(html)));
+        },
         placeCursor: (mark) => placeCursorOnMark(editor, mark),
         executeCommand: (name) => editor.execute(name),
     };
+}
+
+/** Tells the user about a failed run or a warning; a cancelled prompt is deliberately silent. */
+function reportRun(api: MacroApi, macro: Macro, result: MacroRunResult) {
+    if (!result.ok && !result.cancelled) api.showError(`Macro "${macro.name}" failed: ${result.error}`);
+    for (const warning of result.warnings ?? []) api.showMessage(`Macro "${macro.name}": ${warning}`);
 }
 
 /** Runs a macro in the active text editor; reports instead of silently doing nothing when there is none. */
@@ -176,8 +218,8 @@ export async function runInActiveEditor(api: MacroApi, macro: Macro): Promise<bo
         api.showError(`Macro "${macro.name}" needs an open text note with the cursor in it.`);
         return false;
     }
-    const result = await runMacro(macro, makeHost(editor));
-    if (!result.ok) api.showError(`Macro "${macro.name}" failed: ${result.error}`);
+    const result = await runMacro(macro, makeHost(editor, api, macro));
+    reportRun(api, macro, result);
     return result.ok;
 }
 
@@ -289,11 +331,22 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
                 e.preventDefault();
                 e.stopPropagation();
                 const { position } = before;
+                const start = position.getShiftedBy(-hit.abbrev!.length);
                 editor.model.change((writer) => {
-                    writer.remove(writer.createRange(position.getShiftedBy(-hit.abbrev!.length), position));
+                    writer.remove(writer.createRange(start, position));
                 });
-                void runMacro(hit, makeHost(editor)).then((r) => {
-                    if (!r.ok) api.showError(`Macro "${hit.name}" failed: ${r.error}`);
+                dropAnchor(editor, start);
+                void runMacro(hit, makeHost(editor, api, hit)).then((r) => {
+                    reportRun(api, hit, r);
+                    if (r.cancelled) {
+                        // Cancelled from the prompt: give back what was typed instead of eating it.
+                        returnToAnchor(editor);
+                        editor.model.change((writer) => {
+                            writer.insertText(hit.abbrev!, editor.model.document.selection.getFirstPosition());
+                        });
+                    }
+                    // Whatever happened, never leave a stale anchor behind.
+                    if (editor.model.markers?.get(ANCHOR)) editor.model.change((writer) => writer.removeMarker(ANCHOR));
                 });
                 return;
             }

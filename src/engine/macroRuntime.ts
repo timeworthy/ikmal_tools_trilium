@@ -54,6 +54,14 @@ interface LauncherSpec {
 function upsertMacroLaunchers(specs: LauncherSpec[], scriptNoteId: string, prefix: string): string[] {
     const problems: string[] = [];
     const wanted = new Set(specs.map((spec) => `al_${spec.id}`));
+    // Stamp launchers with the package's #packageOwner so disabling or uninstalling the package
+    // moves them off the launch bar.
+    let owner = '';
+    try {
+        owner = api.getNote(scriptNoteId)?.getOwnedLabelValue('packageOwner') || '';
+    } catch (error) {
+        // Not installed through the package manager: nothing to attribute.
+    }
     for (const spec of specs) {
         let isVisible = true;
         let existed = false;
@@ -75,6 +83,7 @@ function upsertMacroLaunchers(specs: LauncherSpec[], scriptNoteId: string, prefi
         note.setLabel('scriptInLauncherContent');
         note.mime = 'application/javascript;env=frontend';
         note.setLabel('iconClass', `bx bx-${spec.icon}`);
+        if (owner) note.setLabel('packageOwner', owner);
         note.save();
         if (spec.mobile && !existed) {
             // Desktop launchers never show on mobile. Clone once; if the user later removes it, leave it removed.

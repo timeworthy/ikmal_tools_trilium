@@ -520,6 +520,15 @@ import { installMacroRuntime } from '../engine/macroRuntime.js';
             // caused a delete/create feedback loop during frontend startup.
             // Leave legacy launchers alone here. A cleanup can be explicit and
             // user-invoked later, but startup should only upsert our own IDs.
+            //
+            // Each launcher is stamped with the package's #packageOwner so the package
+            // manager's disable/uninstall moves it off the launch bar with the package.
+            let owner = '';
+            try {
+                owner = api.getNote(scriptNoteId)?.getOwnedLabelValue('packageOwner') || '';
+            } catch (error) {
+                // Not installed through the package manager: nothing to attribute.
+            }
             for (const launcher of launchers) {
                 let isVisible = true;
                 try {
@@ -549,37 +558,65 @@ import { installMacroRuntime } from '../engine/macroRuntime.js';
                 note.setLabel('scriptInLauncherContent');
                 note.mime = 'application/javascript;env=frontend';
                 note.setLabel('iconClass', `bx bx-${launcher.icon}`);
+                if (owner) note.setLabel('packageOwner', owner);
                 note.save();
-            }
-
-            // The Today dashboard (sun icon) is a note, not a script, so it is a native note
-            // launcher. Its id differs per vault, so it is found by its #todayRoot marker.
-            try {
-                const todayNote = api.getNoteWithLabel('todayRoot');
-                if (todayNote) {
-                    let isVisible = true;
-                    try {
-                        isVisible = api.getNote('al_openToday').getParentBranches()
-                            .some((branch) => branch.parentNoteId === '_lbVisibleLaunchers');
-                    } catch (error) {
-                        // First install: nothing to preserve yet, so show it.
-                    }
-                    const result = api.createOrUpdateLauncher({
-                        id: 'openToday',
-                        type: 'note',
-                        title: 'Today',
-                        icon: 'sun',
-                        isVisible,
-                        targetNoteId: todayNote.noteId,
-                    });
-                    result?.note?.setLabel('iconClass', 'bx bx-sun');
-                }
-            } catch (err) {
-                // A missing Today note must not stop the other launchers from registering.
             }
         }, [LAUNCHER_ACTIONS.map((launcher) => ({
             ...launcher,
             script: launcherScriptFor(launcher.type),
         })), api.currentNote.noteId]);
+
+        // Today is a separate call so it can be retried: the workspace bootstrap creates the
+        // #todayRoot note, and on a first install or update it may not exist yet when this
+        // startup script runs.
+        const TODAY_RETRY_DELAYS_MS = [4000, 12000, 30000, 60000];
+        const syncTodayLauncher = (attempt) => {
+            Promise.resolve(api.runOnBackend(ensureTodayLauncher, [api.currentNote.noteId])).then(
+                (found) => {
+                    if (!found && attempt < TODAY_RETRY_DELAYS_MS.length) {
+                        setTimeout(() => syncTodayLauncher(attempt + 1), TODAY_RETRY_DELAYS_MS[attempt]);
+                    }
+                },
+                () => {},
+            );
+        };
+        syncTodayLauncher(0);
+    }
+
+    // Runs on the backend (runOnBackend serializes the source), so it stays self-contained and
+    // reads the global `api`. Returns whether the Today note was found.
+    function ensureTodayLauncher(scriptNoteId) {
+        // The Today dashboard (sun icon) is a note, not a script, so it is a native note
+        // launcher. Its id differs per vault, so it is found by its #todayRoot marker.
+        try {
+            const todayNote = api.getNoteWithLabel('todayRoot');
+            if (!todayNote) return false;
+            let isVisible = true;
+            try {
+                isVisible = api.getNote('al_openToday').getParentBranches()
+                    .some((branch) => branch.parentNoteId === '_lbVisibleLaunchers');
+            } catch (error) {
+                // First install: nothing to preserve yet, so show it.
+            }
+            const result = api.createOrUpdateLauncher({
+                id: 'openToday',
+                type: 'note',
+                title: 'Today',
+                icon: 'sun',
+                isVisible,
+                targetNoteId: todayNote.noteId,
+            });
+            result?.note?.setLabel('iconClass', 'bx bx-sun');
+            try {
+                const owner = api.getNote(scriptNoteId)?.getOwnedLabelValue('packageOwner') || '';
+                if (owner) result?.note?.setLabel('packageOwner', owner);
+            } catch (error) {
+                // Not installed through the package manager: nothing to attribute.
+            }
+            return true;
+        } catch (err) {
+            // A missing Today note must not stop the other launchers from registering.
+            return false;
+        }
     }
 })();

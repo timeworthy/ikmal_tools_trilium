@@ -3221,6 +3221,11 @@ ifThenRules: []
   function upsertMacroLaunchers(specs, scriptNoteId, prefix) {
     const problems = [];
     const wanted = new Set(specs.map((spec) => `al_${spec.id}`));
+    let owner = "";
+    try {
+      owner = api.getNote(scriptNoteId)?.getOwnedLabelValue("packageOwner") || "";
+    } catch (error) {
+    }
     for (const spec of specs) {
       let isVisible = true;
       let existed = false;
@@ -3245,6 +3250,7 @@ ifThenRules: []
       note.setLabel("scriptInLauncherContent");
       note.mime = "application/javascript;env=frontend";
       note.setLabel("iconClass", `bx bx-${spec.icon}`);
+      if (owner) note.setLabel("packageOwner", owner);
       note.save();
       if (spec.mobile && !existed) {
         try {
@@ -3902,6 +3908,11 @@ ifThenRules: []
     })();`;
     if (typeof api !== "undefined" && typeof api.runOnBackend === "function" && api.currentNote?.noteId) {
       api.runOnBackend((launchers, scriptNoteId) => {
+        let owner = "";
+        try {
+          owner = api.getNote(scriptNoteId)?.getOwnedLabelValue("packageOwner") || "";
+        } catch (error) {
+        }
         for (const launcher of launchers) {
           let isVisible = true;
           try {
@@ -3928,32 +3939,54 @@ ifThenRules: []
           note.setLabel("scriptInLauncherContent");
           note.mime = "application/javascript;env=frontend";
           note.setLabel("iconClass", `bx bx-${launcher.icon}`);
+          if (owner) note.setLabel("packageOwner", owner);
           note.save();
-        }
-        try {
-          const todayNote = api.getNoteWithLabel("todayRoot");
-          if (todayNote) {
-            let isVisible = true;
-            try {
-              isVisible = api.getNote("al_openToday").getParentBranches().some((branch) => branch.parentNoteId === "_lbVisibleLaunchers");
-            } catch (error) {
-            }
-            const result = api.createOrUpdateLauncher({
-              id: "openToday",
-              type: "note",
-              title: "Today",
-              icon: "sun",
-              isVisible,
-              targetNoteId: todayNote.noteId
-            });
-            result?.note?.setLabel("iconClass", "bx bx-sun");
-          }
-        } catch (err) {
         }
       }, [LAUNCHER_ACTIONS.map((launcher) => ({
         ...launcher,
         script: launcherScriptFor(launcher.type)
       })), api.currentNote.noteId]);
+      const TODAY_RETRY_DELAYS_MS = [4e3, 12e3, 3e4, 6e4];
+      const syncTodayLauncher = (attempt) => {
+        Promise.resolve(api.runOnBackend(ensureTodayLauncher, [api.currentNote.noteId])).then(
+          (found) => {
+            if (!found && attempt < TODAY_RETRY_DELAYS_MS.length) {
+              setTimeout(() => syncTodayLauncher(attempt + 1), TODAY_RETRY_DELAYS_MS[attempt]);
+            }
+          },
+          () => {
+          }
+        );
+      };
+      syncTodayLauncher(0);
+    }
+    function ensureTodayLauncher(scriptNoteId) {
+      try {
+        const todayNote = api.getNoteWithLabel("todayRoot");
+        if (!todayNote) return false;
+        let isVisible = true;
+        try {
+          isVisible = api.getNote("al_openToday").getParentBranches().some((branch) => branch.parentNoteId === "_lbVisibleLaunchers");
+        } catch (error) {
+        }
+        const result = api.createOrUpdateLauncher({
+          id: "openToday",
+          type: "note",
+          title: "Today",
+          icon: "sun",
+          isVisible,
+          targetNoteId: todayNote.noteId
+        });
+        result?.note?.setLabel("iconClass", "bx bx-sun");
+        try {
+          const owner = api.getNote(scriptNoteId)?.getOwnedLabelValue("packageOwner") || "";
+          if (owner) result?.note?.setLabel("packageOwner", owner);
+        } catch (error) {
+        }
+        return true;
+      } catch (err) {
+        return false;
+      }
     }
   })();
 })();

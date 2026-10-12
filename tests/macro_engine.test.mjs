@@ -109,6 +109,7 @@ async function launcherWithMacros(macroNotes, { editor: editorOverride, onComman
     const editor = editorOverride === undefined ? defaultEditor : editorOverride;
     const errors = [];
     const dom = new JSDOM('<!doctype html><body></body>', { runScripts: 'outside-only' });
+    dom.window.setTimeout = () => 0; // the Today launcher retries on timers; keep them from holding the process open
     dom.window.api = {
         currentNote: { noteId: 's', hasLabel: () => false },
         showError: (m) => errors.push(m),

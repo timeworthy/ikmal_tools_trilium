@@ -3,7 +3,7 @@
  * their hotkeys, and hosts the macro palette. Decisions live in macroEngine.ts.
  */
 
-import { BUTTON_ID_PREFIX, DEFAULT_BUTTON_ICON, LIBRARY_LABEL, buildLibrary, filterLibrary, type LibraryEntry, type LibraryNoteInput, buildRegistry, buttonSpecs, findByHotkey, matchAbbrev, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput, type MacroRunResult } from './macroEngine.js';
+import { BUTTON_ID_PREFIX, DEFAULT_BUTTON_ICON, describeScopes, inScope, type NoteContext, LIBRARY_LABEL, buildLibrary, filterLibrary, type LibraryEntry, type LibraryNoteInput, buildRegistry, buttonSpecs, findByHotkey, matchAbbrev, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput, type MacroRunResult } from './macroEngine.js';
 import { openModal, escapeHtml } from '../components/nativeUi.js';
 import { MACRO_LIBRARY, libraryLabels } from './macroLibraryData.js';
 
@@ -34,6 +34,8 @@ export interface MacroApi {
     showPromptDialog?(options: { title?: string; message?: string; defaultValue?: string }): Promise<string | null | undefined>;
     runOnBackend?(fn: (...args: any[]) => unknown, args: unknown[]): unknown;
     currentNote?: { noteId: string };
+    /** The note in the active tab; used to apply `#macroScope`. */
+    getActiveContextNote?(): { noteId: string; type: string; hasLabel(name: string): boolean; hasAncestor(noteId: string): boolean } | null | undefined;
 }
 
 // The launcher bundle is not a module, so `api` is the Trilium global here.
@@ -163,7 +165,7 @@ function seedMacroLibrary(seeds: LibrarySeed[]): string[] {
     return problems;
 }
 
-const LABEL_NAMES = ['macroMode', 'macroHotkey', 'macroAbbrev', 'macroButton', 'macroCommand'];
+const LABEL_NAMES = ['macroMode', 'macroHotkey', 'macroAbbrev', 'macroButton', 'macroCommand', 'macroScope'];
 const LIBRARY_LABEL_NAMES = [...LABEL_NAMES, 'macroGroup', 'macroSummary'];
 
 /**
@@ -306,6 +308,19 @@ export async function runInActiveEditor(api: MacroApi, macro: Macro): Promise<bo
 export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey: (e: KeyboardEvent) => boolean) {
     let macros: Macro[] = [];
 
+    /** The active note as the engine sees it, or null when there is none. Read fresh on every use: tabs change. */
+    const noteContext = (): NoteContext | null => {
+        const note = api.getActiveContextNote?.();
+        if (!note) return null;
+        return { type: note.type, hasLabel: (name) => note.hasLabel(name), isUnder: (id) => note.noteId === id || note.hasAncestor(id) };
+    };
+    /** Macros that act in the active note. Unscoped macros never need the note, so they cost nothing. */
+    const available = () => {
+        if (!macros.some((m) => m.scopes.length)) return macros;
+        const context = noteContext();
+        return macros.filter((m) => inScope(m, context));
+    };
+
     const refresh = async () => {
         try {
             const registry = await loadMacros(api, isMac);
@@ -373,6 +388,10 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
 
     const runById = (id: string) => {
         const macro = macros.find((m) => m.id === id);
+        if (macro && !inScope(macro, noteContext())) {
+            api.showMessage(`Macro "${macro.name}" is only available in ${describeScopes(macro.scopes)}.`);
+            return Promise.resolve(false);
+        }
         if (macro) return runInActiveEditor(api, macro);
         api.showError('That macro no longer exists. Reload the frontend.');
         return Promise.resolve(false);
@@ -396,6 +415,7 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
             e.abbrev && `<code title="Type it, then press Tab">${escapeHtml(e.abbrev)}</code>`,
             e.hotkey && `<kbd>${escapeHtml(e.hotkey)}</kbd>`,
             e.button && `<span class="bx bx-${escapeHtml(e.button)}" title="Launch bar button"></span>`,
+            e.scope && `<span class="ns-lib-scope" title="Only acts here">${escapeHtml(e.scope)}</span>`,
         ].filter(Boolean).join(' ');
 
         const render = () => {
@@ -462,7 +482,7 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
         const input = modal.querySelector<HTMLInputElement>('#ikmal-macro-search')!;
         const list = modal.querySelector<HTMLElement>('#ikmal-macro-list')!;
         const render = () => {
-            const matches = searchMacros(macros, input.value);
+            const matches = searchMacros(available(), input.value);
             list.innerHTML = matches.length
                 ? matches.map((m, i) => `<button type="button" class="list-group-item list-group-item-action py-1" data-i="${i}">${escapeHtml(m.name)}</button>`).join('')
                 : '<div class="text-muted small p-2">No macros yet. Switch some on in the macro library, or create a note labelled <code>#ikmalMacro</code>.</div>';
@@ -499,7 +519,7 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
         if (e.key === 'Tab' && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
             const editor = (e.target as { ckeditorInstance?: MacroEditor } | null)?.ckeditorInstance;
             const before = editor && textBeforeCaret(editor);
-            const hit = before && matchAbbrev(macros, before.text);
+            const hit = before && matchAbbrev(available(), before.text);
             if (editor && before && hit) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -524,7 +544,7 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
                 return;
             }
         }
-        const macro = findByHotkey(macros, e);
+        const macro = findByHotkey(available(), e);
         if (macro) {
             e.preventDefault();
             e.stopPropagation();

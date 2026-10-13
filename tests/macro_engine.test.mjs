@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    buildLibrary, filterLibrary, parseHotkey, matchesHotkey, buildMacro, buildRegistry, findByHotkey, searchMacros, runMacro, renderHtml, CURSOR_MARK,
+    buildLibrary, filterLibrary, parseScope, inScope, scopesMayOverlap, describeScopes, parseHotkey, matchesHotkey, buildMacro, buildRegistry, findByHotkey, searchMacros, runMacro, renderHtml, CURSOR_MARK,
     formatDate, promptsIn,
 } from '../dist/engine/macroEngine.js';
 
@@ -99,7 +99,7 @@ import { JSDOM } from 'jsdom';
 
 const launcherBundle = fs.readFileSync(new URL('../dist/artifacts/notes-system-launcher.js', import.meta.url), 'utf8');
 
-async function launcherWithMacros(macroNotes, { editor: editorOverride, onCommand = () => {}, launchers = [], visibleChildren = [], backendDisabled = false, warnings = [], clones = [], prompt, clipboard, messages = [], store, libraryContainer = null } = {}) {
+async function launcherWithMacros(macroNotes, { editor: editorOverride, onCommand = () => {}, launchers = [], visibleChildren = [], backendDisabled = false, warnings = [], clones = [], prompt, clipboard, messages = [], store, libraryContainer = null, activeNote = null } = {}) {
     const inserted = [];
     // Fake CKEditor: records the HTML that went through the data pipeline and into the model.
     const defaultEditor = {
@@ -134,6 +134,7 @@ async function launcherWithMacros(macroNotes, { editor: editorOverride, onComman
             if (backendDisabled && fn.name === 'upsertMacroLaunchers') throw new Error('Backend script execution is disabled.');
             return fn(...args);
         },
+        getActiveContextNote: () => activeNote,
         getNoteWithLabel: (name) => (name === 'macroLibraryRoot' ? container : null),
         createTextNote(parentNoteId, title, content) {
             if (backendDisabled) throw new Error('Backend script execution is disabled.');
@@ -920,4 +921,174 @@ test('seeding: with backend scripting disabled it warns once, the palette still 
     assert.deepEqual(created, []);
     assert.equal(warnings.filter((w) => /macro library not installed/.test(w)).length, 1);
     assert.deepEqual(JSON.parse(JSON.stringify((await dom.window.__ikmalMacros.library()))), []);
+});
+
+// ---- scopes ----
+
+const scoped = (id, title, labels, body = '<p>x</p>') => ({ id, title, body, labels });
+const noteIn = ({ type = 'text', labels = [], ancestors = [], noteId = 'n1' } = {}) => ({
+    noteId, type,
+    hasLabel: (name) => labels.includes(name),
+    hasAncestor: (id) => ancestors.includes(id),
+});
+const ctxOf = (note) => note && { type: note.type, hasLabel: note.hasLabel, isUnder: (id) => note.noteId === id || note.hasAncestor(id) };
+
+test('parseScope accepts type, under and label forms and rejects the rest', () => {
+    assert.deepEqual(parseScope('type:text'), { kind: 'type', value: 'text' });
+    assert.deepEqual(parseScope(' TYPE : Code '), { kind: 'type', value: 'code' });
+    assert.deepEqual(parseScope('under:AbC_123'), { kind: 'under', value: 'AbC_123' });
+    assert.deepEqual(parseScope('label:#meeting'), { kind: 'label', value: 'meeting' });
+    assert.deepEqual(parseScope('label:a:b-c'), { kind: 'label', value: 'a:b-c' });
+    for (const bad of ['', 'text', 'type:', 'type:te xt', 'type:te1', 'under:a/b', 'under:', 'folder:x', 'label:a b']) {
+        assert.equal(parseScope(bad), null, bad);
+    }
+});
+
+test('buildMacro reads #macroScope, ignores blanks, and rejects a malformed entry by name', () => {
+    const ok = buildMacro(note({ labels: { macroScope: ['type:text', '', 'under:abc'] } })).macro;
+    assert.deepEqual(ok.scopes, [{ kind: 'type', value: 'text' }, { kind: 'under', value: 'abc' }]);
+    assert.deepEqual(buildMacro(note()).macro.scopes, []);
+    assert.match(buildMacro(note({ labels: { macroScope: ['nonsense'] } })).error, /invalid #macroScope "nonsense"/);
+});
+
+test('inScope: unscoped acts everywhere, scoped acts when ANY entry matches, and never without a note', () => {
+    const none = { scopes: [] };
+    const any = { scopes: [parseScope('type:code'), parseScope('under:proj'), parseScope('label:meeting')] };
+    assert.equal(inScope(none, null), true);
+    assert.equal(inScope(any, null), false);
+    assert.equal(inScope(any, ctxOf(noteIn({ type: 'code' }))), true);
+    assert.equal(inScope(any, ctxOf(noteIn({ ancestors: ['proj'] }))), true);
+    assert.equal(inScope(any, ctxOf(noteIn({ noteId: 'proj' }))), true, 'the scope note itself counts');
+    assert.equal(inScope(any, ctxOf(noteIn({ labels: ['meeting'] }))), true);
+    assert.equal(inScope(any, ctxOf(noteIn({ type: 'text', ancestors: ['other'], labels: ['x'] }))), false);
+});
+
+test('scopesMayOverlap: only different note types are provably disjoint', () => {
+    const sc = (...raw) => raw.map(parseScope);
+    assert.equal(scopesMayOverlap([], sc('type:text')), true);
+    assert.equal(scopesMayOverlap(sc('type:text'), sc('type:code')), false);
+    assert.equal(scopesMayOverlap(sc('type:text', 'type:book'), sc('type:code')), false);
+    assert.equal(scopesMayOverlap(sc('type:text'), sc('type:text', 'type:code')), true);
+    assert.equal(scopesMayOverlap(sc('type:text'), sc('under:abc')), true, 'a subtree can hold any type');
+    assert.equal(scopesMayOverlap(sc('label:a'), sc('label:b')), true, 'one note can carry both labels');
+    assert.equal(scopesMayOverlap(sc('under:a'), sc('under:b')), true, 'subtrees nest');
+});
+
+test('registry: macros with disjoint scopes may share a hotkey and an abbreviation; overlapping ones may not', () => {
+    const base = { macroHotkey: ['alt+g'], macroAbbrev: ['hi'] };
+    const ok = buildRegistry([scoped('a', 'A', { ...base, macroScope: ['type:text'] }), scoped('b', 'B', { ...base, macroScope: ['type:code'] })]);
+    assert.deepEqual([ok.errors, ok.macros.map((m) => m.name)], [[], ['A', 'B']]);
+
+    for (const other of [[], ['type:text'], ['under:abc']]) {
+        const r = buildRegistry([scoped('a', 'A', { ...base, macroScope: ['type:text'] }), scoped('b', 'B', { ...base, macroScope: other })]);
+        assert.deepEqual(r.macros.map((m) => m.name), ['A'], JSON.stringify(other));
+        assert.match(r.errors[0], /conflicts with "A"/);
+    }
+});
+
+test('registry: a macro skipped for one clash does not keep the other trigger from a later macro', () => {
+    const r = buildRegistry([
+        scoped('a', 'A', { macroAbbrev: ['hi'] }),
+        scoped('b', 'B', { macroAbbrev: ['hi'], macroHotkey: ['alt+g'] }), // skipped: abbreviation taken
+        scoped('c', 'C', { macroHotkey: ['alt+g'] }),
+    ]);
+    assert.deepEqual(r.macros.map((m) => m.name), ['A', 'C'], 'C may have the hotkey B never got');
+});
+
+test('library: the same overlap rule blocks an entry, and the entry reports where it acts', () => {
+    const entries = buildLibrary([
+        lib('on', 'On', { macroAbbrev: ['hi'], macroScope: ['type:text'] }, true),
+        lib('code', 'Code one', { macroAbbrev: ['hi'], macroScope: ['type:code'] }),
+        lib('text', 'Text one', { macroAbbrev: ['hi'], macroScope: ['type:text'] }),
+        lib('all', 'Everywhere', { macroAbbrev: ['hi'] }),
+        lib('bad', 'Bad scope', { macroScope: ['nope'] }),
+    ]);
+    const by = (id) => entries.find((e) => e.id === id);
+    assert.equal(by('code').blocked, undefined);
+    assert.match(by('text').blocked, /already used by "On"/);
+    assert.match(by('all').blocked, /already used by "On"/);
+    assert.match(by('bad').blocked, /invalid #macroScope/);
+    assert.equal(by('on').scope, 'text notes');
+    assert.equal(by('all').scope, null);
+    assert.equal(describeScopes([parseScope('under:abc'), parseScope('label:meeting')]), 'under abc, #meeting');
+});
+
+function pressKey(dom, init) {
+    const e = new dom.window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+    dom.window.document.dispatchEvent(e);
+    return e;
+}
+
+test('hotkey: out of scope it is not intercepted and inserts nothing; in scope it runs', async () => {
+    const macro = fnote('m1', 'Only code', '<p>code</p>', { macroHotkey: ['alt+g'], macroScope: ['type:code'] });
+    const out = await launcherWithMacros([macro], { activeNote: noteIn({ type: 'text' }) });
+    const e = pressKey(out.dom, { key: 'g', altKey: true });
+    await tick();
+    assert.equal(e.defaultPrevented, false, 'the key keeps its normal behaviour');
+    assert.deepEqual(out.inserted, []);
+
+    const inside = await launcherWithMacros([macro], { activeNote: noteIn({ type: 'code' }) });
+    const e2 = pressKey(inside.dom, { key: 'g', altKey: true });
+    await tick();
+    assert.equal(e2.defaultPrevented, true);
+    assert.deepEqual(inside.inserted, ['<p>code</p>']);
+
+    const noNote = await launcherWithMacros([macro], { activeNote: null });
+    assert.equal(pressKey(noNote.dom, { key: 'g', altKey: true }).defaultPrevented, false, 'no active note means a scoped macro stays quiet');
+});
+
+test('hotkey: two macros share a hotkey for different note types and the one for this note runs', async () => {
+    const macros = [
+        fnote('t', 'Text version', '<p>text</p>', { macroHotkey: ['alt+g'], macroScope: ['type:text'] }),
+        fnote('c', 'Code version', '<p>code</p>', { macroHotkey: ['alt+g'], macroScope: ['type:code'] }),
+    ];
+    for (const [type, expected] of [['text', '<p>text</p>'], ['code', '<p>code</p>']]) {
+        const run = await launcherWithMacros(macros, { activeNote: noteIn({ type }) });
+        pressKey(run.dom, { key: 'g', altKey: true });
+        await tick();
+        assert.deepEqual(run.inserted, [expected], type);
+    }
+});
+
+test('Tab: an abbreviation scoped to a subtree expands there and falls through elsewhere', async () => {
+    const macros = [fnote('m', 'Proj sig', '<p>Project sig</p>', { macroAbbrev: ['psig'], macroScope: ['under:proj'] })];
+    const tabWith = async (activeNote) => {
+        const { dom } = await launcherWithMacros(macros, { activeNote });
+        const editor = fakeEditor('psig');
+        const el = dom.window.document.createElement('div');
+        el.ckeditorInstance = editor;
+        dom.window.document.body.append(el);
+        const e = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+        el.dispatchEvent(e);
+        await tick();
+        return { prevented: e.defaultPrevented, inserted: editor.log.inserted };
+    };
+    assert.deepEqual(await tabWith(noteIn({ ancestors: ['proj'] })), { prevented: true, inserted: ['<p>Project sig</p>'] });
+    assert.deepEqual(await tabWith(noteIn({ ancestors: ['elsewhere'] })), { prevented: false, inserted: [] });
+});
+
+test('palette lists only the macros that act in this note, and a launch bar button says why it did nothing', async () => {
+    const macros = [
+        fnote('a', 'Everywhere', '<p>a</p>'),
+        fnote('b', 'Meetings only', '<p>b</p>', { macroScope: ['label:meeting'], macroButton: ['star'] }),
+    ];
+    const listed = async (activeNote) => {
+        const { dom } = await launcherWithMacros(macros, { activeNote });
+        await dom.window.__ikmalMacros.openPalette();
+        return [...dom.window.document.querySelectorAll('#ikmal-macro-list button')].map((b) => b.textContent);
+    };
+    assert.deepEqual(await listed(noteIn({ labels: ['meeting'] })), ['Everywhere', 'Meetings only']);
+    assert.deepEqual(await listed(noteIn()), ['Everywhere']);
+
+    const messages = [];
+    const { dom, inserted } = await launcherWithMacros(macros, { activeNote: noteIn(), messages });
+    assert.equal(await dom.window.__ikmalMacros.runById('b'), false);
+    assert.deepEqual(inserted, []);
+    assert.match(messages[0], /"Meetings only" is only available in #meeting/);
+});
+
+test('library screen shows where a scoped macro acts', async () => {
+    const ui = await openLibraryScreen([libNote('1', 'Code only', { macroScope: ['type:code', 'under:abc'] }), libNote('2', 'Anywhere')]);
+    const chips = [...ui.doc.querySelectorAll('.ns-lib-scope')].map((c) => c.textContent);
+    assert.deepEqual(chips, ['code notes, under abc']);
 });

@@ -14,6 +14,7 @@ Create a note, give it the label `#ikmalMacro`, and put the content to insert in
 | `#macroAbbrev=ians` | Optional typed abbreviation, 2 to 32 characters with no spaces. Type it at the start of a word and press **Tab** to replace it with the macro. |
 | `#macroButton=star` | Optional launcher-bar button that runs the macro. The value is a Boxicons name (empty uses `bolt-circle`). Requires backend scripting (see below). |
 | `#macroCommand=bold` | Optional and repeatable. CKEditor commands run in order after the insert. |
+| `#macroScope=type:text` | Optional and repeatable. Limits where the macro acts (see Scope). |
 | `#ikmalMacroLibrary` | Instead of `#ikmalMacro`: a library macro that stays off until you switch it on (see Macro library). Optional `#macroGroup` and `#macroSummary` describe it in the library screen. |
 
 ### Placing the cursor
@@ -46,6 +47,20 @@ Write a token as `{{name}}` or `{{name:argument}}` anywhere in a macro's body.
 - Clipboard and prompt text is always inserted as plain text, never as HTML, so pasted `<b>` stays literal. Line breaks are kept.
 - If the browser blocks clipboard access, the macro still runs, `{{clipboard}}` inserts nothing, and a message says why.
 - A token with an unknown name is left as you typed it.
+
+## Scope
+
+By default a macro acts in every note. Add `#macroScope` to limit it. The label is repeatable and the macro acts in a note that matches **any** of its entries:
+
+| Entry | Matches |
+| --- | --- |
+| `type:text` | Notes of that type (`text`, `code`, `book`, ...). |
+| `under:<noteId>` | That note and everything inside its subtree. Copy the note id from the note's info. |
+| `label:meeting` | Notes that carry `#meeting`. |
+
+Outside its scope a macro is inert: its hotkey and Tab are not intercepted (the key does what it normally does), it is left out of the palette, and its launch bar button, if any, shows a message saying where it works. The library screen shows a macro's scope next to its triggers.
+
+Two macros may share a hotkey or abbreviation only when both are limited to **different note types**, since a note has just one type. Anything else could apply to the same note, so the later macro is skipped (and logged) as before. A malformed `#macroScope` skips the macro with a message naming it.
 
 ## Launcher buttons need backend scripting
 

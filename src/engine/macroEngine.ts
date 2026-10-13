@@ -13,6 +13,7 @@
  *   #macroAbbrev     -> optional typed abbreviation (e.g. `ians`); typing it then pressing Tab expands the macro
  *   #macroButton     -> optional launcher-bar button; the value is a Boxicons name (default `bolt-circle`)
  *   #macroCommand    -> optional, repeatable; editor commands run in order after the insert
+ *   #macroScope      -> optional, repeatable; `type:text`, `under:<noteId>` or `label:<name>`. The macro only acts in a note matching ANY entry.
  *
  * Tokens in the body, written `{{name}}` or `{{name:argument}}`:
  *   {{cursor}}               where the caret lands after the insert (first one wins, extras are dropped)
@@ -42,6 +43,57 @@ export interface Macro {
     /** Boxicons name (without the `bx-` prefix) when the macro gets a launcher-bar button. */
     button: string | null;
     commands: string[];
+    /** Empty means everywhere; otherwise the macro acts only in a note matching any entry. */
+    scopes: Scope[];
+}
+
+export interface Scope {
+    kind: 'type' | 'under' | 'label';
+    value: string;
+}
+
+/** What the engine needs to know about the active note to apply scopes. */
+export interface NoteContext {
+    type: string;
+    hasLabel(name: string): boolean;
+    /** True for the note itself and for anything inside its subtree. */
+    isUnder(noteId: string): boolean;
+}
+
+/** `type:text`, `under:abc123`, `label:meeting` (a leading # on the label is ignored). Null when malformed. */
+export function parseScope(raw: string): Scope | null {
+    const match = /^(type|under|label)\s*:\s*(.+)$/i.exec(raw.trim());
+    if (!match) return null;
+    const kind = match[1].toLowerCase() as Scope['kind'];
+    const value = match[2].trim().replace(kind === 'label' ? /^#/ : /^$/, '');
+    const valid = kind === 'type' ? /^[a-z]+$/i : kind === 'under' ? /^[A-Za-z0-9_]+$/ : /^[A-Za-z0-9_:-]+$/;
+    return valid.test(value) ? { kind, value: kind === 'type' ? value.toLowerCase() : value } : null;
+}
+
+export function inScope(macro: Pick<Macro, 'scopes'>, context: NoteContext | null): boolean {
+    if (!macro.scopes?.length) return true;
+    if (!context) return false;
+    return macro.scopes.some((scope) =>
+        scope.kind === 'type' ? context.type === scope.value
+            : scope.kind === 'label' ? context.hasLabel(scope.value)
+                : context.isUnder(scope.value));
+}
+
+/**
+ * Whether two macros could both be in scope in the same note. Only note types are provably disjoint
+ * (a note has one type); subtrees nest and labels co-occur, so anything else is assumed to overlap.
+ * Macros that may overlap cannot share a hotkey or abbreviation.
+ */
+export function scopesMayOverlap(a: Scope[] = [], b: Scope[] = []): boolean {
+    if (!a.length || !b.length) return true;
+    const typesOnly = (scopes: Scope[]) => scopes.every((s) => s.kind === 'type');
+    if (!typesOnly(a) || !typesOnly(b)) return true;
+    return a.some((x) => b.some((y) => x.value === y.value));
+}
+
+/** Short text for a scope list, e.g. `text notes, under abc123`. */
+export function describeScopes(scopes: Scope[]): string {
+    return scopes.map((s) => (s.kind === 'type' ? `${s.value} notes` : s.kind === 'under' ? `under ${s.value}` : `#${s.value}`)).join(', ');
 }
 
 export interface MacroNoteInput {
@@ -169,7 +221,15 @@ export function buildMacro(note: MacroNoteInput, isMac = false): BuildResult {
     }
 
     const commands = (note.labels['macroCommand'] ?? []).map((c) => c.trim()).filter(Boolean);
-    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands } };
+
+    const scopes: Scope[] = [];
+    for (const raw of note.labels['macroScope'] ?? []) {
+        if (!raw.trim()) continue;
+        const scope = parseScope(raw);
+        if (!scope) return { error: `Macro "${name}" has invalid #macroScope "${raw}" (use type:text, under:<noteId> or label:<name>).` };
+        scopes.push(scope);
+    }
+    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands, scopes } };
 }
 
 /** A library note as read from Trilium: a macro note that may or may not be switched on. */
@@ -187,6 +247,8 @@ export interface LibraryEntry {
     hotkey: string | null;
     abbrev: string | null;
     button: string | null;
+    /** Where it acts, e.g. "text notes"; null when it acts everywhere. */
+    scope: string | null;
     /** Why it cannot be switched on (invalid macro, or a trigger already used by an enabled macro). Always unset when enabled. */
     blocked?: string;
 }
@@ -201,12 +263,13 @@ export const DEFAULT_LIBRARY_GROUP = 'Other';
  */
 export function buildLibrary(notes: LibraryNoteInput[], isMac = false): LibraryEntry[] {
     const parsed = notes.map((note) => ({ note, result: buildMacro(note, isMac) }));
-    const hotkeyOwners = new Map<string, string>();
-    const abbrevOwners = new Map<string, string>();
+    const hotkeyOwners = new Map<string, Array<{ id: string; scopes: Scope[] }>>();
+    const abbrevOwners = new Map<string, Array<{ id: string; scopes: Scope[] }>>();
     for (const { note, result } of parsed) {
         if (!note.enabled || 'error' in result) continue;
-        if (result.macro.hotkey) hotkeyOwners.set(hotkeyId(result.macro.hotkey), note.id);
-        if (result.macro.abbrev) abbrevOwners.set(result.macro.abbrev, note.id);
+        const owner = { id: note.id, scopes: result.macro.scopes };
+        if (result.macro.hotkey) hotkeyOwners.set(hotkeyId(result.macro.hotkey), [...(hotkeyOwners.get(hotkeyId(result.macro.hotkey)) ?? []), owner]);
+        if (result.macro.abbrev) abbrevOwners.set(result.macro.abbrev, [...(abbrevOwners.get(result.macro.abbrev) ?? []), owner]);
     }
     const entries = parsed.map(({ note, result }): LibraryEntry => {
         const label = (name: string) => note.labels[name]?.[0]?.trim() ?? '';
@@ -219,14 +282,15 @@ export function buildLibrary(notes: LibraryNoteInput[], isMac = false): LibraryE
             hotkey: label('macroHotkey') || null,
             abbrev: label('macroAbbrev') || null,
             button: note.labels['macroButton']?.length ? (label('macroButton') || DEFAULT_BUTTON_ICON) : null,
+            scope: 'macro' in result && result.macro.scopes.length ? describeScopes(result.macro.scopes) : null,
         };
         if (note.enabled) return entry;
         if ('error' in result) return { ...entry, blocked: result.error };
         const { macro } = result;
-        const hotkeyOwner = macro.hotkey && hotkeyOwners.get(hotkeyId(macro.hotkey));
-        if (hotkeyOwner) return { ...entry, blocked: `Hotkey ${entry.hotkey} is already used by "${nameOf(notes, hotkeyOwner)}".` };
-        const abbrevOwner = macro.abbrev && abbrevOwners.get(macro.abbrev);
-        if (abbrevOwner) return { ...entry, blocked: `Abbreviation "${macro.abbrev}" is already used by "${nameOf(notes, abbrevOwner)}".` };
+        const hotkeyOwner = macro.hotkey && hotkeyOwners.get(hotkeyId(macro.hotkey))?.find((o) => scopesMayOverlap(o.scopes, macro.scopes));
+        if (hotkeyOwner) return { ...entry, blocked: `Hotkey ${entry.hotkey} is already used by "${nameOf(notes, hotkeyOwner.id)}".` };
+        const abbrevOwner = macro.abbrev && abbrevOwners.get(macro.abbrev)?.find((o) => scopesMayOverlap(o.scopes, macro.scopes));
+        if (abbrevOwner) return { ...entry, blocked: `Abbreviation "${macro.abbrev}" is already used by "${nameOf(notes, abbrevOwner.id)}".` };
         return entry;
     });
     return entries.sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name));
@@ -246,12 +310,17 @@ export interface Registry {
     errors: string[];
 }
 
-/** Builds every macro, dropping invalid ones and the later of any two sharing a hotkey. */
+/**
+ * Builds every macro, dropping invalid ones and the later of any two that share a hotkey or abbreviation
+ * while their scopes may overlap (see `scopesMayOverlap`).
+ */
 export function buildRegistry(notes: MacroNoteInput[], isMac = false): Registry {
     const macros: Macro[] = [];
     const errors: string[] = [];
-    const owners = new Map<string, string>();
-    const abbrevOwners = new Map<string, string>();
+    const owners = new Map<string, Array<{ name: string; scopes: Scope[] }>>();
+    const abbrevOwners = new Map<string, Array<{ name: string; scopes: Scope[] }>>();
+    const clash = (table: typeof owners, key: string, scopes: Scope[]) => table.get(key)?.find((o) => scopesMayOverlap(o.scopes, scopes));
+    const claim = (table: typeof owners, key: string, owner: { name: string; scopes: Scope[] }) => table.set(key, [...(table.get(key) ?? []), owner]);
     for (const note of notes) {
         const result = buildMacro(note, isMac);
         if ('error' in result) {
@@ -260,22 +329,22 @@ export function buildRegistry(notes: MacroNoteInput[], isMac = false): Registry 
         }
         const { macro } = result;
         if (macro.hotkey) {
-            const id = hotkeyId(macro.hotkey);
-            const owner = owners.get(id);
+            const owner = clash(owners, hotkeyId(macro.hotkey), macro.scopes);
             if (owner) {
-                errors.push(`Macro "${macro.name}" hotkey conflicts with "${owner}"; macro skipped.`);
+                errors.push(`Macro "${macro.name}" hotkey conflicts with "${owner.name}"; macro skipped.`);
                 continue;
             }
-            owners.set(id, macro.name);
         }
         if (macro.abbrev) {
-            const owner = abbrevOwners.get(macro.abbrev);
+            const owner = clash(abbrevOwners, macro.abbrev, macro.scopes);
             if (owner) {
-                errors.push(`Macro "${macro.name}" abbreviation "${macro.abbrev}" conflicts with "${owner}"; macro skipped.`);
+                errors.push(`Macro "${macro.name}" abbreviation "${macro.abbrev}" conflicts with "${owner.name}"; macro skipped.`);
                 continue;
             }
-            abbrevOwners.set(macro.abbrev, macro.name);
         }
+        // Claim only once the macro is accepted, so a skipped macro does not block a later one.
+        if (macro.hotkey) claim(owners, hotkeyId(macro.hotkey), { name: macro.name, scopes: macro.scopes });
+        if (macro.abbrev) claim(abbrevOwners, macro.abbrev, { name: macro.name, scopes: macro.scopes });
         macros.push(macro);
     }
     return { macros, errors };

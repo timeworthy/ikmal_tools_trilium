@@ -23,6 +23,8 @@ export interface LibraryEntryData {
     commands?: string[];
     /** `#macroScope` entries; leave out to act everywhere. */
     scope?: string[];
+    /** Expand as typed; the abbreviation must start with a symbol. */
+    autoExpand?: boolean;
 }
 
 export const MACRO_LIBRARY: LibraryEntryData[] = [
@@ -104,5 +106,6 @@ export function libraryLabels(entry: LibraryEntryData): Array<[string, string]> 
     if (entry.button) labels.push(['macroButton', entry.button]);
     for (const command of entry.commands ?? []) labels.push(['macroCommand', command]);
     for (const scope of entry.scope ?? []) labels.push(['macroScope', scope]);
+    if (entry.autoExpand) labels.push(['macroAutoExpand', '']);
     return labels;
 }

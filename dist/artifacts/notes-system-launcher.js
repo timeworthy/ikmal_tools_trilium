@@ -3120,6 +3120,7 @@ ifThenRules: []
   function matchesHotkey(hotkey, e) {
     return e.key.toLowerCase() === hotkey.key && e.altKey === hotkey.alt && e.ctrlKey === hotkey.ctrl && e.metaKey === hotkey.meta && e.shiftKey === hotkey.shift;
   }
+  var AUTO_EXPAND_START = /^[^\p{L}\p{N}_]/u;
   function buildMacro(note, isMac = false) {
     const label = (name2) => note.labels[name2]?.[0]?.trim() ?? "";
     const name = note.title.trim();
@@ -3158,7 +3159,14 @@ ifThenRules: []
       if (!scope) return { error: `Macro "${name}" has invalid #macroScope "${raw}" (use type:text, under:<noteId> or label:<name>).` };
       scopes.push(scope);
     }
-    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands, scopes } };
+    const autoExpand = (note.labels["macroAutoExpand"]?.length ?? 0) > 0;
+    if (autoExpand) {
+      if (!abbrev) return { error: `Macro "${name}" has #macroAutoExpand but no #macroAbbrev.` };
+      if (!AUTO_EXPAND_START.test(abbrev)) {
+        return { error: `Macro "${name}" has #macroAutoExpand, so its abbreviation "${abbrev}" must start with a symbol such as ; or / (a plain word would expand while you type other words).` };
+      }
+    }
+    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands, scopes, autoExpand } };
   }
   var LIBRARY_LABEL = "ikmalMacroLibrary";
   var DEFAULT_LIBRARY_GROUP = "Other";
@@ -3183,7 +3191,8 @@ ifThenRules: []
         hotkey: label("macroHotkey") || null,
         abbrev: label("macroAbbrev") || null,
         button: note.labels["macroButton"]?.length ? label("macroButton") || DEFAULT_BUTTON_ICON : null,
-        scope: "macro" in result && result.macro.scopes.length ? describeScopes(result.macro.scopes) : null
+        scope: "macro" in result && result.macro.scopes.length ? describeScopes(result.macro.scopes) : null,
+        autoExpand: "macro" in result && result.macro.autoExpand
       };
       if (note.enabled) return entry;
       if ("error" in result) return { ...entry, blocked: result.error };
@@ -3192,9 +3201,21 @@ ifThenRules: []
       if (hotkeyOwner) return { ...entry, blocked: `Hotkey ${entry.hotkey} is already used by "${nameOf(notes, hotkeyOwner.id)}".` };
       const abbrevOwner = macro.abbrev && abbrevOwners.get(macro.abbrev)?.find((o) => scopesMayOverlap(o.scopes, macro.scopes));
       if (abbrevOwner) return { ...entry, blocked: `Abbreviation "${macro.abbrev}" is already used by "${nameOf(notes, abbrevOwner.id)}".` };
+      for (const { note: other, result: otherResult } of parsed) {
+        if (!other.enabled || "error" in otherResult) continue;
+        if (macro.autoExpand && shadowedBy(macro, otherResult.macro)) {
+          return { ...entry, blocked: `"${macro.abbrev}" would expand while you type "${otherResult.macro.abbrev}" ("${other.title.trim()}").` };
+        }
+        if (otherResult.macro.autoExpand && shadowedBy(otherResult.macro, macro)) {
+          return { ...entry, blocked: `"${other.title.trim()}" auto-expands "${otherResult.macro.abbrev}", which you type on the way to "${macro.abbrev}".` };
+        }
+      }
       return entry;
     });
     return entries.sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name));
+  }
+  function shadowedBy(auto, other) {
+    return !!auto.abbrev && !!other.abbrev && other.abbrev.length > auto.abbrev.length && other.abbrev.startsWith(auto.abbrev) && scopesMayOverlap(auto.scopes, other.scopes);
   }
   function filterLibrary(entries, query) {
     const q = query.trim().toLowerCase();
@@ -3234,7 +3255,12 @@ ifThenRules: []
       if (macro.abbrev) claim(abbrevOwners, macro.abbrev, { name: macro.name, scopes: macro.scopes });
       macros.push(macro);
     }
-    return { macros, errors };
+    const kept = macros.filter((auto) => {
+      const longer = auto.autoExpand ? macros.find((other) => other !== auto && shadowedBy(auto, other)) : void 0;
+      if (longer) errors.push(`Macro "${auto.name}" auto-expands "${auto.abbrev}", which you type on the way to "${longer.abbrev}" ("${longer.name}"); macro skipped.`);
+      return !longer;
+    });
+    return { macros: kept, errors };
   }
   function findByHotkey(macros, e) {
     return macros.find((m) => m.hotkey && matchesHotkey(m.hotkey, e));
@@ -3558,6 +3584,7 @@ ifThenRules: []
     if (entry.button) labels.push(["macroButton", entry.button]);
     for (const command of entry.commands ?? []) labels.push(["macroCommand", command]);
     for (const scope of entry.scope ?? []) labels.push(["macroScope", scope]);
+    if (entry.autoExpand) labels.push(["macroAutoExpand", ""]);
     return labels;
   }
 
@@ -3657,7 +3684,7 @@ ifThenRules: []
     if (added) container.setLabel("macroLibrarySeeded", [...seeded].join(","));
     return problems;
   }
-  var LABEL_NAMES = ["macroMode", "macroHotkey", "macroAbbrev", "macroButton", "macroCommand", "macroScope"];
+  var LABEL_NAMES = ["macroMode", "macroHotkey", "macroAbbrev", "macroButton", "macroCommand", "macroScope", "macroAutoExpand"];
   var LIBRARY_LABEL_NAMES = [...LABEL_NAMES, "macroGroup", "macroSummary"];
   function setMacroEnabled(noteId, enabled, libraryLabel) {
     const note = api.getNote(noteId);
@@ -3726,6 +3753,7 @@ ifThenRules: []
     return { text, position };
   }
   var ANCHOR = "ikmal-macro-anchor";
+  var EXPANSION = "ikmal-macro-expansion";
   function dropAnchor(editor, position) {
     editor.model.change((writer) => {
       if (!editor.model.markers) return;
@@ -3741,7 +3769,26 @@ ifThenRules: []
     });
     return true;
   }
-  function makeHost(editor, api2, macro) {
+  function clearExpansion(editor) {
+    if (editor.model.markers?.get(EXPANSION)) editor.model.change((writer) => writer.removeMarker(EXPANSION));
+  }
+  function undoExpansion(editor, abbrev) {
+    const marker = editor.model.markers?.get(EXPANSION);
+    if (!marker) return false;
+    const range = marker.getRange();
+    const selection = editor.model.document.selection;
+    const caret = selection.getFirstPosition();
+    if (!selection.isCollapsed || !(range.containsPosition(caret) || range.start.isEqual(caret) || range.end.isEqual(caret))) return false;
+    editor.model.change((writer) => {
+      const start = range.start;
+      writer.removeMarker(EXPANSION);
+      writer.remove(range);
+      writer.setSelection(start);
+      writer.insertText(abbrev, start);
+    });
+    return true;
+  }
+  function makeHost(editor, api2, macro, onInserted) {
     return {
       // A dismissed dialog comes back as null/undefined; both mean "cancel the macro".
       prompt: async (label, defaultValue) => {
@@ -3754,7 +3801,8 @@ ifThenRules: []
       // the editor's own HTML -> model pipeline to get real formatting.
       insertHtml: (html) => {
         returnToAnchor(editor);
-        editor.model.insertContent(editor.data.toModel(editor.data.processor.toView(html)));
+        const range = editor.model.insertContent(editor.data.toModel(editor.data.processor.toView(html)));
+        if (range) onInserted?.(range);
       },
       placeCursor: (mark) => placeCursorOnMark(editor, mark),
       executeCommand: (name) => editor.execute(name)
@@ -3873,7 +3921,7 @@ ifThenRules: []
       const input = modal.querySelector("#ikmal-library-search");
       const list = modal.querySelector("#ikmal-library-list");
       const chips = (e) => [
-        e.abbrev && `<code title="Type it, then press Tab">${escapeHtml(e.abbrev)}</code>`,
+        e.abbrev && `<code title="${e.autoExpand ? "Expands as you type it" : "Type it, then press Tab"}">${escapeHtml(e.abbrev)}</code>${e.autoExpand ? '<span class="ns-lib-scope" title="No Tab needed">auto</span>' : ""}`,
         e.hotkey && `<kbd>${escapeHtml(e.hotkey)}</kbd>`,
         e.button && `<span class="bx bx-${escapeHtml(e.button)}" title="Launch bar button"></span>`,
         e.scope && `<span class="ns-lib-scope" title="Only acts here">${escapeHtml(e.scope)}</span>`
@@ -3961,6 +4009,51 @@ ifThenRules: []
       render();
       input.focus();
     };
+    let lastExpansion = null;
+    const expand = (editor, position, hit, auto) => {
+      const start = position.getShiftedBy(-hit.abbrev.length);
+      editor.model.change((writer) => {
+        writer.remove(writer.createRange(start, position));
+      });
+      dropAnchor(editor, start);
+      const onInserted = auto ? (range) => editor.model.change((writer) => {
+        if (editor.model.markers?.get(EXPANSION)) writer.removeMarker(EXPANSION);
+        writer.addMarker(EXPANSION, { range, usingOperation: false, affectsData: false });
+        lastExpansion = { editor, abbrev: hit.abbrev };
+      }) : void 0;
+      void runMacro(hit, makeHost(editor, api2, hit, onInserted)).then((r) => {
+        reportRun(api2, hit, r);
+        if (r.cancelled) {
+          returnToAnchor(editor);
+          editor.model.change((writer) => {
+            writer.insertText(hit.abbrev, editor.model.document.selection.getFirstPosition());
+          });
+        }
+        if (editor.model.markers?.get(ANCHOR)) editor.model.change((writer) => writer.removeMarker(ANCHOR));
+      });
+    };
+    const watched = /* @__PURE__ */ new WeakSet();
+    const ensureAutoExpand = (editor) => {
+      if (watched.has(editor) || !editor.model.document.on) return;
+      watched.add(editor);
+      editor.model.document.on("change:data", (_event, batch) => {
+        if (!batch?.isTyping) return;
+        const auto = available().filter((m) => m.autoExpand);
+        if (!auto.length) return;
+        const before = textBeforeCaret(editor);
+        const hit = before && matchAbbrev(auto, before.text);
+        if (!hit) return;
+        queueMicrotask(() => {
+          const now = textBeforeCaret(editor);
+          if (now && now.text.endsWith(hit.abbrev)) expand(editor, now.position, hit, true);
+        });
+      });
+    };
+    document.addEventListener("pointerdown", () => {
+      if (!lastExpansion) return;
+      clearExpansion(lastExpansion.editor);
+      lastExpansion = null;
+    }, true);
     document.addEventListener("keydown", (e) => {
       if (e.isComposing) return;
       if (paletteHotkey(e)) {
@@ -3969,29 +4062,29 @@ ifThenRules: []
         void openPalette();
         return;
       }
+      const keyTarget = e.target?.ckeditorInstance;
+      if (keyTarget) ensureAutoExpand(keyTarget);
+      if (lastExpansion) {
+        const record = lastExpansion;
+        if (e.key === "Backspace" && !e.altKey && !e.ctrlKey && !e.metaKey && keyTarget === record.editor && undoExpansion(record.editor, record.abbrev)) {
+          lastExpansion = null;
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        if (!["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(e.key)) {
+          clearExpansion(record.editor);
+          lastExpansion = null;
+        }
+      }
       if (e.key === "Tab" && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        const editor = e.target?.ckeditorInstance;
+        const editor = keyTarget;
         const before = editor && textBeforeCaret(editor);
         const hit = before && matchAbbrev(available(), before.text);
         if (editor && before && hit) {
           e.preventDefault();
           e.stopPropagation();
-          const { position } = before;
-          const start = position.getShiftedBy(-hit.abbrev.length);
-          editor.model.change((writer) => {
-            writer.remove(writer.createRange(start, position));
-          });
-          dropAnchor(editor, start);
-          void runMacro(hit, makeHost(editor, api2, hit)).then((r) => {
-            reportRun(api2, hit, r);
-            if (r.cancelled) {
-              returnToAnchor(editor);
-              editor.model.change((writer) => {
-                writer.insertText(hit.abbrev, editor.model.document.selection.getFirstPosition());
-              });
-            }
-            if (editor.model.markers?.get(ANCHOR)) editor.model.change((writer) => writer.removeMarker(ANCHOR));
-          });
+          expand(editor, before.position, hit, false);
           return;
         }
       }

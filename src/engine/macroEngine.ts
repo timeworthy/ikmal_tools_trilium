@@ -13,6 +13,7 @@
  *   #macroAbbrev     -> optional typed abbreviation (e.g. `ians`); typing it then pressing Tab expands the macro
  *   #macroButton     -> optional launcher-bar button; the value is a Boxicons name (default `bolt-circle`)
  *   #macroCommand    -> optional, repeatable; editor commands run in order after the insert
+ *   #macroAutoExpand -> optional flag; the abbreviation expands as soon as it is typed, no Tab. It must start with a symbol (`;sig`, `/date`)
  *   #macroScope      -> optional, repeatable; `type:text`, `under:<noteId>` or `label:<name>`. The macro only acts in a note matching ANY entry.
  *
  * Tokens in the body, written `{{name}}` or `{{name:argument}}`:
@@ -45,6 +46,8 @@ export interface Macro {
     commands: string[];
     /** Empty means everywhere; otherwise the macro acts only in a note matching any entry. */
     scopes: Scope[];
+    /** Expand the abbreviation as it is typed instead of waiting for Tab. Only abbreviations starting with a symbol qualify. */
+    autoExpand: boolean;
 }
 
 export interface Scope {
@@ -184,6 +187,9 @@ export function matchesHotkey(hotkey: Hotkey, e: Pick<KeyboardEvent, 'key' | 'al
     );
 }
 
+/** An auto-expanding abbreviation must begin with a character that is not a letter, digit or underscore. */
+const AUTO_EXPAND_START = /^[^\p{L}\p{N}_]/u;
+
 export type BuildResult = { macro: Macro } | { error: string };
 
 export function buildMacro(note: MacroNoteInput, isMac = false): BuildResult {
@@ -230,7 +236,14 @@ export function buildMacro(note: MacroNoteInput, isMac = false): BuildResult {
         if (!scope) return { error: `Macro "${name}" has invalid #macroScope "${raw}" (use type:text, under:<noteId> or label:<name>).` };
         scopes.push(scope);
     }
-    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands, scopes } };
+    const autoExpand = (note.labels['macroAutoExpand']?.length ?? 0) > 0;
+    if (autoExpand) {
+        if (!abbrev) return { error: `Macro "${name}" has #macroAutoExpand but no #macroAbbrev.` };
+        if (!AUTO_EXPAND_START.test(abbrev)) {
+            return { error: `Macro "${name}" has #macroAutoExpand, so its abbreviation "${abbrev}" must start with a symbol such as ; or / (a plain word would expand while you type other words).` };
+        }
+    }
+    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands, scopes, autoExpand } };
 }
 
 /** A library note as read from Trilium: a macro note that may or may not be switched on. */
@@ -250,6 +263,8 @@ export interface LibraryEntry {
     button: string | null;
     /** Where it acts, e.g. "text notes"; null when it acts everywhere. */
     scope: string | null;
+    /** Its abbreviation expands as it is typed, without Tab. */
+    autoExpand: boolean;
     /** Why it cannot be switched on (invalid macro, or a trigger already used by an enabled macro). Always unset when enabled. */
     blocked?: string;
 }
@@ -284,6 +299,7 @@ export function buildLibrary(notes: LibraryNoteInput[], isMac = false): LibraryE
             abbrev: label('macroAbbrev') || null,
             button: note.labels['macroButton']?.length ? (label('macroButton') || DEFAULT_BUTTON_ICON) : null,
             scope: 'macro' in result && result.macro.scopes.length ? describeScopes(result.macro.scopes) : null,
+            autoExpand: 'macro' in result && result.macro.autoExpand,
         };
         if (note.enabled) return entry;
         if ('error' in result) return { ...entry, blocked: result.error };
@@ -292,9 +308,28 @@ export function buildLibrary(notes: LibraryNoteInput[], isMac = false): LibraryE
         if (hotkeyOwner) return { ...entry, blocked: `Hotkey ${entry.hotkey} is already used by "${nameOf(notes, hotkeyOwner.id)}".` };
         const abbrevOwner = macro.abbrev && abbrevOwners.get(macro.abbrev)?.find((o) => scopesMayOverlap(o.scopes, macro.scopes));
         if (abbrevOwner) return { ...entry, blocked: `Abbreviation "${macro.abbrev}" is already used by "${nameOf(notes, abbrevOwner.id)}".` };
+        for (const { note: other, result: otherResult } of parsed) {
+            if (!other.enabled || 'error' in otherResult) continue;
+            if (macro.autoExpand && shadowedBy(macro, otherResult.macro)) {
+                return { ...entry, blocked: `"${macro.abbrev}" would expand while you type "${otherResult.macro.abbrev}" ("${other.title.trim()}").` };
+            }
+            if (otherResult.macro.autoExpand && shadowedBy(otherResult.macro, macro)) {
+                return { ...entry, blocked: `"${other.title.trim()}" auto-expands "${otherResult.macro.abbrev}", which you type on the way to "${macro.abbrev}".` };
+            }
+        }
         return entry;
     });
     return entries.sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name));
+}
+
+/**
+ * An auto-expanding abbreviation fires the moment it is typed, so it also fires on the way to any longer
+ * abbreviation it begins (`;s` while typing `;sig`), making the longer one impossible to type. This is the
+ * macro that cannot be reached, if there is one.
+ */
+function shadowedBy(auto: Pick<Macro, 'abbrev' | 'scopes'>, other: Pick<Macro, 'abbrev' | 'scopes'>): boolean {
+    return !!auto.abbrev && !!other.abbrev && other.abbrev.length > auto.abbrev.length && other.abbrev.startsWith(auto.abbrev)
+        && scopesMayOverlap(auto.scopes, other.scopes);
 }
 
 /** Case-insensitive match on name, group, summary and triggers; an empty query keeps everything. */
@@ -348,7 +383,13 @@ export function buildRegistry(notes: MacroNoteInput[], isMac = false): Registry 
         if (macro.abbrev) claim(abbrevOwners, macro.abbrev, { name: macro.name, scopes: macro.scopes });
         macros.push(macro);
     }
-    return { macros, errors };
+    // Drop auto-expanding macros that would swallow a longer abbreviation on the way to typing it.
+    const kept = macros.filter((auto) => {
+        const longer = auto.autoExpand ? macros.find((other) => other !== auto && shadowedBy(auto, other)) : undefined;
+        if (longer) errors.push(`Macro "${auto.name}" auto-expands "${auto.abbrev}", which you type on the way to "${longer.abbrev}" ("${longer.name}"); macro skipped.`);
+        return !longer;
+    });
+    return { macros: kept, errors };
 }
 
 export function findByHotkey(macros: Macro[], e: Parameters<typeof matchesHotkey>[1]): Macro | undefined {

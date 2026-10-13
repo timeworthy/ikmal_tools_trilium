@@ -1093,6 +1093,224 @@ test('library screen shows where a scoped macro acts', async () => {
     assert.deepEqual(chips, ['code notes, under abc']);
 });
 
+// ---- auto-expand ----
+
+const autoNote = (id, title, labels, body = '<p>Ian</p>') => fnote(id, title, body, { macroAutoExpand: [''], ...labels });
+
+test('#macroAutoExpand needs an abbreviation that starts with a symbol', () => {
+    const build = (labels) => buildMacro(note({ labels }));
+    assert.equal(build({ macroAbbrev: [';sig'], macroAutoExpand: [''] }).macro.autoExpand, true);
+    assert.equal(build({ macroAbbrev: ['/date'], macroAutoExpand: [''] }).macro.autoExpand, true);
+    assert.equal(build({ macroAbbrev: ['sig'] }).macro.autoExpand, false);
+    assert.match(build({ macroAutoExpand: [''] }).error, /no #macroAbbrev/);
+    assert.match(build({ macroAbbrev: ['sig'], macroAutoExpand: [''] }).error, /must start with a symbol/);
+    assert.match(build({ macroAbbrev: ['1up'], macroAutoExpand: [''] }).error, /must start with a symbol/);
+    assert.match(build({ macroAbbrev: ['_x'], macroAutoExpand: [''] }).error, /must start with a symbol/);
+});
+
+test('an auto-expanding abbreviation that begins a longer one is skipped, so the longer one stays typeable', () => {
+    const r = buildRegistry([
+        { id: 'a', title: 'Short', body: 'x', labels: { macroAbbrev: [';s'], macroAutoExpand: [''] } },
+        { id: 'b', title: 'Long', body: 'x', labels: { macroAbbrev: [';sig'] } },
+        { id: 'c', title: 'Auto long', body: 'x', labels: { macroAbbrev: [';date'], macroAutoExpand: [''] } },
+    ]);
+    assert.deepEqual(r.macros.map((m) => m.name), ['Long', 'Auto long']);
+    assert.match(r.errors[0], /"Short" auto-expands ";s", which you type on the way to ";sig"/);
+    // Not a prefix, so both are fine; and a non-auto short one never shadows anything.
+    const ok = buildRegistry([
+        { id: 'a', title: 'A', body: 'x', labels: { macroAbbrev: [';s'] } },
+        { id: 'b', title: 'B', body: 'x', labels: { macroAbbrev: [';sig'], macroAutoExpand: [''] } },
+    ]);
+    assert.deepEqual([ok.errors, ok.macros.length], [[], 2]);
+});
+
+test('library blocks enabling an auto-expand entry that shadows, or is shadowed by, an enabled abbreviation', () => {
+    const entries = buildLibrary([
+        lib('on', 'On', { macroAbbrev: [';sig'] }, true),
+        lib('short', 'Short auto', { macroAbbrev: [';s'], macroAutoExpand: [''] }),
+        lib('fine', 'Fine auto', { macroAbbrev: [';date'], macroAutoExpand: [''] }),
+        lib('onauto', 'On auto', { macroAbbrev: [';go'], macroAutoExpand: [''] }, true),
+        lib('longer', 'Longer', { macroAbbrev: [';gone'] }),
+    ]);
+    const by = (id) => entries.find((e) => e.id === id);
+    assert.match(by('short').blocked, /";s" would expand while you type ";sig"/);
+    assert.equal(by('fine').blocked, undefined);
+    assert.match(by('longer').blocked, /"On auto" auto-expands ";go", which you type on the way to ";gone"/);
+    assert.equal(by('fine').autoExpand, true);
+});
+
+// A fake editor that really types: text, caret, markers, and change:data events like CKEditor's.
+function richEditor(initial = '') {
+    let text = initial;
+    let caret = initial.length;
+    const log = { inserted: [] };
+    const handlers = {};
+    const markers = {};
+    const pos = (offset) => ({
+        offset,
+        parent: { getChildren: () => [{ startOffset: 0, data: text, is: (t) => t === '$text' }] },
+        getShiftedBy: (n) => pos(offset + n),
+        isEqual: (other) => other.offset === offset,
+    });
+    const range = (a, b) => ({ start: pos(a), end: pos(b), containsPosition: (p) => p.offset > a && p.offset < b });
+    const writer = {
+        createRange: (a, b = a) => range(a.offset, b.offset),
+        createText: (t) => ({ text: t }),
+        remove: (r) => {
+            const { offset: a } = r.start, { offset: b } = r.end;
+            text = text.slice(0, a) + text.slice(b);
+            if (caret > a) caret = Math.max(a, caret - (b - a));
+        },
+        insertText: (t, p) => { text = text.slice(0, p.offset) + t + text.slice(p.offset); if (caret === p.offset) caret += t.length; },
+        setSelection: (p) => { caret = p.offset; },
+        addMarker: (name, { range: r }) => { markers[name] = { getStart: () => r.start, getRange: () => r }; },
+        removeMarker: (name) => { delete markers[name]; },
+    };
+    const fire = (batch) => (handlers['change:data'] ?? []).forEach((cb) => cb({}, batch));
+    return {
+        log,
+        get text() { return text; },
+        get caret() { return caret; },
+        execute() {},
+        data: { processor: { toView: (h) => ({ view: h }) }, toModel: (v) => ({ model: v.view }) },
+        model: {
+            markers: { get: (name) => markers[name] },
+            document: { getRoot: () => ({}), selection: { isCollapsed: true, getFirstPosition: () => pos(caret) }, on: (evt, cb) => (handlers[evt] ??= []).push(cb) },
+            insertContent: (m) => {
+                if ('text' in m) { text = text.slice(0, caret) + m.text + text.slice(caret); caret += m.text.length; return range(caret - m.text.length, caret); }
+                log.inserted.push(m.model);
+                const plain = m.model.replace(/<[^>]+>/g, '');
+                const r = range(caret, caret + plain.length);
+                text = text.slice(0, caret) + plain + text.slice(caret);
+                caret += plain.length;
+                return r;
+            },
+            change: (cb) => cb(writer),
+        },
+        /** Type one character like a user: keydown first (that is when the runtime attaches), then the model change. */
+        async type(char, dom) {
+            this.keydown(dom, char);
+            text = text.slice(0, caret) + char + text.slice(caret);
+            caret += 1;
+            fire({ isTyping: true });
+            await tick();
+        },
+        async typeText(str, dom) { for (const c of str) await this.type(c, dom); },
+        async paste(str) { text = text.slice(0, caret) + str + text.slice(caret); caret += str.length; fire({ isTyping: false }); await tick(); },
+        keydown(dom, key, init = {}) {
+            const el = this.el ?? (this.el = Object.assign(dom.window.document.createElement('div'), { ckeditorInstance: this }));
+            if (!el.isConnected) dom.window.document.body.append(el);
+            const e = new dom.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init });
+            el.dispatchEvent(e);
+            return e;
+        },
+    };
+}
+
+async function autoSetup(notes, editorText = '', opts = {}) {
+    const { dom, ...rest } = await launcherWithMacros(notes, opts);
+    return { dom, editor: richEditor(editorText), ...rest };
+}
+
+test('auto-expand: the macro appears the moment the last character is typed, with no Tab', async () => {
+    const { dom, editor } = await autoSetup([autoNote('m', 'Sig', { macroAbbrev: [';sig'] })]);
+    await editor.typeText(';si', dom);
+    assert.equal(editor.text, ';si', 'not yet');
+    await editor.type('g', dom);
+    assert.equal(editor.text, 'Ian');
+    assert.deepEqual(editor.log.inserted, ['<p>Ian</p>']);
+});
+
+test('auto-expand: only at a word start, only for auto macros, never for a paste', async () => {
+    const macros = [autoNote('m', 'Sig', { macroAbbrev: [';sig'] }), fnote('t', 'Tab one', '<p>tab</p>', { macroAbbrev: ['tb'] })];
+    const a = await autoSetup(macros);
+    await a.editor.typeText('foo;sig', a.dom);
+    assert.equal(a.editor.text, 'foo;sig', 'glued to a word: left alone');
+    await a.editor.typeText(' ;sig', a.dom);
+    assert.equal(a.editor.text, 'foo;sig Ian', 'after a space: expands');
+
+    const b = await autoSetup(macros);
+    await b.editor.typeText('tb', b.dom);
+    assert.equal(b.editor.text, 'tb', 'a Tab-only abbreviation does not auto-expand');
+
+    const c = await autoSetup(macros);
+    await c.editor.paste(';sig');
+    assert.equal(c.editor.text, ';sig', 'pasted text is not typing');
+    assert.deepEqual(c.editor.log.inserted, []);
+});
+
+test('auto-expand: Backspace straight after an expansion puts the typed abbreviation back', async () => {
+    const { dom, editor } = await autoSetup([autoNote('m', 'Sig', { macroAbbrev: [';sig'] })], 'hi ');
+    await editor.typeText(';sig', dom);
+    assert.equal(editor.text, 'hi Ian');
+    const e = editor.keydown(dom, 'Backspace');
+    await tick();
+    assert.equal(e.defaultPrevented, true);
+    assert.equal(editor.text, 'hi ;sig');
+    assert.equal(editor.caret, 7);
+    // And it is a one-shot: the next Backspace is an ordinary one, and the macro does not fire again by itself.
+    assert.equal(editor.keydown(dom, 'Backspace').defaultPrevented, false);
+    assert.deepEqual(editor.log.inserted, ['<p>Ian</p>']);
+});
+
+test('auto-expand: any other key, or a click, commits the expansion', async () => {
+    const macros = [autoNote('m', 'Sig', { macroAbbrev: [';sig'] })];
+    const typed = await autoSetup(macros);
+    await typed.editor.typeText(';sig', typed.dom);
+    await typed.editor.type('!', typed.dom);
+    assert.equal(typed.editor.keydown(typed.dom, 'Backspace').defaultPrevented, false, 'a typed key commits it');
+    assert.equal(typed.editor.text, 'Ian!');
+
+    const clicked = await autoSetup(macros);
+    await clicked.editor.typeText(';sig', clicked.dom);
+    clicked.dom.window.document.dispatchEvent(new clicked.dom.window.Event('pointerdown', { bubbles: true }));
+    assert.equal(clicked.editor.keydown(clicked.dom, 'Backspace').defaultPrevented, false, 'a click commits it');
+    assert.equal(clicked.editor.text, 'Ian');
+
+    const modifier = await autoSetup(macros);
+    await modifier.editor.typeText(';sig', modifier.dom);
+    modifier.editor.keydown(modifier.dom, 'Shift');
+    assert.equal(modifier.editor.keydown(modifier.dom, 'Backspace').defaultPrevented, true, 'a bare modifier does not commit it');
+    assert.equal(modifier.editor.text, ';sig');
+});
+
+test('auto-expand: a prompt macro asks, inserts the answer where it was typed, and a cancel restores the abbreviation', async () => {
+    const note = autoNote('m', 'Greet', { macroAbbrev: [';hi'] }, '<p>Hi {{prompt:Name}}</p>');
+    const answered = await autoSetup([note], 'a ', { prompt: async () => 'Ian' });
+    await answered.editor.typeText(';hi', answered.dom);
+    await tick();
+    assert.equal(answered.editor.text, 'a Hi Ian');
+
+    const cancelled = await autoSetup([note], 'a ', { prompt: async () => null });
+    await cancelled.editor.typeText(';hi', cancelled.dom);
+    await tick();
+    assert.equal(cancelled.editor.text, 'a ;hi');
+});
+
+test('auto-expand respects scope and the active note', async () => {
+    const macros = [autoNote('m', 'Code sig', { macroAbbrev: [';sig'], macroScope: ['type:code'] })];
+    const out = await autoSetup(macros, '', { activeNote: noteIn({ type: 'text' }) });
+    await out.editor.typeText(';sig', out.dom);
+    assert.equal(out.editor.text, ';sig');
+    const inside = await autoSetup(macros, '', { activeNote: noteIn({ type: 'code' }) });
+    await inside.editor.typeText(';sig', inside.dom);
+    assert.equal(inside.editor.text, 'Ian');
+});
+
+test('auto-expand: the longest of several auto abbreviations that end the text wins', async () => {
+    const { dom, editor } = await autoSetup([
+        autoNote('a', 'A', { macroAbbrev: [';x'] }, '<p>short</p>'),
+        autoNote('b', 'B', { macroAbbrev: ['/;x'] }, '<p>long</p>'),
+    ]);
+    await editor.typeText('/;x', dom);
+    assert.equal(editor.text, 'long');
+});
+
+test('library screen marks auto-expanding entries', async () => {
+    const ui = await openLibraryScreen([libNote('1', 'Date', { macroAbbrev: [';d'], macroAutoExpand: [''] })]);
+    assert.ok([...ui.doc.querySelectorAll('.ns-lib-scope')].some((c) => c.textContent === 'auto'));
+});
+
 test('buttonSpecs only builds a launcher for a macro whose id is a plain note id', () => {
     const mk = (id) => ({ id, name: 'N', button: 'star' });
     const specs = buttonSpecs([mk('abc_123'), mk('x");alert(1);("'), mk('has space'), mk('')]);

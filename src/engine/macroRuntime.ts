@@ -20,8 +20,8 @@ export interface MacroEditor {
     data: { processor: { toView(html: string): unknown }; toModel(viewFragment: any): unknown };
     model: {
         markers?: { get(name: string): any };
-        document: { getRoot(): any; selection: any };
-        insertContent(content: any): void;
+        document: { getRoot(): any; selection: any; on?(event: string, callback: (...args: any[]) => void): void };
+        insertContent(content: any): any;
         change(callback: (writer: any) => void): void;
     };
 }
@@ -165,7 +165,7 @@ function seedMacroLibrary(seeds: LibrarySeed[]): string[] {
     return problems;
 }
 
-const LABEL_NAMES = ['macroMode', 'macroHotkey', 'macroAbbrev', 'macroButton', 'macroCommand', 'macroScope'];
+const LABEL_NAMES = ['macroMode', 'macroHotkey', 'macroAbbrev', 'macroButton', 'macroCommand', 'macroScope', 'macroAutoExpand'];
 const LIBRARY_LABEL_NAMES = [...LABEL_NAMES, 'macroGroup', 'macroSummary'];
 
 /**
@@ -248,6 +248,8 @@ export function textBeforeCaret(editor: MacroEditor): { text: string; position: 
  * remembers where it was typed with a marker (which follows later edits) and goes back to it.
  */
 const ANCHOR = 'ikmal-macro-anchor';
+/** Marks what an auto-expansion inserted, so an immediate Backspace can take it back out. */
+const EXPANSION = 'ikmal-macro-expansion';
 
 function dropAnchor(editor: MacroEditor, position: any) {
     editor.model.change((writer) => {
@@ -267,7 +269,40 @@ function returnToAnchor(editor: MacroEditor): boolean {
     return true;
 }
 
-function makeHost(editor: MacroEditor, api: MacroApi, macro: Macro): MacroHost {
+interface ExpansionRecord {
+    editor: MacroEditor;
+    abbrev: string;
+}
+
+function clearExpansion(editor: MacroEditor) {
+    if (editor.model.markers?.get(EXPANSION)) editor.model.change((writer) => writer.removeMarker(EXPANSION));
+}
+
+/**
+ * Takes an auto-expansion back out: removes what it inserted and puts the typed abbreviation back.
+ * Only while the caret is still in or at the edge of the inserted content. Editor commands the macro
+ * ran are not reversed. Returns whether it did anything.
+ */
+function undoExpansion(editor: MacroEditor, abbrev: string): boolean {
+    const marker = editor.model.markers?.get(EXPANSION);
+    if (!marker) return false;
+    const range = marker.getRange();
+    const selection = editor.model.document.selection;
+    const caret = selection.getFirstPosition();
+    if (!selection.isCollapsed || !(range.containsPosition(caret) || range.start.isEqual(caret) || range.end.isEqual(caret))) return false;
+    editor.model.change((writer) => {
+        const start = range.start;
+        writer.removeMarker(EXPANSION);
+        writer.remove(range);
+        writer.setSelection(start);
+        // insertContent, not writer.insertText: a block macro typed into an empty paragraph replaces that
+        // paragraph, and insertContent wraps the restored text in a new one instead of leaving it loose.
+        editor.model.insertContent(writer.createText(abbrev));
+    });
+    return true;
+}
+
+function makeHost(editor: MacroEditor, api: MacroApi, macro: Macro, onInserted?: (range: any) => void): MacroHost {
     return {
         // A dismissed dialog comes back as null/undefined; both mean "cancel the macro".
         prompt: async (label, defaultValue) => {
@@ -280,7 +315,8 @@ function makeHost(editor: MacroEditor, api: MacroApi, macro: Macro): MacroHost {
         // the editor's own HTML -> model pipeline to get real formatting.
         insertHtml: (html) => {
             returnToAnchor(editor);
-            editor.model.insertContent(editor.data.toModel(editor.data.processor.toView(html)));
+            const range = editor.model.insertContent(editor.data.toModel(editor.data.processor.toView(html)));
+            if (range) onInserted?.(range);
         },
         placeCursor: (mark) => placeCursorOnMark(editor, mark),
         executeCommand: (name) => editor.execute(name),
@@ -412,7 +448,7 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
         const list = modal.querySelector<HTMLElement>('#ikmal-library-list')!;
 
         const chips = (e: LibraryEntry) => [
-            e.abbrev && `<code title="Type it, then press Tab">${escapeHtml(e.abbrev)}</code>`,
+            e.abbrev && `<code title="${e.autoExpand ? 'Expands as you type it' : 'Type it, then press Tab'}">${escapeHtml(e.abbrev)}</code>${e.autoExpand ? '<span class="ns-lib-scope" title="No Tab needed">auto</span>' : ''}`,
             e.hotkey && `<kbd>${escapeHtml(e.hotkey)}</kbd>`,
             e.button && `<span class="bx bx-${escapeHtml(e.button)}" title="Launch bar button"></span>`,
             e.scope && `<span class="ns-lib-scope" title="Only acts here">${escapeHtml(e.scope)}</span>`,
@@ -508,6 +544,67 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
         input.focus();
     };
 
+    let lastExpansion: ExpansionRecord | null = null;
+
+    /** Replaces the abbreviation that ends at `position` with the macro. `auto` records the insert so Backspace can undo it. */
+    const expand = (editor: MacroEditor, position: any, hit: Macro, auto: boolean) => {
+        const start = position.getShiftedBy(-hit.abbrev!.length);
+        editor.model.change((writer) => {
+            writer.remove(writer.createRange(start, position));
+        });
+        dropAnchor(editor, start);
+        const onInserted = auto
+            ? (range: any) => editor.model.change((writer) => {
+                if (editor.model.markers?.get(EXPANSION)) writer.removeMarker(EXPANSION);
+                writer.addMarker(EXPANSION, { range, usingOperation: false, affectsData: false });
+                lastExpansion = { editor, abbrev: hit.abbrev! };
+            })
+            : undefined;
+        void runMacro(hit, makeHost(editor, api, hit, onInserted)).then((r) => {
+            reportRun(api, hit, r);
+            if (r.cancelled) {
+                // Cancelled from the prompt: give back what was typed instead of eating it.
+                returnToAnchor(editor);
+                editor.model.change((writer) => {
+                    writer.insertText(hit.abbrev!, editor.model.document.selection.getFirstPosition());
+                });
+            }
+            // Whatever happened, never leave a stale anchor behind.
+            if (editor.model.markers?.get(ANCHOR)) editor.model.change((writer) => writer.removeMarker(ANCHOR));
+        });
+    };
+
+    const watched = new WeakSet<object>();
+    /**
+     * Watches typing in an editor for an auto-expanding abbreviation. Runs on the keystroke that is about
+     * to be typed, so the listener exists in time. Only typing counts: a paste, an undo or our own edits are
+     * different batches, so none of them can expand anything.
+     */
+    const ensureAutoExpand = (editor: MacroEditor) => {
+        if (watched.has(editor) || !editor.model.document.on) return;
+        watched.add(editor);
+        editor.model.document.on('change:data', (_event: unknown, batch: { isTyping?: boolean } | undefined) => {
+            if (!batch?.isTyping) return;
+            const auto = available().filter((m) => m.autoExpand);
+            if (!auto.length) return;
+            const before = textBeforeCaret(editor);
+            const hit = before && matchAbbrev(auto, before.text);
+            if (!hit) return;
+            // Not inside the change event itself: that would nest an edit in the one being reported.
+            queueMicrotask(() => {
+                const now = textBeforeCaret(editor);
+                if (now && now.text.endsWith(hit.abbrev!)) expand(editor, now.position, hit, true);
+            });
+        });
+    };
+
+    // A click moves the caret somewhere new, so what was just expanded is committed.
+    document.addEventListener('pointerdown', () => {
+        if (!lastExpansion) return;
+        clearExpansion(lastExpansion.editor);
+        lastExpansion = null;
+    }, true);
+
     document.addEventListener('keydown', (e) => {
         if (e.isComposing) return;
         if (paletteHotkey(e)) {
@@ -516,31 +613,30 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
             void openPalette();
             return;
         }
+        const keyTarget = (e.target as { ckeditorInstance?: MacroEditor } | null)?.ckeditorInstance;
+        if (keyTarget) ensureAutoExpand(keyTarget);
+        if (lastExpansion) {
+            // Backspace straight after an auto-expansion takes it back; any other key keeps it.
+            const record = lastExpansion;
+            if (e.key === 'Backspace' && !e.altKey && !e.ctrlKey && !e.metaKey && keyTarget === record.editor && undoExpansion(record.editor, record.abbrev)) {
+                lastExpansion = null;
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
+            if (!['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(e.key)) {
+                clearExpansion(record.editor);
+                lastExpansion = null;
+            }
+        }
         if (e.key === 'Tab' && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-            const editor = (e.target as { ckeditorInstance?: MacroEditor } | null)?.ckeditorInstance;
+            const editor = keyTarget;
             const before = editor && textBeforeCaret(editor);
             const hit = before && matchAbbrev(available(), before.text);
             if (editor && before && hit) {
                 e.preventDefault();
                 e.stopPropagation();
-                const { position } = before;
-                const start = position.getShiftedBy(-hit.abbrev!.length);
-                editor.model.change((writer) => {
-                    writer.remove(writer.createRange(start, position));
-                });
-                dropAnchor(editor, start);
-                void runMacro(hit, makeHost(editor, api, hit)).then((r) => {
-                    reportRun(api, hit, r);
-                    if (r.cancelled) {
-                        // Cancelled from the prompt: give back what was typed instead of eating it.
-                        returnToAnchor(editor);
-                        editor.model.change((writer) => {
-                            writer.insertText(hit.abbrev!, editor.model.document.selection.getFirstPosition());
-                        });
-                    }
-                    // Whatever happened, never leave a stale anchor behind.
-                    if (editor.model.markers?.get(ANCHOR)) editor.model.change((writer) => writer.removeMarker(ANCHOR));
-                });
+                expand(editor, before.position, hit, false);
                 return;
             }
         }

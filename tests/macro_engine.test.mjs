@@ -99,7 +99,7 @@ import { JSDOM } from 'jsdom';
 
 const launcherBundle = fs.readFileSync(new URL('../dist/artifacts/notes-system-launcher.js', import.meta.url), 'utf8');
 
-async function launcherWithMacros(macroNotes, { editor: editorOverride, onCommand = () => {}, launchers = [], visibleChildren = [], backendDisabled = false, warnings = [], clones = [], prompt, clipboard, messages = [], store } = {}) {
+async function launcherWithMacros(macroNotes, { editor: editorOverride, onCommand = () => {}, launchers = [], visibleChildren = [], backendDisabled = false, warnings = [], clones = [], prompt, clipboard, messages = [], store, libraryContainer = null } = {}) {
     const inserted = [];
     // Fake CKEditor: records the HTML that went through the data pipeline and into the model.
     const defaultEditor = {
@@ -109,6 +109,20 @@ async function launcherWithMacros(macroNotes, { editor: editorOverride, onComman
     };
     const editor = editorOverride === undefined ? defaultEditor : editorOverride;
     const errors = [];
+    // Backend notes created through createTextNote, shaped like BNote for the labels the seeder uses.
+    const created = [];
+    let container = libraryContainer;
+    const backendNote = (parentNoteId, title, content) => {
+        const labels = {};
+        const note = {
+            noteId: `new${created.length + 1}`, parentNoteId, title, content, labels,
+            setLabel: (n, v = '') => { labels[n] = [v]; },
+            addLabel: (n, v = '') => { (labels[n] ??= []).push(v); },
+            getLabelValue: (n) => labels[n]?.[0] ?? null,
+        };
+        created.push(note);
+        return note;
+    };
     const dom = new JSDOM('<!doctype html><body></body>', { runScripts: 'outside-only' });
     dom.window.setTimeout = () => 0; // the Today launcher retries on timers; keep them from holding the process open
     dom.window.api = {
@@ -120,7 +134,13 @@ async function launcherWithMacros(macroNotes, { editor: editorOverride, onComman
             if (backendDisabled && fn.name === 'upsertMacroLaunchers') throw new Error('Backend script execution is disabled.');
             return fn(...args);
         },
-        getNoteWithLabel: () => null,
+        getNoteWithLabel: (name) => (name === 'macroLibraryRoot' ? container : null),
+        createTextNote(parentNoteId, title, content) {
+            if (backendDisabled) throw new Error('Backend script execution is disabled.');
+            const note = backendNote(parentNoteId, title, content);
+            if (parentNoteId === 'root') container = note;
+            return { note };
+        },
         getNote(id) {
             const stored = store?.find((n) => n.noteId === id);
             if (stored) return stored;
@@ -145,7 +165,7 @@ async function launcherWithMacros(macroNotes, { editor: editorOverride, onComman
     dom.window.eval(`window.glob = {}; ${launcherBundle}`);
     await dom.window.__ikmalMacros.refresh();
     await tick(); // let the startup refresh finish and its button sync run
-    return { dom, inserted, errors };
+    return { dom, inserted, errors, created };
 }
 
 const fnote = (id, title, body, labels = {}) => ({
@@ -396,22 +416,6 @@ test('launcher: no macro buttons means no warning even when backend scripting is
     assert.deepEqual(warnings.filter((w) => /launcher buttons/.test(w)), []);
 });
 
-test('example macros: every shipped example builds, has a distinct trigger, and renders one cursor', () => {
-    const examples = JSON.parse(fs.readFileSync(new URL('../data/example_macros.json', import.meta.url), 'utf8'));
-    const notes = examples.map((e, i) => {
-        const labels = {};
-        for (const [name, value] of e.labels) (labels[name] ??= []).push(value);
-        return { id: `ex${i}`, title: e.title, body: e.body, labels };
-    });
-    const { macros, errors } = buildRegistry(notes);
-    assert.deepEqual(errors, []);
-    assert.equal(macros.length, examples.length, 'none dropped as invalid or conflicting');
-    for (const m of macros) {
-        assert.equal(renderHtml(m).split(CURSOR_MARK).length - 1, 1, `${m.name} places the caret exactly once`);
-    }
-    const literal = macros.find((m) => m.name === 'Literal snippet');
-    assert.match(renderHtml(literal), /Use &lt;b&gt; and &amp; as typed\.<br>/);
-});
 
 // ---- tokens ----
 
@@ -437,6 +441,20 @@ test('clipboard and prompt values are escaped and cannot become markup or tokens
     );
     assert.equal(html, '<p>&lt;b&gt;x&lt;/b&gt; &amp; {{cursor}}<br>next / &lt;img src=x onerror=1&gt;</p>');
     assert.ok(!html.includes(CURSOR_MARK), 'a {{cursor}} that arrived through the clipboard is just text');
+});
+
+test('{{clipboard:url}} only lets through addresses that are safe in an href', () => {
+    const url = (clipboard) => renderHtml(tm('{{clipboard:url}}'), { clipboard });
+    assert.equal(url('https://a.example/x?y=1'), 'https://a.example/x?y=1');
+    assert.equal(url('  mailto:me@example.com '), 'mailto:me@example.com');
+    assert.equal(url('tel:+15551234'), 'tel:+15551234');
+    assert.equal(url('/notes/abc#frag'), '/notes/abc#frag');
+    assert.equal(url('#top'), '#top');
+    assert.equal(url('javascript:alert(1)'), '');
+    assert.equal(url('java\nscript:alert(1)'), '');
+    assert.equal(url('DATA:text/html;base64,AAAA'), '');
+    assert.equal(url('file:///etc/passwd'), '');
+    assert.equal(renderHtml(tm('{{clipboard}}'), { clipboard: 'javascript:alert(1)' }), 'javascript:alert(1)', 'plain {{clipboard}} stays literal text, not a link');
 });
 
 test('a prompt token falls back to its default, and unknown tokens are left as typed', () => {
@@ -807,4 +825,99 @@ test('library screen: an empty library says so, and the palette links to the lib
     await tick(); await tick();
     assert.ok(dom.window.document.querySelector('#ikmal-library-list'), 'the library opened from the palette');
     assert.equal(dom.window.document.querySelector('#ikmal-macro-list'), null, 'and the palette closed');
+});
+
+// ---- shipped library ----
+
+const shipped = await import('../dist/engine/macroLibraryData.js');
+
+const libNotesFromData = () => shipped.MACRO_LIBRARY.map((e) => {
+    const labels = {};
+    for (const [name, value] of shipped.libraryLabels(e)) (labels[name] ??= []).push(value);
+    return { id: e.id, title: e.title, body: e.body, labels, enabled: false };
+});
+
+test('shipped library: 15 to 20 entries, each a valid macro, with unique ids', () => {
+    const n = shipped.MACRO_LIBRARY.length;
+    assert.ok(n >= 15 && n <= 20, `${n} entries`);
+    assert.equal(new Set(shipped.MACRO_LIBRARY.map((e) => e.id)).size, n);
+    const entries = buildLibrary(libNotesFromData());
+    assert.deepEqual(entries.filter((e) => e.blocked).map((e) => [e.name, e.blocked]), []);
+    assert.deepEqual([...new Set(entries.map((e) => e.group))], ['Dates', 'Editor', 'Project', 'Writing']);
+});
+
+test('shipped library: no two entries share a hotkey or abbreviation, so any set can be on together', () => {
+    const everythingOn = libNotesFromData().map((n) => ({ ...n, enabled: true }));
+    const { macros, errors } = buildRegistry(everythingOn);
+    assert.deepEqual(errors, []);
+    assert.equal(macros.length, shipped.MACRO_LIBRARY.length);
+    assert.equal(buildLibrary(everythingOn).filter((e) => e.blocked).length, 0);
+});
+
+test('shipped library: every entry places the caret at most once and has a summary', () => {
+    const { macros } = buildRegistry(libNotesFromData().map((n) => ({ ...n, enabled: true })));
+    for (const m of macros) {
+        const carets = renderHtml(m, { now: when, prompts: Object.fromEntries(promptsIn(m.content).map((p) => [p.label, 'x'])), clipboard: 'https://example.com' }).split(CURSOR_MARK).length - 1;
+        assert.ok(carets <= 1, `${m.name} has ${carets} carets`);
+    }
+    assert.ok(shipped.MACRO_LIBRARY.every((e) => e.summary.length > 10));
+});
+
+test('shipped library: the literal snippet escapes, the link keeps a hostile clipboard inside its attribute', () => {
+    const { macros } = buildRegistry(libNotesFromData().map((n) => ({ ...n, enabled: true })));
+    const byName = (name) => macros.find((m) => m.name === name);
+    assert.match(renderHtml(byName('Literal snippet')), /Use &lt;b&gt; and &amp; as typed\.<br>/);
+    const link = renderHtml(byName('Link from clipboard'), { clipboard: 'x" onmouseover="alert(1)', prompts: { 'Link text': 'go' } });
+    assert.equal(link, '<a href="x&quot; onmouseover=&quot;alert(1)">go</a>&nbsp;' + CURSOR_MARK);
+    for (const hostile of ['javascript:alert(1)', ' JaVa\tScRiPt:alert(1)', 'data:text/html,<script>', 'vbscript:x']) {
+        assert.equal(renderHtml(byName('Link from clipboard'), { clipboard: hostile, prompts: { 'Link text': 'go' } }), '<a href="">go</a>&nbsp;' + CURSOR_MARK, hostile);
+    }
+    assert.match(renderHtml(byName('Link from clipboard'), { clipboard: 'https://example.com/a?b=1&c=2', prompts: { 'Link text': 'go' } }), /href="https:\/\/example\.com\/a\?b=1&amp;c=2"/);
+});
+
+test('the checklist macro runs its editor command, and the launch-bar button entry gets one', () => {
+    const checklist = shipped.MACRO_LIBRARY.find((e) => e.id === 'checklist-item');
+    assert.deepEqual(checklist.commands, ['todoList']);
+    assert.equal(shipped.libraryLabels(checklist).filter(([n]) => n === 'macroCommand').length, 1);
+    assert.equal(shipped.MACRO_LIBRARY.find((e) => e.id === 'changelog-entry').button, 'list-check');
+});
+
+test('seeding: first start creates the container and every entry, inert and in order', async () => {
+    const { created } = await launcherWithMacros([]);
+    const container = created.find((n) => n.parentNoteId === 'root');
+    assert.equal(container.title, 'Macro Library');
+    assert.ok('macroLibraryRoot' in container.labels);
+    const entries = created.filter((n) => n !== container);
+    assert.equal(entries.length, shipped.MACRO_LIBRARY.length);
+    assert.ok(entries.every((n) => n.parentNoteId === container.noteId));
+    assert.ok(entries.every((n) => 'ikmalMacroLibrary' in n.labels && !('ikmalMacro' in n.labels)), 'nothing is enabled by default');
+    assert.deepEqual(container.getLabelValue('macroLibrarySeeded').split(','), shipped.MACRO_LIBRARY.map((e) => e.id));
+    const checklist = entries.find((n) => n.title === 'Checklist item');
+    assert.deepEqual(checklist.labels.macroCommand, ['todoList']);
+    assert.deepEqual(checklist.labels.macroHotkey, ['alt+shift+l']);
+});
+
+test('seeding: a second start changes nothing, and an entry the user deleted or edited is left alone', async () => {
+    const first = await launcherWithMacros([]);
+    const container = first.created.find((n) => n.parentNoteId === 'root');
+    const second = await launcherWithMacros([], { libraryContainer: container });
+    assert.deepEqual(second.created, [], 'nothing is created again, including entries the user may have deleted');
+    assert.equal(container.getLabelValue('macroLibrarySeeded').split(',').length, shipped.MACRO_LIBRARY.length);
+});
+
+test('seeding: an entry added in a newer version appears alone, and the seen list grows', async () => {
+    const first = await launcherWithMacros([]);
+    const container = first.created.find((n) => n.parentNoteId === 'root');
+    container.setLabel('macroLibrarySeeded', shipped.MACRO_LIBRARY.slice(1).map((e) => e.id).join(',')); // pretend the first one is new
+    const second = await launcherWithMacros([], { libraryContainer: container });
+    assert.deepEqual(second.created.map((n) => n.title), [shipped.MACRO_LIBRARY[0].title]);
+    assert.equal(container.getLabelValue('macroLibrarySeeded').split(',').length, shipped.MACRO_LIBRARY.length);
+});
+
+test('seeding: with backend scripting disabled it warns once, the palette still works, and nothing throws', async () => {
+    const warnings = [];
+    const { dom, created } = await launcherWithMacros([fnote('m1', 'Mine', '<p>x</p>', { macroHotkey: ['alt+g'] })], { backendDisabled: true, warnings });
+    assert.deepEqual(created, []);
+    assert.equal(warnings.filter((w) => /macro library not installed/.test(w)).length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify((await dom.window.__ikmalMacros.library()))), []);
 });

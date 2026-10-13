@@ -3250,8 +3250,9 @@ ifThenRules: []
     return best;
   }
   var BUTTON_ID_PREFIX = "macro_";
+  var SAFE_NOTE_ID = /^[A-Za-z0-9_]+$/;
   function buttonSpecs(macros) {
-    return macros.filter((m) => m.button).map((m) => ({ id: `${BUTTON_ID_PREFIX}${m.id}`, macroId: m.id, title: m.name, icon: m.button }));
+    return macros.filter((m) => m.button && SAFE_NOTE_ID.test(m.id)).map((m) => ({ id: `${BUTTON_ID_PREFIX}${m.id}`, macroId: m.id, title: m.name, icon: m.button }));
   }
   function searchMacros(macros, query) {
     const q = query.trim().toLowerCase();

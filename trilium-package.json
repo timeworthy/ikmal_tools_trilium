@@ -165,7 +165,7 @@
       "id": "notes-system-today-page",
       "type": "render",
       "source": "dist/artifacts/notes-system-today-page.js",
-      "integrity": "sha256-nbLfi13a00dn+MdN9ehrC5MI0PGpruyNbbhl5e9YilU=",
+      "integrity": "sha256-2O9Ardy5650p6bXMtJMS1CEul15zBo6aIHfHH3Q/yu4=",
       "title": "Ikmal Tools for Trilium: Today",
       "activation": "manual"
     },
@@ -173,7 +173,7 @@
       "id": "notes-system-dashboard",
       "type": "render",
       "source": "dist/artifacts/notes-system-dashboard.js",
-      "integrity": "sha256-fAGZqWFWRgV4BsNLJCN/y8Jt5IX4LGOcCaPjBgrjbbQ=",
+      "integrity": "sha256-m47lGhKB7W/SLCOf1dxVrvRSjM6rYwVvshC4OkwstIc=",
       "title": "Ikmal Tools for Trilium: Today Homepage & Workspace Dashboard",
       "activation": "manual"
     },
@@ -181,7 +181,7 @@
       "id": "notes-system-settings",
       "type": "render",
       "source": "dist/artifacts/notes-system-settings.js",
-      "integrity": "sha256-wap2C3gj6G/1hDnRrwrhjFg98d7gqmQZtZeVwfcPbWc=",
+      "integrity": "sha256-Ad0oISdmGO4OOSgjhfr/ZiEYGLjnOa3V/06ixKJba0s=",
       "title": "Ikmal Tools for Trilium: Settings",
       "activation": "manual"
     },
@@ -253,7 +253,7 @@
       "id": "notes-system-launcher",
       "type": "frontend",
       "source": "dist/artifacts/notes-system-launcher.js",
-      "integrity": "sha256-evcMFeaspgLh1MSbIUM7Nzaf+qkfrRZCTpgEKV4vM8I=",
+      "integrity": "sha256-sMmg+OI8rlEYeEQumARocJm1Vg1cEn/uop/eoi4WVKE=",
       "title": "Ikmal Tools for Trilium: Header Launcher Bar & Hotkey",
       "activation": "startup",
       "mobile": true

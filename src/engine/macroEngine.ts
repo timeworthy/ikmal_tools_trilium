@@ -380,9 +380,12 @@ export interface ButtonSpec {
 
 export const BUTTON_ID_PREFIX = 'macro_';
 
+/** Trilium note ids: the only characters that may reach a launcher id or the script text built from one. */
+const SAFE_NOTE_ID = /^[A-Za-z0-9_]+$/;
+
 export function buttonSpecs(macros: Macro[]): ButtonSpec[] {
     return macros
-        .filter((m) => m.button)
+        .filter((m) => m.button && SAFE_NOTE_ID.test(m.id))
         .map((m) => ({ id: `${BUTTON_ID_PREFIX}${m.id}`, macroId: m.id, title: m.name, icon: m.button! }));
 }
 

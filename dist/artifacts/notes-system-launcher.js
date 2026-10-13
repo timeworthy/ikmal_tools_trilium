@@ -3068,7 +3068,7 @@ ifThenRules: []
     const match = /^(type|under|label)\s*:\s*(.+)$/i.exec(raw.trim());
     if (!match) return null;
     const kind = match[1].toLowerCase();
-    const value = match[2].trim().replace(kind === "label" ? /^#/ : /^$/, "");
+    const value = kind === "label" ? match[2].trim().replace(/^#/, "") : match[2].trim();
     const valid = kind === "type" ? /^[a-z]+$/i : kind === "under" ? /^[A-Za-z0-9_]+$/ : /^[A-Za-z0-9_:-]+$/;
     return valid.test(value) ? { kind, value: kind === "type" ? value.toLowerCase() : value } : null;
   }

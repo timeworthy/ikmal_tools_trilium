@@ -3064,6 +3064,28 @@ ifThenRules: []
   }
 
   // src/engine/macroEngine.ts
+  function parseScope(raw) {
+    const match = /^(type|under|label)\s*:\s*(.+)$/i.exec(raw.trim());
+    if (!match) return null;
+    const kind = match[1].toLowerCase();
+    const value = match[2].trim().replace(kind === "label" ? /^#/ : /^$/, "");
+    const valid = kind === "type" ? /^[a-z]+$/i : kind === "under" ? /^[A-Za-z0-9_]+$/ : /^[A-Za-z0-9_:-]+$/;
+    return valid.test(value) ? { kind, value: kind === "type" ? value.toLowerCase() : value } : null;
+  }
+  function inScope(macro, context) {
+    if (!macro.scopes?.length) return true;
+    if (!context) return false;
+    return macro.scopes.some((scope) => scope.kind === "type" ? context.type === scope.value : scope.kind === "label" ? context.hasLabel(scope.value) : context.isUnder(scope.value));
+  }
+  function scopesMayOverlap(a = [], b = []) {
+    if (!a.length || !b.length) return true;
+    const typesOnly = (scopes) => scopes.every((s) => s.kind === "type");
+    if (!typesOnly(a) || !typesOnly(b)) return true;
+    return a.some((x) => b.some((y) => x.value === y.value));
+  }
+  function describeScopes(scopes) {
+    return scopes.map((s) => s.kind === "type" ? `${s.value} notes` : s.kind === "under" ? `under ${s.value}` : `#${s.value}`).join(", ");
+  }
   var CURSOR_MARK = "\uE000";
   var RESERVED_HOTKEYS = ["alt+t", "alt+s", "alt+m", "mod+shift+k", "mod+shift+j", "mod+?"];
   var DEFAULT_BUTTON_ICON = "bolt-circle";
@@ -3129,7 +3151,14 @@ ifThenRules: []
       }
     }
     const commands = (note.labels["macroCommand"] ?? []).map((c) => c.trim()).filter(Boolean);
-    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands } };
+    const scopes = [];
+    for (const raw of note.labels["macroScope"] ?? []) {
+      if (!raw.trim()) continue;
+      const scope = parseScope(raw);
+      if (!scope) return { error: `Macro "${name}" has invalid #macroScope "${raw}" (use type:text, under:<noteId> or label:<name>).` };
+      scopes.push(scope);
+    }
+    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands, scopes } };
   }
   var LIBRARY_LABEL = "ikmalMacroLibrary";
   var DEFAULT_LIBRARY_GROUP = "Other";
@@ -3139,8 +3168,9 @@ ifThenRules: []
     const abbrevOwners = /* @__PURE__ */ new Map();
     for (const { note, result } of parsed) {
       if (!note.enabled || "error" in result) continue;
-      if (result.macro.hotkey) hotkeyOwners.set(hotkeyId(result.macro.hotkey), note.id);
-      if (result.macro.abbrev) abbrevOwners.set(result.macro.abbrev, note.id);
+      const owner = { id: note.id, scopes: result.macro.scopes };
+      if (result.macro.hotkey) hotkeyOwners.set(hotkeyId(result.macro.hotkey), [...hotkeyOwners.get(hotkeyId(result.macro.hotkey)) ?? [], owner]);
+      if (result.macro.abbrev) abbrevOwners.set(result.macro.abbrev, [...abbrevOwners.get(result.macro.abbrev) ?? [], owner]);
     }
     const entries = parsed.map(({ note, result }) => {
       const label = (name) => note.labels[name]?.[0]?.trim() ?? "";
@@ -3152,15 +3182,16 @@ ifThenRules: []
         enabled: note.enabled,
         hotkey: label("macroHotkey") || null,
         abbrev: label("macroAbbrev") || null,
-        button: note.labels["macroButton"]?.length ? label("macroButton") || DEFAULT_BUTTON_ICON : null
+        button: note.labels["macroButton"]?.length ? label("macroButton") || DEFAULT_BUTTON_ICON : null,
+        scope: "macro" in result && result.macro.scopes.length ? describeScopes(result.macro.scopes) : null
       };
       if (note.enabled) return entry;
       if ("error" in result) return { ...entry, blocked: result.error };
       const { macro } = result;
-      const hotkeyOwner = macro.hotkey && hotkeyOwners.get(hotkeyId(macro.hotkey));
-      if (hotkeyOwner) return { ...entry, blocked: `Hotkey ${entry.hotkey} is already used by "${nameOf(notes, hotkeyOwner)}".` };
-      const abbrevOwner = macro.abbrev && abbrevOwners.get(macro.abbrev);
-      if (abbrevOwner) return { ...entry, blocked: `Abbreviation "${macro.abbrev}" is already used by "${nameOf(notes, abbrevOwner)}".` };
+      const hotkeyOwner = macro.hotkey && hotkeyOwners.get(hotkeyId(macro.hotkey))?.find((o) => scopesMayOverlap(o.scopes, macro.scopes));
+      if (hotkeyOwner) return { ...entry, blocked: `Hotkey ${entry.hotkey} is already used by "${nameOf(notes, hotkeyOwner.id)}".` };
+      const abbrevOwner = macro.abbrev && abbrevOwners.get(macro.abbrev)?.find((o) => scopesMayOverlap(o.scopes, macro.scopes));
+      if (abbrevOwner) return { ...entry, blocked: `Abbreviation "${macro.abbrev}" is already used by "${nameOf(notes, abbrevOwner.id)}".` };
       return entry;
     });
     return entries.sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name));
@@ -3176,6 +3207,8 @@ ifThenRules: []
     const errors = [];
     const owners = /* @__PURE__ */ new Map();
     const abbrevOwners = /* @__PURE__ */ new Map();
+    const clash = (table, key, scopes) => table.get(key)?.find((o) => scopesMayOverlap(o.scopes, scopes));
+    const claim = (table, key, owner) => table.set(key, [...table.get(key) ?? [], owner]);
     for (const note of notes) {
       const result = buildMacro(note, isMac);
       if ("error" in result) {
@@ -3184,22 +3217,21 @@ ifThenRules: []
       }
       const { macro } = result;
       if (macro.hotkey) {
-        const id = hotkeyId(macro.hotkey);
-        const owner = owners.get(id);
+        const owner = clash(owners, hotkeyId(macro.hotkey), macro.scopes);
         if (owner) {
-          errors.push(`Macro "${macro.name}" hotkey conflicts with "${owner}"; macro skipped.`);
+          errors.push(`Macro "${macro.name}" hotkey conflicts with "${owner.name}"; macro skipped.`);
           continue;
         }
-        owners.set(id, macro.name);
       }
       if (macro.abbrev) {
-        const owner = abbrevOwners.get(macro.abbrev);
+        const owner = clash(abbrevOwners, macro.abbrev, macro.scopes);
         if (owner) {
-          errors.push(`Macro "${macro.name}" abbreviation "${macro.abbrev}" conflicts with "${owner}"; macro skipped.`);
+          errors.push(`Macro "${macro.name}" abbreviation "${macro.abbrev}" conflicts with "${owner.name}"; macro skipped.`);
           continue;
         }
-        abbrevOwners.set(macro.abbrev, macro.name);
       }
+      if (macro.hotkey) claim(owners, hotkeyId(macro.hotkey), { name: macro.name, scopes: macro.scopes });
+      if (macro.abbrev) claim(abbrevOwners, macro.abbrev, { name: macro.name, scopes: macro.scopes });
       macros.push(macro);
     }
     return { macros, errors };
@@ -3525,6 +3557,7 @@ ifThenRules: []
     if (entry.abbrev) labels.push(["macroAbbrev", entry.abbrev]);
     if (entry.button) labels.push(["macroButton", entry.button]);
     for (const command of entry.commands ?? []) labels.push(["macroCommand", command]);
+    for (const scope of entry.scope ?? []) labels.push(["macroScope", scope]);
     return labels;
   }
 
@@ -3624,7 +3657,7 @@ ifThenRules: []
     if (added) container.setLabel("macroLibrarySeeded", [...seeded].join(","));
     return problems;
   }
-  var LABEL_NAMES = ["macroMode", "macroHotkey", "macroAbbrev", "macroButton", "macroCommand"];
+  var LABEL_NAMES = ["macroMode", "macroHotkey", "macroAbbrev", "macroButton", "macroCommand", "macroScope"];
   var LIBRARY_LABEL_NAMES = [...LABEL_NAMES, "macroGroup", "macroSummary"];
   function setMacroEnabled(noteId, enabled, libraryLabel) {
     const note = api.getNote(noteId);
@@ -3743,6 +3776,16 @@ ifThenRules: []
   }
   function installMacroRuntime(api2, isMac, paletteHotkey) {
     let macros = [];
+    const noteContext = () => {
+      const note = api2.getActiveContextNote?.();
+      if (!note) return null;
+      return { type: note.type, hasLabel: (name) => note.hasLabel(name), isUnder: (id) => note.noteId === id || note.hasAncestor(id) };
+    };
+    const available = () => {
+      if (!macros.some((m) => m.scopes.length)) return macros;
+      const context = noteContext();
+      return macros.filter((m) => inScope(m, context));
+    };
     const refresh = async () => {
       try {
         const registry = await loadMacros(api2, isMac);
@@ -3808,6 +3851,10 @@ ifThenRules: []
     };
     const runById = (id) => {
       const macro = macros.find((m) => m.id === id);
+      if (macro && !inScope(macro, noteContext())) {
+        api2.showMessage(`Macro "${macro.name}" is only available in ${describeScopes(macro.scopes)}.`);
+        return Promise.resolve(false);
+      }
       if (macro) return runInActiveEditor(api2, macro);
       api2.showError("That macro no longer exists. Reload the frontend.");
       return Promise.resolve(false);
@@ -3828,7 +3875,8 @@ ifThenRules: []
       const chips = (e) => [
         e.abbrev && `<code title="Type it, then press Tab">${escapeHtml(e.abbrev)}</code>`,
         e.hotkey && `<kbd>${escapeHtml(e.hotkey)}</kbd>`,
-        e.button && `<span class="bx bx-${escapeHtml(e.button)}" title="Launch bar button"></span>`
+        e.button && `<span class="bx bx-${escapeHtml(e.button)}" title="Launch bar button"></span>`,
+        e.scope && `<span class="ns-lib-scope" title="Only acts here">${escapeHtml(e.scope)}</span>`
       ].filter(Boolean).join(" ");
       const render = () => {
         const shown = filterLibrary(entries, input.value);
@@ -3890,7 +3938,7 @@ ifThenRules: []
       const input = modal.querySelector("#ikmal-macro-search");
       const list = modal.querySelector("#ikmal-macro-list");
       const render = () => {
-        const matches = searchMacros(macros, input.value);
+        const matches = searchMacros(available(), input.value);
         list.innerHTML = matches.length ? matches.map((m, i) => `<button type="button" class="list-group-item list-group-item-action py-1" data-i="${i}">${escapeHtml(m.name)}</button>`).join("") : '<div class="text-muted small p-2">No macros yet. Switch some on in the macro library, or create a note labelled <code>#ikmalMacro</code>.</div>';
         list.querySelectorAll("button").forEach((btn, i) => {
           btn.addEventListener("click", () => {
@@ -3924,7 +3972,7 @@ ifThenRules: []
       if (e.key === "Tab" && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
         const editor = e.target?.ckeditorInstance;
         const before = editor && textBeforeCaret(editor);
-        const hit = before && matchAbbrev(macros, before.text);
+        const hit = before && matchAbbrev(available(), before.text);
         if (editor && before && hit) {
           e.preventDefault();
           e.stopPropagation();
@@ -3947,7 +3995,7 @@ ifThenRules: []
           return;
         }
       }
-      const macro = findByHotkey(macros, e);
+      const macro = findByHotkey(available(), e);
       if (macro) {
         e.preventDefault();
         e.stopPropagation();

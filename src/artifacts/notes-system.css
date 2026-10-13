@@ -1339,3 +1339,4 @@ body[dir="rtl"] .ns-switch .ns-switch-button.on::after {
 .ns-lib-row .form-check { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
 .ns-lib-chips { display: inline-flex; gap: 0.35rem; align-items: center; font-size: 0.8em; }
 .ns-lib-blocked { color: #b45309; } /* amber reads on both light and dark themes; Bootstrap's text-warning yellow does not */
+.ns-lib-scope { font-size: 0.85em; padding: 0 0.35rem; border-radius: 0.6rem; border: 1px solid var(--main-border-color, rgba(128, 128, 128, 0.4)); }

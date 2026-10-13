@@ -21,6 +21,8 @@ export interface LibraryEntryData {
     abbrev?: string;
     button?: string;
     commands?: string[];
+    /** `#macroScope` entries; leave out to act everywhere. */
+    scope?: string[];
 }
 
 export const MACRO_LIBRARY: LibraryEntryData[] = [
@@ -101,5 +103,6 @@ export function libraryLabels(entry: LibraryEntryData): Array<[string, string]> 
     if (entry.abbrev) labels.push(['macroAbbrev', entry.abbrev]);
     if (entry.button) labels.push(['macroButton', entry.button]);
     for (const command of entry.commands ?? []) labels.push(['macroCommand', command]);
+    for (const scope of entry.scope ?? []) labels.push(['macroScope', scope]);
     return labels;
 }

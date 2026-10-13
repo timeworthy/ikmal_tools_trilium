@@ -295,7 +295,9 @@ function undoExpansion(editor: MacroEditor, abbrev: string): boolean {
         writer.removeMarker(EXPANSION);
         writer.remove(range);
         writer.setSelection(start);
-        writer.insertText(abbrev, start);
+        // insertContent, not writer.insertText: a block macro typed into an empty paragraph replaces that
+        // paragraph, and insertContent wraps the restored text in a new one instead of leaving it loose.
+        editor.model.insertContent(writer.createText(abbrev));
     });
     return true;
 }

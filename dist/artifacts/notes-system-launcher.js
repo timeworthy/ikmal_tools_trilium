@@ -3784,7 +3784,7 @@ ifThenRules: []
       writer.removeMarker(EXPANSION);
       writer.remove(range);
       writer.setSelection(start);
-      writer.insertText(abbrev, start);
+      editor.model.insertContent(writer.createText(abbrev));
     });
     return true;
   }

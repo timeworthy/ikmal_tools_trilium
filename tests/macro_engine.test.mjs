@@ -1155,6 +1155,7 @@ function richEditor(initial = '') {
     const range = (a, b) => ({ start: pos(a), end: pos(b), containsPosition: (p) => p.offset > a && p.offset < b });
     const writer = {
         createRange: (a, b = a) => range(a.offset, b.offset),
+        createText: (t) => ({ text: t }),
         remove: (r) => {
             const { offset: a } = r.start, { offset: b } = r.end;
             text = text.slice(0, a) + text.slice(b);
@@ -1176,6 +1177,7 @@ function richEditor(initial = '') {
             markers: { get: (name) => markers[name] },
             document: { getRoot: () => ({}), selection: { isCollapsed: true, getFirstPosition: () => pos(caret) }, on: (evt, cb) => (handlers[evt] ??= []).push(cb) },
             insertContent: (m) => {
+                if ('text' in m) { text = text.slice(0, caret) + m.text + text.slice(caret); caret += m.text.length; return range(caret - m.text.length, caret); }
                 log.inserted.push(m.model);
                 const plain = m.model.replace(/<[^>]+>/g, '');
                 const r = range(caret, caret + plain.length);

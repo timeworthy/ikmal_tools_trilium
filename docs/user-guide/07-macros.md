@@ -12,6 +12,7 @@ Create a note, give it the label `#ikmalMacro`, and put the content to insert in
 | `#macroMode=html` or `text` | `html` (default) inserts the body as formatted content. `text` inserts it literally, escaping any markup. |
 | `#macroHotkey=alt+g` | Optional hotkey. `mod` means Cmd on macOS and Ctrl elsewhere. A hotkey needs Alt, Ctrl or Cmd. Hotkeys the launcher already uses (Alt+T/S/M, Cmd/Ctrl+Shift+K/J, Cmd/Ctrl+?) are rejected. |
 | `#macroAbbrev=ians` | Optional typed abbreviation, 2 to 32 characters with no spaces. Type it at the start of a word and press **Tab** to replace it with the macro. |
+| `#macroAutoExpand` | Optional flag. The abbreviation expands the moment you finish typing it, with no Tab (see Auto-expand). |
 | `#macroButton=star` | Optional launcher-bar button that runs the macro. The value is a Boxicons name (empty uses `bolt-circle`). Requires backend scripting (see below). |
 | `#macroCommand=bold` | Optional and repeatable. CKEditor commands run in order after the insert. |
 | `#macroScope=type:text` | Optional and repeatable. Limits where the macro acts (see Scope). |
@@ -47,6 +48,16 @@ Write a token as `{{name}}` or `{{name:argument}}` anywhere in a macro's body.
 - Clipboard and prompt text is always inserted as plain text, never as HTML, so pasted `<b>` stays literal. Line breaks are kept.
 - If the browser blocks clipboard access, the macro still runs, `{{clipboard}}` inserts nothing, and a message says why.
 - A token with an unknown name is left as you typed it.
+
+## Auto-expand
+
+Add the flag `#macroAutoExpand` to a macro that has `#macroAbbrev` and typing the abbreviation expands it at once, with no Tab. This is also the way to expand on a phone, which has no Tab key.
+
+- The abbreviation must **start with a symbol** (`;sig`, `/date`), so an ordinary word can never expand by accident while you type. A plain-word abbreviation with this flag skips the macro with a message.
+- It expands only when you type the last character at the start of a word. Pasting, undo and text glued to a word (`foo;sig`) never expand it.
+- **Backspace straight after an expansion undoes it:** the macro's text goes away and what you typed comes back. Any other key or a click keeps the expansion. Editor commands the macro ran (`#macroCommand`) are not reversed.
+- An auto-expanding abbreviation that you pass on the way to typing a longer one (`;s` before `;sig`) would make the longer one impossible to type, so that macro is skipped with a message. The library screen blocks enabling such a pair.
+- Prompts work as with Tab; cancelling puts what you typed back. Scope applies.
 
 ## Scope
 

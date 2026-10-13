@@ -3288,6 +3288,13 @@ ifThenRules: []
   function needsClipboard(content) {
     return [...content.matchAll(TOKEN)].some((match) => match[1].toLowerCase() === "clipboard");
   }
+  function safeUrl(value) {
+    const url = value.trim();
+    const compact = url.replace(/[\u0000-\u0020]/g, "");
+    const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(compact)?.[1].toLowerCase();
+    if (scheme === void 0) return url;
+    return ["http", "https", "mailto", "tel"].includes(scheme) ? url : "";
+  }
   var clean = (value) => value.split(CURSOR_MARK).join("");
   var valueHtml = (value) => escapeHtml2(clean(value)).replace(/\r?\n/g, "<br>");
   function renderHtml(macro, values = {}) {
@@ -3310,7 +3317,8 @@ ifThenRules: []
         if (!seenCursor) out += CURSOR_MARK;
         seenCursor = true;
       } else if (name === "clipboard") {
-        out += valueHtml(values.clipboard ?? "");
+        const clip = values.clipboard ?? "";
+        out += valueHtml(arg?.trim().toLowerCase() === "url" ? safeUrl(clip) : clip);
       } else if (name === "prompt") {
         const prompt = parsePromptArg(arg ?? "");
         out += valueHtml(values.prompts?.[prompt.label] ?? prompt.defaultValue);
@@ -3347,6 +3355,177 @@ ifThenRules: []
     } catch (err) {
       return { ok: false, error: messageOf(err) };
     }
+  }
+
+  // src/engine/macroLibraryData.ts
+  var MACRO_LIBRARY = [
+    // ---- Writing ----
+    {
+      id: "signature",
+      title: "Signature",
+      group: "Writing",
+      abbrev: "sig",
+      summary: "Sign-off with the caret after your name. Edit the name in the note.",
+      body: "<p>Thanks,<br>Your Name{{cursor}}</p>"
+    },
+    {
+      id: "greeting",
+      title: "Greeting",
+      group: "Writing",
+      abbrev: "hey",
+      summary: 'Asks who you are writing to, then opens "Hi <name>,".',
+      body: "<p>Hi {{prompt:Name}},</p><p>{{cursor}}</p>"
+    },
+    {
+      id: "literal-snippet",
+      title: "Literal snippet",
+      group: "Writing",
+      abbrev: "snip",
+      mode: "text",
+      summary: "Text mode: angle brackets and ampersands are inserted exactly as written.",
+      body: "Use <b> and & as typed.\nSecond line{{cursor}}"
+    },
+    {
+      id: "link-from-clipboard",
+      title: "Link from clipboard",
+      group: "Writing",
+      abbrev: "lnk",
+      summary: "Turns the copied address into a link; asks for the link text. Only web, mail and phone addresses are accepted.",
+      // The non-breaking space keeps what you type next out of the link; the editor extends a link over text typed straight after it.
+      body: '<a href="{{clipboard:url}}">{{prompt:Link text|link}}</a>&nbsp;{{cursor}}'
+    },
+    // ---- Dates ----
+    {
+      id: "long-date",
+      title: "Long date",
+      group: "Dates",
+      abbrev: "ddate",
+      summary: "Monday, October 12, 2026",
+      body: "{{date:dddd, MMMM D, YYYY}}"
+    },
+    {
+      id: "timestamp",
+      title: "Timestamp",
+      group: "Dates",
+      abbrev: "ts",
+      summary: "Date and time, e.g. 2026-10-12 14:05.",
+      body: "{{datetime}}"
+    },
+    {
+      id: "dated-heading",
+      title: "Dated heading",
+      group: "Dates",
+      abbrev: "today",
+      summary: "A heading with today's date and the caret below it.",
+      body: "<h2>{{date:YYYY-MM-DD}} {{date:dddd}}</h2><p>{{cursor}}</p>"
+    },
+    // ---- Project ----
+    {
+      id: "meeting-notes",
+      title: "Meeting notes",
+      group: "Project",
+      abbrev: "mtg",
+      hotkey: "alt+shift+m",
+      summary: "Asks for the meeting name, then lays out attendees, decisions and actions.",
+      body: "<h3>{{prompt:Meeting|Meeting}} - {{date}}</h3><p><strong>Attendees:</strong> {{cursor}}</p><p><strong>Decisions</strong></p><ul><li></li></ul><p><strong>Actions</strong></p><ul><li></li></ul>"
+    },
+    {
+      id: "decision-record",
+      title: "Decision record",
+      group: "Project",
+      abbrev: "adr",
+      summary: "Context, decision and consequences, titled and dated.",
+      body: "<h3>{{prompt:Decision}} ({{date}})</h3><p><strong>Context</strong></p><p>{{cursor}}</p><p><strong>Decision</strong></p><p></p><p><strong>Consequences</strong></p><ul><li></li></ul>"
+    },
+    {
+      id: "status-update",
+      title: "Status update",
+      group: "Project",
+      abbrev: "status",
+      summary: "Done, next and blocked for the week.",
+      body: "<h3>Status - {{date}}</h3><p><strong>Done</strong></p><ul><li>{{cursor}}</li></ul><p><strong>Next</strong></p><ul><li></li></ul><p><strong>Blocked</strong></p><ul><li></li></ul>"
+    },
+    {
+      id: "standup",
+      title: "Standup",
+      group: "Project",
+      abbrev: "standup",
+      summary: "Yesterday, today and blockers.",
+      body: "<h3>Standup - {{date:ddd D MMM}}</h3><p><strong>Yesterday</strong></p><ul><li>{{cursor}}</li></ul><p><strong>Today</strong></p><ul><li></li></ul><p><strong>Blockers</strong></p><ul><li></li></ul>"
+    },
+    {
+      id: "retro",
+      title: "Retrospective",
+      group: "Project",
+      abbrev: "retro",
+      summary: "What went well, what did not, and actions.",
+      body: "<h3>Retro - {{date}}</h3><p><strong>Went well</strong></p><ul><li>{{cursor}}</li></ul><p><strong>Did not go well</strong></p><ul><li></li></ul><p><strong>Actions</strong></p><ul><li></li></ul>"
+    },
+    {
+      id: "bug-report",
+      title: "Bug report",
+      group: "Project",
+      abbrev: "bug",
+      summary: "Asks for a title, then steps, expected and actual.",
+      body: "<h3>Bug: {{prompt:Title}}</h3><p><strong>Steps</strong></p><ol><li>{{cursor}}</li></ol><p><strong>Expected</strong></p><p></p><p><strong>Actual</strong></p><p></p>"
+    },
+    // ---- Editor ----
+    {
+      id: "changelog-entry",
+      title: "Changelog entry",
+      group: "Editor",
+      hotkey: "alt+shift+c",
+      button: "list-check",
+      summary: "A collapsible block with the caret in its title. Also gets a launch bar button once enabled.",
+      body: "<details><summary>{{cursor}}</summary><p>What changed</p></details>"
+    },
+    {
+      id: "checklist-item",
+      title: "Checklist item",
+      group: "Editor",
+      hotkey: "alt+shift+l",
+      summary: "Turns the current line into a to-do item.",
+      body: "<p>{{cursor}}</p>",
+      commands: ["todoList"]
+    },
+    {
+      id: "collapsible",
+      title: "Collapsible",
+      group: "Editor",
+      abbrev: "coll",
+      summary: "A collapsible section; asks for its title and leaves the caret below it (a closed section has no visible body to type in).",
+      body: "<details><summary>{{prompt:Title}}</summary><p>Details</p></details><p>{{cursor}}</p>"
+    },
+    {
+      id: "table-3x3",
+      title: "Table 3x3",
+      group: "Editor",
+      abbrev: "tbl3",
+      summary: "A table with a header row and two rows of three cells.",
+      body: '<figure class="table"><table><thead><tr><th>{{cursor}}</th><th></th><th></th></tr></thead><tbody><tr><td></td><td></td><td></td></tr><tr><td></td><td></td><td></td></tr></tbody></table></figure>'
+    },
+    {
+      id: "quote",
+      title: "Quote",
+      group: "Editor",
+      abbrev: "qq",
+      summary: "A block quote with the caret inside.",
+      body: "<blockquote><p>{{cursor}}</p></blockquote>"
+    }
+  ];
+  function libraryLabels(entry) {
+    const labels = [
+      [LIBRARY_LABEL, ""],
+      ["macroLibraryId", entry.id],
+      ["macroGroup", entry.group],
+      ["macroSummary", entry.summary]
+    ];
+    if (entry.mode === "text") labels.push(["macroMode", "text"]);
+    if (entry.hotkey) labels.push(["macroHotkey", entry.hotkey]);
+    if (entry.abbrev) labels.push(["macroAbbrev", entry.abbrev]);
+    if (entry.button) labels.push(["macroButton", entry.button]);
+    for (const command of entry.commands ?? []) labels.push(["macroCommand", command]);
+    return labels;
   }
 
   // src/engine/macroRuntime.ts
@@ -3412,6 +3591,39 @@ ifThenRules: []
     return problems;
   }
   var PALETTE_BUTTON_ID = `${BUTTON_ID_PREFIX}palette`;
+  function seedMacroLibrary(seeds) {
+    const problems = [];
+    let container = api.getNoteWithLabel("macroLibraryRoot");
+    if (!container) {
+      container = api.createTextNote(
+        "root",
+        "Macro Library",
+        '<p>Optional example macros. Switch them on and off from the macros palette (Cmd/Ctrl+Shift+J, then "Manage macro library"). Edit the notes to make them yours; they are never overwritten.</p>'
+      ).note;
+      container.setLabel("macroLibraryRoot");
+      container.setLabel("iconClass", "bx bx-bolt-circle");
+    }
+    const seeded = new Set((container.getLabelValue("macroLibrarySeeded") || "").split(",").filter(Boolean));
+    let added = false;
+    for (const seed of seeds) {
+      if (seeded.has(seed.id)) continue;
+      try {
+        const note = api.createTextNote(container.noteId, seed.title, seed.body).note;
+        const used = /* @__PURE__ */ new Set();
+        for (const [name, value] of seed.labels) {
+          if (used.has(name)) note.addLabel(name, value);
+          else note.setLabel(name, value);
+          used.add(name);
+        }
+        seeded.add(seed.id);
+        added = true;
+      } catch (error) {
+        problems.push(`seeding "${seed.title}": ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (added) container.setLabel("macroLibrarySeeded", [...seeded].join(","));
+    return problems;
+  }
   var LABEL_NAMES = ["macroMode", "macroHotkey", "macroAbbrev", "macroButton", "macroCommand"];
   var LIBRARY_LABEL_NAMES = [...LABEL_NAMES, "macroGroup", "macroSummary"];
   function setMacroEnabled(noteId, enabled, libraryLabel) {
@@ -3742,8 +3954,23 @@ ifThenRules: []
         void runInActiveEditor(api2, macro);
       }
     }, true);
-    void refresh().then(syncButtons);
-    return { refresh, openPalette, openLibrary, runById, syncButtons, library, setEnabled };
+    let warnedNoSeed = false;
+    const seedLibrary = () => {
+      if (!api2.runOnBackend) return Promise.resolve();
+      const seeds = MACRO_LIBRARY.map((entry) => ({ id: entry.id, title: entry.title, body: entry.body, labels: libraryLabels(entry) }));
+      return Promise.resolve().then(() => api2.runOnBackend(seedMacroLibrary, [seeds])).then(
+        (problems) => {
+          if (Array.isArray(problems) && problems.length) console.warn("[Ikmal Macros]", ...problems);
+        },
+        (err) => {
+          if (warnedNoSeed) return;
+          warnedNoSeed = true;
+          console.warn("[Ikmal Macros] macro library not installed (backend scripting may be disabled):", err?.message ?? err);
+        }
+      );
+    };
+    void seedLibrary().then(refresh).then(syncButtons);
+    return { refresh, openPalette, openLibrary, runById, syncButtons, library, setEnabled, seedLibrary };
   }
 
   // src/artifacts/notes-system-launcher.js

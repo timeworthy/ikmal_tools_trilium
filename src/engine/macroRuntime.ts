@@ -5,6 +5,7 @@
 
 import { BUTTON_ID_PREFIX, DEFAULT_BUTTON_ICON, LIBRARY_LABEL, buildLibrary, filterLibrary, type LibraryEntry, type LibraryNoteInput, buildRegistry, buttonSpecs, findByHotkey, matchAbbrev, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput, type MacroRunResult } from './macroEngine.js';
 import { openModal, escapeHtml } from '../components/nativeUi.js';
+import { MACRO_LIBRARY, libraryLabels } from './macroLibraryData.js';
 
 interface MacroFNote {
     noteId: string;
@@ -114,6 +115,53 @@ function upsertMacroLaunchers(specs: LauncherSpec[], scriptNoteId: string, prefi
 }
 
 const PALETTE_BUTTON_ID = `${BUTTON_ID_PREFIX}palette`;
+
+interface LibrarySeed {
+    id: string;
+    title: string;
+    body: string;
+    labels: Array<[string, string]>;
+}
+
+/**
+ * Runs on the Trilium backend (so it must stay self-contained and read the global `api`).
+ * Creates the "Macro Library" container and one inert library note per shipped entry. Entries it has
+ * already created are remembered in `#macroLibrarySeeded` on the container, so a note the user edited
+ * or deleted is never recreated or overwritten; only entries added in a newer version appear. Safe to repeat.
+ */
+function seedMacroLibrary(seeds: LibrarySeed[]): string[] {
+    const problems: string[] = [];
+    let container = api.getNoteWithLabel('macroLibraryRoot');
+    if (!container) {
+        container = api.createTextNote(
+            'root', 'Macro Library',
+            '<p>Optional example macros. Switch them on and off from the macros palette (Cmd/Ctrl+Shift+J, then "Manage macro library"). Edit the notes to make them yours; they are never overwritten.</p>',
+        ).note;
+        container.setLabel('macroLibraryRoot');
+        container.setLabel('iconClass', 'bx bx-bolt-circle');
+    }
+    const seeded = new Set<string>((container.getLabelValue('macroLibrarySeeded') || '').split(',').filter(Boolean));
+    let added = false;
+    for (const seed of seeds) {
+        if (seeded.has(seed.id)) continue;
+        try {
+            const note = api.createTextNote(container.noteId, seed.title, seed.body).note;
+            const used = new Set<string>();
+            for (const [name, value] of seed.labels) {
+                // Repeatable labels (several #macroCommand) need addLabel; setLabel would overwrite the first.
+                if (used.has(name)) note.addLabel(name, value);
+                else note.setLabel(name, value);
+                used.add(name);
+            }
+            seeded.add(seed.id);
+            added = true;
+        } catch (error) {
+            problems.push(`seeding "${seed.title}": ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    if (added) container.setLabel('macroLibrarySeeded', [...seeded].join(','));
+    return problems;
+}
 
 const LABEL_NAMES = ['macroMode', 'macroHotkey', 'macroAbbrev', 'macroButton', 'macroCommand'];
 const LIBRARY_LABEL_NAMES = [...LABEL_NAMES, 'macroGroup', 'macroSummary'];
@@ -484,6 +532,24 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
         }
     }, true);
 
-    void refresh().then(syncButtons);
-    return { refresh, openPalette, openLibrary, runById, syncButtons, library, setEnabled };
+    let warnedNoSeed = false;
+    const seedLibrary = () => {
+        if (!api.runOnBackend) return Promise.resolve();
+        const seeds = MACRO_LIBRARY.map((entry) => ({ id: entry.id, title: entry.title, body: entry.body, labels: libraryLabels(entry) }));
+        return Promise.resolve()
+            .then(() => api.runOnBackend!(seedMacroLibrary, [seeds]))
+            .then(
+                (problems) => {
+                    if (Array.isArray(problems) && problems.length) console.warn('[Ikmal Macros]', ...problems);
+                },
+                (err) => {
+                    if (warnedNoSeed) return;
+                    warnedNoSeed = true;
+                    console.warn('[Ikmal Macros] macro library not installed (backend scripting may be disabled):', (err as { message?: string })?.message ?? err);
+                },
+            );
+    };
+
+    void seedLibrary().then(refresh).then(syncButtons);
+    return { refresh, openPalette, openLibrary, runById, syncButtons, library, setEnabled, seedLibrary };
 }

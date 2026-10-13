@@ -17,7 +17,7 @@
  * Tokens in the body, written `{{name}}` or `{{name:argument}}`:
  *   {{cursor}}               where the caret lands after the insert (first one wins, extras are dropped)
  *   {{date}} {{time}} {{datetime}}   current local time; `{{date:ddd, MMM D}}` takes a format (YYYY YY MMMM MMM MM M ddd DD D HH mm ss)
- *   {{clipboard}}            the clipboard text
+ *   {{clipboard}}            the clipboard text; `{{clipboard:url}}` for a link address (only http, https, mailto, tel or a relative address; anything else inserts nothing)
  *   {{prompt:Label}}         asks for a value when the macro runs; `{{prompt:Label|default}}` pre-fills it
  * Unknown tokens are left as typed. Inserted values are escaped, so clipboard or prompt text is never read as HTML.
  */
@@ -390,6 +390,16 @@ export function needsClipboard(content: string): boolean {
     return [...content.matchAll(TOKEN)].some((match) => match[1].toLowerCase() === 'clipboard');
 }
 
+/** A link address that is safe to put in an href: http(s), mailto, tel or relative. Anything else (javascript:, data:, ...) becomes empty. */
+export function safeUrl(value: string): string {
+    const url = value.trim();
+    // Browsers ignore whitespace and control characters inside the scheme ("java\tscript:"), so judge the compacted form.
+    const compact = url.replace(/[\u0000-\u0020]/g, '');
+    const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(compact)?.[1].toLowerCase();
+    if (scheme === undefined) return url;
+    return ['http', 'https', 'mailto', 'tel'].includes(scheme) ? url : '';
+}
+
 const clean = (value: string) => value.split(CURSOR_MARK).join('');
 
 /** An inserted value: escaped, and its line breaks kept. Never interpreted as HTML. */
@@ -416,7 +426,8 @@ export function renderHtml(macro: Macro, values: TokenValues = {}): string {
             if (!seenCursor) out += CURSOR_MARK;
             seenCursor = true;
         } else if (name === 'clipboard') {
-            out += valueHtml(values.clipboard ?? '');
+            const clip = values.clipboard ?? '';
+            out += valueHtml(arg?.trim().toLowerCase() === 'url' ? safeUrl(clip) : clip);
         } else if (name === 'prompt') {
             const prompt = parsePromptArg(arg ?? '');
             out += valueHtml(values.prompts?.[prompt.label] ?? prompt.defaultValue);

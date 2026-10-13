@@ -38,6 +38,7 @@ Write a token as `{{name}}` or `{{name:argument}}` anywhere in a macro's body.
 | `{{date}}`, `{{time}}`, `{{datetime}}` | Your local date (`2026-10-12`), time (`14:05`) or both. |
 | `{{date:ddd, MMM D}}` | The same with your own format. Parts: `YYYY YY MMMM MMM MM M dddd ddd DD D HH mm ss`. Month and day names are English. |
 | `{{clipboard}}` | The clipboard text. |
+| `{{clipboard:url}}` | The clipboard as a link address, for `<a href="{{clipboard:url}}">`. Only `http`, `https`, `mailto`, `tel` and relative addresses get through; `javascript:` and the like insert nothing. |
 | `{{prompt:Label}}` | Asks you for text when the macro runs. `{{prompt:Label\|default}}` pre-fills the answer. |
 
 - A prompt used twice with the same label asks once. Cancelling any prompt stops the macro with nothing inserted and no error. If you ran it by typing an abbreviation, what you typed is put back where it was.
@@ -73,22 +74,21 @@ On a phone there is no hotkey and no Tab key, so use the **Macros** button: it i
 Verified in a 390x844 touch browser emulation of Trilium 0.106.0, not on a physical device.
 
 
-## Starter macros
+## Macro library
 
-`data/example_macros.json` ships five ready-made macros:
+Ikmal Tools ships 18 example macros in four groups (Dates, Editor, Project, Writing). They are created once, switched off, in a note called **Macro Library** at the top of your tree, and only when backend scripting is enabled.
 
-| Macro | Trigger | What it does |
-| --- | --- | --- |
-| Signature | type `sig`, Tab | Sign-off with the caret after the name. Edit the name in the note. |
-| Changelog entry | Alt+Shift+C, or a launcher button | Collapsible block with the caret in its title. |
-| Meeting notes | type `mtg`, Tab | Heading, attendees, decisions and actions. |
-| Checklist item | Alt+Shift+L | Turns the line into a to-do item (`#macroCommand=todoList`). |
-| Literal snippet | type `snip`, Tab | Text mode: `<b>` and `&` are inserted exactly as written. |
+To switch some on: open the macros palette (Cmd/Ctrl+Shift+J), choose **Manage macro library**, and flip the switch next to a macro. It works at once, with no reload. Switching it off again removes only `#ikmalMacro`; the note and your edits stay.
 
-Import them into a running Trilium with:
+- An entry is greyed out, with the reason, when its hotkey or abbreviation is already used by another macro you have switched on. Switch that one off first.
+- The library notes are yours. Edit the text, change a hotkey or abbreviation, or delete one: the seeder remembers what it created and never recreates or overwrites an entry. A later version of Ikmal Tools adds only entries you have not been given before.
+- To add your own entry to the library, give your note `#ikmalMacroLibrary`, and optionally `#macroGroup` and `#macroSummary`, instead of `#ikmalMacro`.
 
-```sh
-TRILIUM_URL=http://localhost:8080 TRILIUM_TOKEN=... python3 tools/import_example_macros.py
-```
+| Group | Macros |
+| --- | --- |
+| Dates | Long date (`ddate`), Timestamp (`ts`), Dated heading (`today`) |
+| Editor | Changelog entry (Alt+Shift+C, with a launch bar button once on), Checklist item (Alt+Shift+L), Collapsible (`coll`), Table 3x3 (`tbl3`), Quote (`qq`) |
+| Project | Meeting notes (`mtg`, Alt+Shift+M), Decision record (`adr`), Status update (`status`), Standup (`standup`), Retrospective (`retro`), Bug report (`bug`) |
+| Writing | Signature (`sig`), Greeting (`hey`), Literal snippet (`snip`), Link from clipboard (`lnk`) |
 
-The import is idempotent: a macro whose title already exists is left alone, so your edits survive a re-run. All five were checked end to end in Trilium 0.106.0.
+Type the abbreviation, then Tab. All of them can be on together: no two entries share a trigger.

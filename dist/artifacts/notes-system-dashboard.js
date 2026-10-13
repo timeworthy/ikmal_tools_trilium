@@ -2551,12 +2551,13 @@ ${YamlParser.stringify({ template: dumped })}
     wrapper.innerHTML = `
         <label class="ns-switch-control">
             <div class="ns-switch-button${checked ? " on" : ""}">
-                <input type="checkbox" id="${escapeHtml(id)}" role="switch" aria-checked="${checked}" aria-label="Toggle setting"${checked ? " checked" : ""}>
+                <input type="checkbox" role="switch" aria-checked="${checked}" aria-label="Toggle setting"${checked ? " checked" : ""}>
             </div>
         </label>
         <span class="ns-switch-state" aria-live="polite">${checked ? "ON" : "OFF"}</span>
     `;
     const input = wrapper.querySelector("input");
+    input.id = id;
     const track = wrapper.querySelector(".ns-switch-button");
     const state = wrapper.querySelector(".ns-switch-state");
     input.addEventListener("change", () => {

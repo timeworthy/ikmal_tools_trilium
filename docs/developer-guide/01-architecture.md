@@ -15,8 +15,9 @@ src/
 │   ├── todayEngine.ts        # Dashboard layout management & state persistence
 │   ├── noteCreationEngine.ts # Unified note instantiation planning
 │   ├── noteMaterializer.ts   # ETAPI / frontend script API note creation
-│   ├── macroEngine.ts        # Macro notes -> hotkeys, palette search, insert/command execution
-│   ├── macroRuntime.ts       # Loads #ikmalMacro notes; hotkey listener and palette in the launcher
+│   ├── macroEngine.ts        # Macro notes -> hotkeys, abbreviations, tokens, library entries (pure)
+│   ├── macroRuntime.ts       # Loads #ikmalMacro notes; hotkey/Tab listener, palette, library screen, library seeding
+│   ├── macroLibraryData.ts   # The shipped example macro library (data only)
 │   ├── fleetBridge.ts        # Targeted FleetSync sync payload formatting [BETA / IN DEVELOPMENT]
 │   ├── weatherEngine.ts      # Open-Meteo weather API parsing
 │   └── noteInsightsEngine.ts # Word count, heatmaps, anniversaries, stale notes
@@ -48,3 +49,17 @@ the paths referenced by `trilium-package.json` and verified with SRI.
 ## Manifest & SRI Integrity
 
 `trilium-package.json` declares the core package artifacts. When running `npm run build`, `tools/build.mjs` automatically computes the Subresource Integrity (`sha256-...`) hash for every compiled JS/CSS file and updates `trilium-package.json` automatically. Editor behavior is maintained in the standalone `ikmal_editor_trilium` package.
+
+## Macro system
+
+`macroEngine.ts` is pure: it builds macros from note labels, expands tokens through a `MacroHost` (insert, prompt, clipboard, caret placement, editor commands), and builds the library list. `macroRuntime.ts` is the only part that touches Trilium.
+
+- **Macros:** notes labelled `#ikmalMacro`. Registry rules: invalid macros and duplicate hotkeys or abbreviations are dropped (first wins) and logged as `[Ikmal Macros]`.
+- **Tokens:** one regex pass in `renderHtml`. Literal text is left alone (html mode) or escaped (text mode); every inserted value is escaped, so clipboard or prompt text is never markup and a `{{cursor}}` arriving through the clipboard is just text. `{{clipboard:url}}` goes through `safeUrl`. Prompts are asked before anything is inserted, so a cancel leaves the note untouched.
+- **Abbreviation expansion:** removes the typed text and leaves a CKEditor marker at that spot. A prompt dialog takes focus and the editor does not keep its caret, so the insert (or the restored abbreviation, on cancel) goes back to the marker.
+- **Backend functions** (`upsertMacroLaunchers`, `setMacroEnabled`, `seedMacroLibrary`) are passed to `runOnBackend`, which serializes their source: each must be self-contained and read the global `api`, never an imported or captured name. esbuild would rename a shadowing `api`, so do not shadow it.
+- **Library:** notes labelled `#ikmalMacroLibrary` (+ `#macroGroup`, `#macroSummary`) are inert. Switching one on adds `#ikmalMacro`; off removes it. `buildLibrary` blocks an entry whose hotkey or abbreviation an enabled macro already uses. `seedMacroLibrary` creates the shipped entries once, records their ids in `#macroLibrarySeeded` on the `#macroLibraryRoot` note, and never recreates or overwrites one.
+- **Adding a library entry:** append to `MACRO_LIBRARY`. Tests require a unique id, no shared trigger anywhere in the library, no reserved hotkey, at most one caret, and 15 to 20 entries in total (raise that bound deliberately).
+- **Launch bar:** macro buttons and the always-present Macros button are script launchers stamped with `#packageOwner` so the package manager can take them off the bar. The Macros button is also placed on the mobile bar on first creation only.
+- **Where it runs:** `frontendStartup` does not run on mobile, so the launcher artifact is deployed with `#run=mobileStartup` too (`mobile: true` in the manifest).
+

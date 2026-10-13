@@ -14,10 +14,11 @@ Create a note, give it the label `#ikmalMacro`, and put the content to insert in
 | `#macroAbbrev=ians` | Optional typed abbreviation, 2 to 32 characters with no spaces. Type it at the start of a word and press **Tab** to replace it with the macro. |
 | `#macroButton=star` | Optional launcher-bar button that runs the macro. The value is a Boxicons name (empty uses `bolt-circle`). Requires backend scripting (see below). |
 | `#macroCommand=bold` | Optional and repeatable. CKEditor commands run in order after the insert. |
+| `#ikmalMacroLibrary` | Instead of `#ikmalMacro`: a library macro that stays off until you switch it on (see Macro library). Optional `#macroGroup` and `#macroSummary` describe it in the library screen. |
 
 ### Placing the cursor
 
-Put `{{cursor}}` anywhere in the body to choose where the caret lands after the insert, for example `<details><summary>{{cursor}}</summary><p></p></details>` leaves you typing in the summary. Only the first token counts and the rest are dropped. Without one, the caret stays at the end of the inserted content.
+(`{{cursor}}` is one of several [tokens](#tokens).) Put `{{cursor}}` anywhere in the body to choose where the caret lands after the insert, for example `<details><summary>{{cursor}}</summary><p></p></details>` leaves you typing in the summary. Only the first token counts and the rest are dropped. Without one, the caret stays at the end of the inserted content.
 
 ## Running a macro
 

@@ -3,7 +3,7 @@
  * their hotkeys, and hosts the macro palette. Decisions live in macroEngine.ts.
  */
 
-import { BUTTON_ID_PREFIX, DEFAULT_BUTTON_ICON, describeScopes, inScope, type NoteContext, LIBRARY_LABEL, buildLibrary, filterLibrary, type LibraryEntry, type LibraryNoteInput, buildRegistry, buttonSpecs, findByHotkey, matchAbbrev, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput, type MacroRunResult } from './macroEngine.js';
+import { BUTTON_ID_PREFIX, DEFAULT_BUTTON_ICON, findMacroByRef, describeScopes, inScope, type NoteContext, LIBRARY_LABEL, buildLibrary, filterLibrary, type LibraryEntry, type LibraryNoteInput, buildRegistry, buttonSpecs, findByHotkey, matchAbbrev, searchMacros, runMacro, type Macro, type MacroHost, type MacroNoteInput, type MacroRunResult } from './macroEngine.js';
 import { openModal, escapeHtml } from '../components/nativeUi.js';
 import { MACRO_LIBRARY, libraryLabels } from './macroLibraryData.js';
 
@@ -34,6 +34,7 @@ export interface MacroApi {
     showPromptDialog?(options: { title?: string; message?: string; defaultValue?: string }): Promise<string | null | undefined>;
     runOnBackend?(fn: (...args: any[]) => unknown, args: unknown[]): unknown;
     currentNote?: { noteId: string };
+    activateNote?(notePath: string): Promise<void> | void;
     /** The note in the active tab; used to apply `#macroScope`. */
     getActiveContextNote?(): { noteId: string; type: string; hasLabel(name: string): boolean; hasAncestor(noteId: string): boolean } | null | undefined;
 }
@@ -165,7 +166,7 @@ function seedMacroLibrary(seeds: LibrarySeed[]): string[] {
     return problems;
 }
 
-const LABEL_NAMES = ['macroMode', 'macroHotkey', 'macroAbbrev', 'macroButton', 'macroCommand', 'macroScope', 'macroAutoExpand'];
+const LABEL_NAMES = ['macroMode', 'macroHotkey', 'macroAbbrev', 'macroButton', 'macroCommand', 'macroScope', 'macroAutoExpand', 'macroStep'];
 const LIBRARY_LABEL_NAMES = [...LABEL_NAMES, 'macroGroup', 'macroSummary'];
 
 /**
@@ -302,14 +303,17 @@ function undoExpansion(editor: MacroEditor, abbrev: string): boolean {
     return true;
 }
 
-function makeHost(editor: MacroEditor, api: MacroApi, macro: Macro, onInserted?: (range: any) => void): MacroHost {
+function makeHost(editor: MacroEditor, api: MacroApi, macro: Macro, onInserted?: (range: any) => void, resolveMacro?: (ref: string) => Macro | null): MacroHost {
     return {
         // A dismissed dialog comes back as null/undefined; both mean "cancel the macro".
-        prompt: async (label, defaultValue) => {
+        // The dialog is titled with the macro that asked, which in a chain may be a nested one.
+        prompt: async (label, defaultValue, macroName) => {
             if (!api.showPromptDialog) return defaultValue;
-            const answer = await api.showPromptDialog({ title: macro.name, message: label, defaultValue });
+            const answer = await api.showPromptDialog({ title: macroName, message: label, defaultValue });
             return answer ?? null;
         },
+        resolveMacro,
+        openNote: (noteId) => api.activateNote?.(noteId),
         readClipboard: () => navigator.clipboard.readText(),
         // api.addTextToActiveContextEditor inserts its argument as plain text, so go through
         // the editor's own HTML -> model pipeline to get real formatting.
@@ -330,13 +334,13 @@ function reportRun(api: MacroApi, macro: Macro, result: MacroRunResult) {
 }
 
 /** Runs a macro in the active text editor; reports instead of silently doing nothing when there is none. */
-export async function runInActiveEditor(api: MacroApi, macro: Macro): Promise<boolean> {
+export async function runInActiveEditor(api: MacroApi, macro: Macro, resolveMacro?: (ref: string) => Macro | null): Promise<boolean> {
     const editor = await api.getActiveContextTextEditor();
     if (!editor) {
         api.showError(`Macro "${macro.name}" needs an open text note with the cursor in it.`);
         return false;
     }
-    const result = await runMacro(macro, makeHost(editor, api, macro));
+    const result = await runMacro(macro, makeHost(editor, api, macro, undefined, resolveMacro));
     reportRun(api, macro, result);
     return result.ok;
 }
@@ -351,6 +355,8 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
         return { type: note.type, hasLabel: (name) => note.hasLabel(name), isUnder: (id) => note.noteId === id || note.hasAncestor(id) };
     };
     /** Macros that act in the active note. Unscoped macros never need the note, so they cost nothing. */
+    /** What a `macro:` step may run: a macro that acts in the active note, by id or title. */
+    const resolve = (ref: string): Macro | null => findMacroByRef(available(), ref) ?? null;
     const available = () => {
         if (!macros.some((m) => m.scopes.length)) return macros;
         const context = noteContext();
@@ -428,7 +434,7 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
             api.showMessage(`Macro "${macro.name}" is only available in ${describeScopes(macro.scopes)}.`);
             return Promise.resolve(false);
         }
-        if (macro) return runInActiveEditor(api, macro);
+        if (macro) return runInActiveEditor(api, macro, resolve);
         api.showError('That macro no longer exists. Reload the frontend.');
         return Promise.resolve(false);
     };
@@ -525,7 +531,7 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
             list.querySelectorAll('button').forEach((btn, i) => {
                 btn.addEventListener('click', () => {
                     modal.querySelector<HTMLElement>('.ns-close')?.click();
-                    void runInActiveEditor(api, matches[i]);
+                    void runInActiveEditor(api, matches[i], resolve);
                 });
             });
         };
@@ -560,7 +566,7 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
                 lastExpansion = { editor, abbrev: hit.abbrev! };
             })
             : undefined;
-        void runMacro(hit, makeHost(editor, api, hit, onInserted)).then((r) => {
+        void runMacro(hit, makeHost(editor, api, hit, onInserted, resolve)).then((r) => {
             reportRun(api, hit, r);
             if (r.cancelled) {
                 // Cancelled from the prompt: give back what was typed instead of eating it.
@@ -644,7 +650,7 @@ export function installMacroRuntime(api: MacroApi, isMac: boolean, paletteHotkey
         if (macro) {
             e.preventDefault();
             e.stopPropagation();
-            void runInActiveEditor(api, macro);
+            void runInActiveEditor(api, macro, resolve);
         }
     }, true);
 

@@ -3064,6 +3064,21 @@ ifThenRules: []
   }
 
   // src/engine/macroEngine.ts
+  function parseStep(raw) {
+    const text = raw.trim();
+    if (text.toLowerCase() === "insert") return { kind: "insert" };
+    const match = /^(command|macro|open)\s*:\s*(\S.*)$/i.exec(text);
+    if (!match) return null;
+    const kind = match[1].toLowerCase();
+    const value = match[2].trim();
+    if (kind === "command") return /^[A-Za-z][A-Za-z0-9]*$/.test(value) ? { kind: "command", name: value } : null;
+    if (kind === "open") return /^[A-Za-z0-9_]+$/.test(value) ? { kind: "open", noteId: value } : null;
+    return { kind: "macro", ref: value };
+  }
+  function stepsOf(macro) {
+    return macro.steps ?? [{ kind: "insert" }, ...macro.commands.map((name) => ({ kind: "command", name }))];
+  }
+  var MAX_CHAIN_DEPTH = 5;
   function parseScope(raw) {
     const match = /^(type|under|label)\s*:\s*(.+)$/i.exec(raw.trim());
     if (!match) return null;
@@ -3125,7 +3140,6 @@ ifThenRules: []
     const label = (name2) => note.labels[name2]?.[0]?.trim() ?? "";
     const name = note.title.trim();
     if (!name) return { error: `Macro ${note.id} has no title.` };
-    if (!note.body.trim()) return { error: `Macro "${name}" has an empty body.` };
     const rawMode = label("macroMode").toLowerCase() || "html";
     if (rawMode !== "html" && rawMode !== "text") {
       return { error: `Macro "${name}" has unknown #macroMode "${rawMode}" (use html or text).` };
@@ -3152,6 +3166,20 @@ ifThenRules: []
       }
     }
     const commands = (note.labels["macroCommand"] ?? []).map((c) => c.trim()).filter(Boolean);
+    let steps;
+    const rawSteps = (note.labels["macroStep"] ?? []).filter((raw) => raw.trim());
+    if (rawSteps.length) {
+      if (commands.length) return { error: `Macro "${name}" has both #macroStep and #macroCommand; put the commands in steps as command:<name> so their order is clear.` };
+      steps = [];
+      for (const raw of rawSteps) {
+        const step = parseStep(raw);
+        if (!step) return { error: `Macro "${name}" has invalid #macroStep "${raw}" (use insert, command:<name>, macro:<title or noteId> or open:<noteId>).` };
+        steps.push(step);
+      }
+    } else {
+      steps = [{ kind: "insert" }, ...commands.map((c) => ({ kind: "command", name: c }))];
+    }
+    if (steps.some((step) => step.kind === "insert") && !note.body.trim()) return { error: `Macro "${name}" has an empty body.` };
     const scopes = [];
     for (const raw of note.labels["macroScope"] ?? []) {
       if (!raw.trim()) continue;
@@ -3166,7 +3194,7 @@ ifThenRules: []
         return { error: `Macro "${name}" has #macroAutoExpand, so its abbreviation "${abbrev}" must start with a symbol such as ; or / (a plain word would expand while you type other words).` };
       }
     }
-    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands, scopes, autoExpand } };
+    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands, steps, scopes, autoExpand } };
   }
   var LIBRARY_LABEL = "ikmalMacroLibrary";
   var DEFAULT_LIBRARY_GROUP = "Other";
@@ -3223,6 +3251,27 @@ ifThenRules: []
     return entries.filter((e) => [e.name, e.group, e.summary, e.abbrev ?? "", e.hotkey ?? ""].some((field) => field.toLowerCase().includes(q)));
   }
   var nameOf = (notes, id) => notes.find((n) => n.id === id)?.title.trim() || id;
+  var lookupKey = (value) => value.trim().toLowerCase();
+  function findMacroByRef(macros, ref) {
+    return macros.find((m) => m.id === ref) ?? macros.find((m) => lookupKey(m.name) === lookupKey(ref));
+  }
+  function dropCycles(macros, errors) {
+    const edges = (m) => stepsOf(m).flatMap((step) => step.kind === "macro" ? [findMacroByRef(macros, step.ref)] : []).filter((x) => !!x);
+    const inCycle = /* @__PURE__ */ new Set();
+    const visit = (macro, path) => {
+      const at = path.indexOf(macro);
+      if (at !== -1) {
+        const loop = path.slice(at);
+        loop.forEach((m) => inCycle.add(m));
+        errors.push(`Macros run each other in a loop: ${[...loop, macro].map((m) => `"${m.name}"`).join(" -> ")}; those macros are skipped.`);
+        return;
+      }
+      if (inCycle.has(macro) || path.length > macros.length) return;
+      for (const next of edges(macro)) visit(next, [...path, macro]);
+    };
+    for (const macro of macros) visit(macro, []);
+    for (let i = macros.length - 1; i >= 0; i--) if (inCycle.has(macros[i])) macros.splice(i, 1);
+  }
   function buildRegistry(notes, isMac = false) {
     const macros = [];
     const errors = [];
@@ -3255,6 +3304,7 @@ ifThenRules: []
       if (macro.abbrev) claim(abbrevOwners, macro.abbrev, { name: macro.name, scopes: macro.scopes });
       macros.push(macro);
     }
+    dropCycles(macros, errors);
     const kept = macros.filter((auto) => {
       const longer = auto.autoExpand ? macros.find((other) => other !== auto && shadowedBy(auto, other)) : void 0;
       if (longer) errors.push(`Macro "${auto.name}" auto-expands "${auto.abbrev}", which you type on the way to "${longer.abbrev}" ("${longer.name}"); macro skipped.`);
@@ -3389,28 +3439,44 @@ ifThenRules: []
     return out + literal(source.slice(last));
   }
   var messageOf = (err) => typeof err?.message === "string" ? err.message : String(err);
-  async function runMacro(macro, host) {
+  async function runMacro(macro, host, depth = 0) {
     try {
       const warnings = [];
-      const values = { now: host.now?.() ?? /* @__PURE__ */ new Date(), prompts: {} };
-      for (const { label, defaultValue } of promptsIn(macro.content)) {
-        const answer = host.prompt ? await host.prompt(label, defaultValue) : defaultValue;
-        if (answer === null) return { ok: false, cancelled: true };
-        values.prompts[label] = answer;
-      }
-      if (needsClipboard(macro.content)) {
-        try {
-          values.clipboard = await host.readClipboard?.() ?? "";
-        } catch (err) {
-          values.clipboard = "";
-          warnings.push(`Could not read the clipboard: ${messageOf(err)}`);
+      const done = () => warnings.length ? { ok: true, warnings } : { ok: true };
+      for (const step of stepsOf(macro)) {
+        if (step.kind === "command") {
+          await host.executeCommand(step.name);
+        } else if (step.kind === "open") {
+          if (!host.openNote) return { ok: false, error: "This host cannot open notes." };
+          await host.openNote(step.noteId);
+        } else if (step.kind === "macro") {
+          if (depth >= MAX_CHAIN_DEPTH) return { ok: false, error: `Macros are nested more than ${MAX_CHAIN_DEPTH} deep; stopped at "${step.ref}".` };
+          const child = host.resolveMacro?.(step.ref);
+          if (!child) return { ok: false, error: `Step macro:${step.ref} did not match a macro that acts in this note.` };
+          const result = await runMacro(child, host, depth + 1);
+          warnings.push(...result.warnings ?? []);
+          if (!result.ok) return { ...result, warnings: warnings.length ? warnings : void 0 };
+        } else {
+          const values = { now: host.now?.() ?? /* @__PURE__ */ new Date(), prompts: {} };
+          for (const { label, defaultValue } of promptsIn(macro.content)) {
+            const answer = host.prompt ? await host.prompt(label, defaultValue, macro.name) : defaultValue;
+            if (answer === null) return { ok: false, cancelled: true };
+            values.prompts[label] = answer;
+          }
+          if (needsClipboard(macro.content)) {
+            try {
+              values.clipboard = await host.readClipboard?.() ?? "";
+            } catch (err) {
+              values.clipboard = "";
+              warnings.push(`Could not read the clipboard: ${messageOf(err)}`);
+            }
+          }
+          const html = renderHtml(macro, values);
+          await host.insertHtml(html);
+          if (html.includes(CURSOR_MARK)) await host.placeCursor?.(CURSOR_MARK);
         }
       }
-      const html = renderHtml(macro, values);
-      await host.insertHtml(html);
-      if (html.includes(CURSOR_MARK)) await host.placeCursor?.(CURSOR_MARK);
-      for (const command of macro.commands) await host.executeCommand(command);
-      return warnings.length ? { ok: true, warnings } : { ok: true };
+      return done();
     } catch (err) {
       return { ok: false, error: messageOf(err) };
     }
@@ -3685,7 +3751,7 @@ ifThenRules: []
     if (added) container.setLabel("macroLibrarySeeded", [...seeded].join(","));
     return problems;
   }
-  var LABEL_NAMES = ["macroMode", "macroHotkey", "macroAbbrev", "macroButton", "macroCommand", "macroScope", "macroAutoExpand"];
+  var LABEL_NAMES = ["macroMode", "macroHotkey", "macroAbbrev", "macroButton", "macroCommand", "macroScope", "macroAutoExpand", "macroStep"];
   var LIBRARY_LABEL_NAMES = [...LABEL_NAMES, "macroGroup", "macroSummary"];
   function setMacroEnabled(noteId, enabled, libraryLabel) {
     const note = api.getNote(noteId);
@@ -3789,14 +3855,17 @@ ifThenRules: []
     });
     return true;
   }
-  function makeHost(editor, api2, macro, onInserted) {
+  function makeHost(editor, api2, macro, onInserted, resolveMacro) {
     return {
       // A dismissed dialog comes back as null/undefined; both mean "cancel the macro".
-      prompt: async (label, defaultValue) => {
+      // The dialog is titled with the macro that asked, which in a chain may be a nested one.
+      prompt: async (label, defaultValue, macroName) => {
         if (!api2.showPromptDialog) return defaultValue;
-        const answer = await api2.showPromptDialog({ title: macro.name, message: label, defaultValue });
+        const answer = await api2.showPromptDialog({ title: macroName, message: label, defaultValue });
         return answer ?? null;
       },
+      resolveMacro,
+      openNote: (noteId) => api2.activateNote?.(noteId),
       readClipboard: () => navigator.clipboard.readText(),
       // api.addTextToActiveContextEditor inserts its argument as plain text, so go through
       // the editor's own HTML -> model pipeline to get real formatting.
@@ -3813,13 +3882,13 @@ ifThenRules: []
     if (!result.ok && !result.cancelled) api2.showError(`Macro "${macro.name}" failed: ${result.error}`);
     for (const warning of result.warnings ?? []) api2.showMessage(`Macro "${macro.name}": ${warning}`);
   }
-  async function runInActiveEditor(api2, macro) {
+  async function runInActiveEditor(api2, macro, resolveMacro) {
     const editor = await api2.getActiveContextTextEditor();
     if (!editor) {
       api2.showError(`Macro "${macro.name}" needs an open text note with the cursor in it.`);
       return false;
     }
-    const result = await runMacro(macro, makeHost(editor, api2, macro));
+    const result = await runMacro(macro, makeHost(editor, api2, macro, void 0, resolveMacro));
     reportRun(api2, macro, result);
     return result.ok;
   }
@@ -3830,6 +3899,7 @@ ifThenRules: []
       if (!note) return null;
       return { type: note.type, hasLabel: (name) => note.hasLabel(name), isUnder: (id) => note.noteId === id || note.hasAncestor(id) };
     };
+    const resolve = (ref) => findMacroByRef(available(), ref) ?? null;
     const available = () => {
       if (!macros.some((m) => m.scopes.length)) return macros;
       const context = noteContext();
@@ -3904,7 +3974,7 @@ ifThenRules: []
         api2.showMessage(`Macro "${macro.name}" is only available in ${describeScopes(macro.scopes)}.`);
         return Promise.resolve(false);
       }
-      if (macro) return runInActiveEditor(api2, macro);
+      if (macro) return runInActiveEditor(api2, macro, resolve);
       api2.showError("That macro no longer exists. Reload the frontend.");
       return Promise.resolve(false);
     };
@@ -3992,7 +4062,7 @@ ifThenRules: []
         list.querySelectorAll("button").forEach((btn, i) => {
           btn.addEventListener("click", () => {
             modal.querySelector(".ns-close")?.click();
-            void runInActiveEditor(api2, matches[i]);
+            void runInActiveEditor(api2, matches[i], resolve);
           });
         });
       };
@@ -4022,7 +4092,7 @@ ifThenRules: []
         writer.addMarker(EXPANSION, { range, usingOperation: false, affectsData: false });
         lastExpansion = { editor, abbrev: hit.abbrev };
       }) : void 0;
-      void runMacro(hit, makeHost(editor, api2, hit, onInserted)).then((r) => {
+      void runMacro(hit, makeHost(editor, api2, hit, onInserted, resolve)).then((r) => {
         reportRun(api2, hit, r);
         if (r.cancelled) {
           returnToAnchor(editor);
@@ -4093,7 +4163,7 @@ ifThenRules: []
       if (macro) {
         e.preventDefault();
         e.stopPropagation();
-        void runInActiveEditor(api2, macro);
+        void runInActiveEditor(api2, macro, resolve);
       }
     }, true);
     let warnedNoSeed = false;

@@ -1092,3 +1092,19 @@ test('library screen shows where a scoped macro acts', async () => {
     const chips = [...ui.doc.querySelectorAll('.ns-lib-scope')].map((c) => c.textContent);
     assert.deepEqual(chips, ['code notes, under abc']);
 });
+
+test('buttonSpecs only builds a launcher for a macro whose id is a plain note id', () => {
+    const mk = (id) => ({ id, name: 'N', button: 'star' });
+    const specs = buttonSpecs([mk('abc_123'), mk('x");alert(1);("'), mk('has space'), mk('')]);
+    assert.deepEqual(specs.map((s) => s.macroId), ['abc_123']);
+});
+
+test('the toggle sets its id as a property, so a hostile id cannot become markup', async () => {
+    const { JSDOM } = await import('jsdom');
+    globalThis.document = new JSDOM('<!doctype html><body></body>').window.document;
+    const { toggle } = await import('../dist/components/nativeUi.js');
+    const el = toggle('x"><img src=x onerror=1>', true);
+    assert.equal(el.querySelector('img'), null);
+    assert.equal(el.querySelector('input').id, 'x"><img src=x onerror=1>');
+    delete globalThis.document;
+});

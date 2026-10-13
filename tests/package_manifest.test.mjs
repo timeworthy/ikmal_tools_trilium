@@ -274,5 +274,6 @@ test('Today has a separate visible page from the workspace settings dashboard', 
 test('deploy adds mobileStartup only for artifacts that opt in', () => {
     const source = fs.readFileSync(new URL('tools/deploy_plugin_to_instance.py', root), 'utf8');
 
-    assert.match(source, /if artifact\.get\("mobile"\):\s*(#.*\s*)*api\.add_label\(art_note_id, "run", "mobileStartup"\)/);
+    // Line by line (no nested quantifiers): the condition, optional comment lines, then the call.
+    assert.match(source, /if artifact\.get\("mobile"\):\n(?:[ \t]*#[^\n]*\n)*[ \t]*api\.add_label\(art_note_id, "run", "mobileStartup"\)/);
 });

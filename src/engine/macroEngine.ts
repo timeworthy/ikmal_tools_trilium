@@ -14,6 +14,7 @@
  *   #macroButton     -> optional launcher-bar button; the value is a Boxicons name (default `bolt-circle`)
  *   #macroCommand    -> optional, repeatable; editor commands run in order after the insert
  *   #macroAutoExpand -> optional flag; the abbreviation expands as soon as it is typed, no Tab. It must start with a symbol (`;sig`, `/date`)
+ *   #macroStep       -> optional, repeatable, in order: `insert`, `command:<name>`, `macro:<title or noteId>`, `open:<noteId>`. Without any, the macro is `insert` then each #macroCommand.
  *   #macroScope      -> optional, repeatable; `type:text`, `under:<noteId>` or `label:<name>`. The macro only acts in a note matching ANY entry.
  *
  * Tokens in the body, written `{{name}}` or `{{name:argument}}`:
@@ -46,9 +47,37 @@ export interface Macro {
     commands: string[];
     /** Empty means everywhere; otherwise the macro acts only in a note matching any entry. */
     scopes: Scope[];
+    /** What the macro does, in order. Always set by buildMacro; a macro built by hand without it means insert, then `commands`. */
+    steps: Step[];
     /** Expand the abbreviation as it is typed instead of waiting for Tab. Only abbreviations starting with a symbol qualify. */
     autoExpand: boolean;
 }
+
+export type Step =
+    | { kind: 'insert' }
+    | { kind: 'command'; name: string }
+    | { kind: 'macro'; ref: string }
+    | { kind: 'open'; noteId: string };
+
+/** `insert`, `command:bold`, `macro:Signature`, `open:abc123`. Null when malformed. */
+export function parseStep(raw: string): Step | null {
+    const text = raw.trim();
+    if (text.toLowerCase() === 'insert') return { kind: 'insert' };
+    const match = /^(command|macro|open)\s*:\s*(\S.*)$/i.exec(text);
+    if (!match) return null;
+    const kind = match[1].toLowerCase();
+    const value = match[2].trim();
+    if (kind === 'command') return /^[A-Za-z][A-Za-z0-9]*$/.test(value) ? { kind: 'command', name: value } : null;
+    if (kind === 'open') return /^[A-Za-z0-9_]+$/.test(value) ? { kind: 'open', noteId: value } : null;
+    return { kind: 'macro', ref: value };
+}
+
+/** The steps a macro runs; a hand-built macro without `steps` is insert then its commands. */
+export function stepsOf(macro: Pick<Macro, 'commands'> & Partial<Pick<Macro, 'steps'>>): Step[] {
+    return macro.steps ?? [{ kind: 'insert' }, ...macro.commands.map((name): Step => ({ kind: 'command', name }))];
+}
+
+export const MAX_CHAIN_DEPTH = 5;
 
 export interface Scope {
     kind: 'type' | 'under' | 'label';
@@ -112,7 +141,10 @@ export const CURSOR_MARK = '\uE000';
 
 export interface MacroHost {
     /** Asks the user for a value; null means they cancelled. Without it a prompt token takes its default. */
-    prompt?(label: string, defaultValue: string): string | null | Promise<string | null>;
+    prompt?(label: string, defaultValue: string, macroName: string): string | null | Promise<string | null>;
+    /** Finds the macro a `macro:` step names, among those that act in the current note; null if there is none. */
+    resolveMacro?(ref: string): Macro | null | undefined;
+    openNote?(noteId: string): void | Promise<void>;
     /** The clipboard text. Without it (or if it throws) `{{clipboard}}` inserts nothing. */
     readClipboard?(): string | Promise<string>;
     now?(): Date;
@@ -196,7 +228,6 @@ export function buildMacro(note: MacroNoteInput, isMac = false): BuildResult {
     const label = (name: string) => note.labels[name]?.[0]?.trim() ?? '';
     const name = note.title.trim();
     if (!name) return { error: `Macro ${note.id} has no title.` };
-    if (!note.body.trim()) return { error: `Macro "${name}" has an empty body.` };
 
     const rawMode = label('macroMode').toLowerCase() || 'html';
     if (rawMode !== 'html' && rawMode !== 'text') {
@@ -229,6 +260,22 @@ export function buildMacro(note: MacroNoteInput, isMac = false): BuildResult {
 
     const commands = (note.labels['macroCommand'] ?? []).map((c) => c.trim()).filter(Boolean);
 
+    let steps: Step[];
+    const rawSteps = (note.labels['macroStep'] ?? []).filter((raw) => raw.trim());
+    if (rawSteps.length) {
+        if (commands.length) return { error: `Macro "${name}" has both #macroStep and #macroCommand; put the commands in steps as command:<name> so their order is clear.` };
+        steps = [];
+        for (const raw of rawSteps) {
+            const step = parseStep(raw);
+            if (!step) return { error: `Macro "${name}" has invalid #macroStep "${raw}" (use insert, command:<name>, macro:<title or noteId> or open:<noteId>).` };
+            steps.push(step);
+        }
+    } else {
+        steps = [{ kind: 'insert' }, ...commands.map((c): Step => ({ kind: 'command', name: c }))];
+    }
+    // A chain made only of other steps needs no body of its own.
+    if (steps.some((step) => step.kind === 'insert') && !note.body.trim()) return { error: `Macro "${name}" has an empty body.` };
+
     const scopes: Scope[] = [];
     for (const raw of note.labels['macroScope'] ?? []) {
         if (!raw.trim()) continue;
@@ -243,7 +290,7 @@ export function buildMacro(note: MacroNoteInput, isMac = false): BuildResult {
             return { error: `Macro "${name}" has #macroAutoExpand, so its abbreviation "${abbrev}" must start with a symbol such as ; or / (a plain word would expand while you type other words).` };
         }
     }
-    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands, scopes, autoExpand } };
+    return { macro: { id: note.id, name, mode: rawMode, content: note.body, hotkey, abbrev, button, commands, steps, scopes, autoExpand } };
 }
 
 /** A library note as read from Trilium: a macro note that may or may not be switched on. */
@@ -341,6 +388,32 @@ export function filterLibrary(entries: LibraryEntry[], query: string): LibraryEn
 
 const nameOf = (notes: LibraryNoteInput[], id: string) => notes.find((n) => n.id === id)?.title.trim() || id;
 
+const lookupKey = (value: string) => value.trim().toLowerCase();
+
+/** The macro a `macro:` step refers to: by note id, else by title (case-insensitive). */
+export function findMacroByRef(macros: Macro[], ref: string): Macro | undefined {
+    return macros.find((m) => m.id === ref) ?? macros.find((m) => lookupKey(m.name) === lookupKey(ref));
+}
+
+/** Removes every macro that is part of a chain cycle (A runs B runs A), reporting the loop. Mutates `macros`. */
+function dropCycles(macros: Macro[], errors: string[]) {
+    const edges = (m: Macro) => stepsOf(m).flatMap((step) => (step.kind === 'macro' ? [findMacroByRef(macros, step.ref)] : [])).filter((x): x is Macro => !!x);
+    const inCycle = new Set<Macro>();
+    const visit = (macro: Macro, path: Macro[]) => {
+        const at = path.indexOf(macro);
+        if (at !== -1) {
+            const loop = path.slice(at);
+            loop.forEach((m) => inCycle.add(m));
+            errors.push(`Macros run each other in a loop: ${[...loop, macro].map((m) => `"${m.name}"`).join(' -> ')}; those macros are skipped.`);
+            return;
+        }
+        if (inCycle.has(macro) || path.length > macros.length) return;
+        for (const next of edges(macro)) visit(next, [...path, macro]);
+    };
+    for (const macro of macros) visit(macro, []);
+    for (let i = macros.length - 1; i >= 0; i--) if (inCycle.has(macros[i])) macros.splice(i, 1);
+}
+
 export interface Registry {
     macros: Macro[];
     errors: string[];
@@ -383,6 +456,7 @@ export function buildRegistry(notes: MacroNoteInput[], isMac = false): Registry 
         if (macro.abbrev) claim(abbrevOwners, macro.abbrev, { name: macro.name, scopes: macro.scopes });
         macros.push(macro);
     }
+    dropCycles(macros, errors);
     // Drop auto-expanding macros that would swallow a longer abbreviation on the way to typing it.
     const kept = macros.filter((auto) => {
         const longer = auto.autoExpand ? macros.find((other) => other !== auto && shadowedBy(auto, other)) : undefined;
@@ -556,30 +630,45 @@ export function renderHtml(macro: Macro, values: TokenValues = {}): string {
 /** Errors from other realms (iframes, DOMException) fail `instanceof Error`, so read `.message` directly. */
 const messageOf = (err: unknown) => (typeof (err as { message?: unknown })?.message === 'string' ? (err as { message: string }).message : String(err));
 
-export async function runMacro(macro: Macro, host: MacroHost): Promise<MacroRunResult> {
+export async function runMacro(macro: Macro, host: MacroHost, depth = 0): Promise<MacroRunResult> {
     try {
         const warnings: string[] = [];
-        const values: TokenValues = { now: host.now?.() ?? new Date(), prompts: {} };
+        const done = (): MacroRunResult => (warnings.length ? { ok: true, warnings } : { ok: true });
 
-        for (const { label, defaultValue } of promptsIn(macro.content)) {
-            const answer = host.prompt ? await host.prompt(label, defaultValue) : defaultValue;
-            if (answer === null) return { ok: false, cancelled: true };
-            values.prompts![label] = answer;
-        }
-        if (needsClipboard(macro.content)) {
-            try {
-                values.clipboard = (await host.readClipboard?.()) ?? '';
-            } catch (err) {
-                values.clipboard = '';
-                warnings.push(`Could not read the clipboard: ${messageOf(err)}`);
+        for (const step of stepsOf(macro)) {
+            if (step.kind === 'command') {
+                await host.executeCommand(step.name);
+            } else if (step.kind === 'open') {
+                if (!host.openNote) return { ok: false, error: 'This host cannot open notes.' };
+                await host.openNote(step.noteId);
+            } else if (step.kind === 'macro') {
+                if (depth >= MAX_CHAIN_DEPTH) return { ok: false, error: `Macros are nested more than ${MAX_CHAIN_DEPTH} deep; stopped at "${step.ref}".` };
+                const child = host.resolveMacro?.(step.ref);
+                if (!child) return { ok: false, error: `Step macro:${step.ref} did not match a macro that acts in this note.` };
+                const result = await runMacro(child, host, depth + 1);
+                warnings.push(...(result.warnings ?? []));
+                if (!result.ok) return { ...result, warnings: warnings.length ? warnings : undefined };
+            } else {
+                const values: TokenValues = { now: host.now?.() ?? new Date(), prompts: {} };
+                for (const { label, defaultValue } of promptsIn(macro.content)) {
+                    const answer = host.prompt ? await host.prompt(label, defaultValue, macro.name) : defaultValue;
+                    if (answer === null) return { ok: false, cancelled: true };
+                    values.prompts![label] = answer;
+                }
+                if (needsClipboard(macro.content)) {
+                    try {
+                        values.clipboard = (await host.readClipboard?.()) ?? '';
+                    } catch (err) {
+                        values.clipboard = '';
+                        warnings.push(`Could not read the clipboard: ${messageOf(err)}`);
+                    }
+                }
+                const html = renderHtml(macro, values);
+                await host.insertHtml(html);
+                if (html.includes(CURSOR_MARK)) await host.placeCursor?.(CURSOR_MARK);
             }
         }
-
-        const html = renderHtml(macro, values);
-        await host.insertHtml(html);
-        if (html.includes(CURSOR_MARK)) await host.placeCursor?.(CURSOR_MARK);
-        for (const command of macro.commands) await host.executeCommand(command);
-        return warnings.length ? { ok: true, warnings } : { ok: true };
+        return done();
     } catch (err) {
         return { ok: false, error: messageOf(err) };
     }

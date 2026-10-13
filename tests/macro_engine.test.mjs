@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    buildLibrary, filterLibrary, parseScope, inScope, scopesMayOverlap, describeScopes, parseHotkey, matchesHotkey, buildMacro, buildRegistry, findByHotkey, searchMacros, runMacro, renderHtml, CURSOR_MARK,
+    buildLibrary, filterLibrary, parseStep, stepsOf, findMacroByRef, MAX_CHAIN_DEPTH, parseScope, inScope, scopesMayOverlap, describeScopes, parseHotkey, matchesHotkey, buildMacro, buildRegistry, findByHotkey, searchMacros, runMacro, renderHtml, CURSOR_MARK,
     formatDate, promptsIn,
 } from '../dist/engine/macroEngine.js';
 
@@ -1325,4 +1325,175 @@ test('the toggle sets its id as a property, so a hostile id cannot become markup
     assert.equal(el.querySelector('img'), null);
     assert.equal(el.querySelector('input').id, 'x"><img src=x onerror=1>');
     delete globalThis.document;
+});
+
+// ---- action chains ----
+
+test('parseStep accepts the four step forms and rejects the rest', () => {
+    assert.deepEqual(parseStep('insert'), { kind: 'insert' });
+    assert.deepEqual(parseStep(' INSERT '), { kind: 'insert' });
+    assert.deepEqual(parseStep('command:bold'), { kind: 'command', name: 'bold' });
+    assert.deepEqual(parseStep('macro: Meeting notes '), { kind: 'macro', ref: 'Meeting notes' });
+    assert.deepEqual(parseStep('open:AbC_123'), { kind: 'open', noteId: 'AbC_123' });
+    for (const bad of ['', 'insert:x', 'command:', 'command:bold italic', 'command:1x', 'macro:', 'open:a/b', 'open:', 'wait:5']) {
+        assert.equal(parseStep(bad), null, bad);
+    }
+});
+
+test('buildMacro: no #macroStep means insert then each command, exactly as before', () => {
+    const m = buildMacro(note({ labels: { macroCommand: ['bold', 'italic'] } })).macro;
+    assert.deepEqual(m.steps, [{ kind: 'insert' }, { kind: 'command', name: 'bold' }, { kind: 'command', name: 'italic' }]);
+    assert.deepEqual(buildMacro(note()).macro.steps, [{ kind: 'insert' }]);
+});
+
+test('buildMacro: #macroStep gives the order; mixing with #macroCommand or a bad step is an error', () => {
+    const m = buildMacro(note({ labels: { macroStep: ['command:bold', 'insert', 'macro:Sig', 'open:abc'] } })).macro;
+    assert.deepEqual(m.steps.map((s) => s.kind), ['command', 'insert', 'macro', 'open']);
+    assert.match(buildMacro(note({ labels: { macroStep: ['insert'], macroCommand: ['bold'] } })).error, /both #macroStep and #macroCommand/);
+    assert.match(buildMacro(note({ labels: { macroStep: ['nonsense'] } })).error, /invalid #macroStep "nonsense"/);
+});
+
+test('buildMacro: a chain without an insert step needs no body, one with an insert step still does', () => {
+    assert.ok(buildMacro(note({ body: '', labels: { macroStep: ['macro:Sig', 'command:bold'] } })).macro);
+    assert.match(buildMacro(note({ body: ' ', labels: { macroStep: ['insert'] } })).error, /empty body/);
+    assert.match(buildMacro(note({ body: '' })).error, /empty body/);
+});
+
+test('registry: macros that run each other in a loop are dropped and reported; a plain chain is kept', () => {
+    const chain = (id, title, ...steps) => ({ id, title, body: 'x', labels: { macroStep: steps } });
+    const loop = buildRegistry([
+        chain('a', 'A', 'macro:B'), chain('b', 'B', 'macro:C'), chain('c', 'C', 'macro:a'), chain('d', 'D', 'insert'),
+    ]);
+    assert.deepEqual(loop.macros.map((m) => m.name), ['D']);
+    assert.match(loop.errors[0], /in a loop: "A" -> "B" -> "C" -> "A"/);
+    const self = buildRegistry([chain('s', 'Self', 'macro:self')]);
+    assert.deepEqual(self.macros, []);
+    const ok = buildRegistry([chain('a', 'A', 'macro:B', 'command:bold'), chain('b', 'B', 'insert')]);
+    assert.deepEqual([ok.errors, ok.macros.length], [[], 2]);
+});
+
+test('findMacroByRef matches a note id first, then a title ignoring case', () => {
+    const macros = [{ id: 'x1', name: 'Alpha' }, { id: 'x2', name: 'x1' }];
+    assert.equal(findMacroByRef(macros, 'x1').name, 'Alpha');
+    assert.equal(findMacroByRef(macros, ' alpha ').id, 'x1');
+    assert.equal(findMacroByRef(macros, 'nope'), undefined);
+});
+
+function chainHost(over = {}) {
+    const log = [];
+    return {
+        log,
+        insertHtml: (h) => log.push(`insert:${h}`),
+        executeCommand: (c) => log.push(`cmd:${c}`),
+        openNote: (id) => log.push(`open:${id}`),
+        now: () => when,
+        ...over,
+    };
+}
+const withSteps = (name, content, ...steps) => tm(content, { name, steps: steps.map((s) => parseStep(s)) });
+
+test('a chain runs its steps in order, including a command before the insert', async () => {
+    const h = chainHost();
+    const result = await runMacro(withSteps('Chain', '<p>body</p>', 'command:selectAll', 'insert', 'command:bold', 'open:abc123', 'insert'), h);
+    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(h.log, ['cmd:selectAll', 'insert:<p>body</p>', 'cmd:bold', 'open:abc123', 'insert:<p>body</p>']);
+});
+
+test('a macro step runs the other macro in the same editor, and the chain carries on afterwards', async () => {
+    const child = withSteps('Child', '<p>child</p>', 'insert', 'command:italic');
+    const h = chainHost({ resolveMacro: (ref) => (ref === 'Child' ? child : null) });
+    const result = await runMacro(withSteps('Parent', '<p>parent</p>', 'insert', 'macro:Child', 'command:bold'), h);
+    assert.equal(result.ok, true);
+    assert.deepEqual(h.log, ['insert:<p>parent</p>', 'insert:<p>child</p>', 'cmd:italic', 'cmd:bold']);
+});
+
+test('a missing macro step stops the chain with a clear message and nothing after it runs', async () => {
+    const h = chainHost({ resolveMacro: () => null });
+    const result = await runMacro(withSteps('P', '<p>x</p>', 'insert', 'macro:Ghost', 'command:bold'), h);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /Step macro:Ghost did not match a macro that acts in this note/);
+    assert.deepEqual(h.log, ['insert:<p>x</p>'], 'steps before it did run, the one after did not');
+    assert.match((await runMacro(withSteps('P', 'x', 'macro:Ghost'), chainHost())).error, /did not match/, 'a host that cannot resolve macros fails the same way');
+});
+
+test('a cancelled prompt inside a nested macro cancels the whole chain, and the dialog is titled with that macro', async () => {
+    const asked = [];
+    const child = withSteps('Asker', '<p>{{prompt:Q}}</p>', 'insert');
+    const h = chainHost({ resolveMacro: () => child, prompt: (label, def, name) => { asked.push([label, name]); return null; } });
+    const result = await runMacro(withSteps('Outer', 'x', 'macro:Asker', 'command:bold'), h);
+    assert.deepEqual(result, { ok: false, cancelled: true, warnings: undefined });
+    assert.deepEqual(asked, [['Q', 'Asker']]);
+    assert.deepEqual(h.log, []);
+});
+
+test('a failing step in the middle stops the rest, and warnings from nested macros are kept', async () => {
+    const child = withSteps('Cl', '[{{clipboard}}]', 'insert');
+    const h = chainHost({ resolveMacro: () => child, readClipboard: () => { throw new Error('denied'); }, executeCommand: (c) => { if (c === 'boom') throw new Error('no such command'); h.log.push(`cmd:${c}`); } });
+    const ok = await runMacro(withSteps('P', 'x', 'macro:Cl'), h);
+    assert.equal(ok.ok, true);
+    assert.match(ok.warnings[0], /Could not read the clipboard: denied/);
+    const bad = await runMacro(withSteps('P', 'x', 'command:boom', 'command:after'), h);
+    assert.deepEqual([bad.ok, bad.error], [false, 'no such command']);
+    assert.ok(!h.log.includes('cmd:after'));
+});
+
+test('runaway nesting is stopped at the depth limit even without a registry check', async () => {
+    const loop = withSteps('Loop', 'x', 'macro:Loop');
+    const h = chainHost({ resolveMacro: () => loop });
+    const result = await runMacro(loop, h);
+    assert.equal(result.ok, false);
+    assert.match(result.error, new RegExp(`nested more than ${MAX_CHAIN_DEPTH} deep`));
+});
+
+test('an open step without a host that can open notes is an error, not a silent skip', async () => {
+    const result = await runMacro(withSteps('O', 'x', 'open:abc'), { insertHtml() {}, executeCommand() {} });
+    assert.deepEqual([result.ok, result.error], [false, 'This host cannot open notes.']);
+});
+
+test('stepsOf defaults a hand-built macro to insert then its commands', () => {
+    assert.deepEqual(stepsOf({ commands: ['bold'] }), [{ kind: 'insert' }, { kind: 'command', name: 'bold' }]);
+});
+
+test('hotkey run of a chain: nested macro, then the command, in order, from the real runtime', async () => {
+    const commands = [];
+    const macros = [
+        fnote('p', 'Parent', '', { macroHotkey: ['alt+g'], macroStep: ['macro:Child', 'command:bold'] }),
+        fnote('c', 'Child', '<p>child</p>', {}),
+    ];
+    const { dom, inserted } = await launcherWithMacros(macros, { onCommand: (c) => commands.push(c) });
+    pressKey(dom, { key: 'g', altKey: true });
+    await tick();
+    assert.deepEqual(inserted, ['<p>child</p>']);
+    assert.deepEqual(commands, ['bold']);
+});
+
+test('chain: a child that does not act in this note stops it with a message; an open step goes to the note', async () => {
+    const macros = [
+        fnote('p', 'Parent', '', { macroHotkey: ['alt+g'], macroStep: ['macro:Code only', 'command:bold'] }),
+        fnote('c', 'Code only', '<p>x</p>', { macroScope: ['type:code'] }),
+        fnote('o', 'Opener', '', { macroHotkey: ['alt+o'], macroStep: ['open:AbC123'] }),
+    ];
+    const run = await launcherWithMacros(macros, { activeNote: noteIn({ type: 'text' }) });
+    const opened = [];
+    run.dom.window.api.activateNote = (id) => opened.push(id);
+    pressKey(run.dom, { key: 'g', altKey: true });
+    await tick();
+    assert.deepEqual(run.inserted, []);
+    assert.match(run.errors[0], /Macro "Parent" failed: Step macro:Code only did not match a macro that acts in this note/);
+    pressKey(run.dom, { key: 'o', altKey: true });
+    await tick();
+    assert.deepEqual(opened, ['AbC123']);
+});
+
+test('chain: the prompt dialog of a nested macro is titled with that macro', async () => {
+    const dialogs = [];
+    const macros = [
+        fnote('p', 'Parent', '', { macroHotkey: ['alt+g'], macroStep: ['macro:Asker'] }),
+        fnote('c', 'Asker', '<p>{{prompt:Name}}</p>', {}),
+    ];
+    const { dom, inserted } = await launcherWithMacros(macros, { prompt: async (o) => { dialogs.push(JSON.parse(JSON.stringify(o))); return 'Ian'; } });
+    pressKey(dom, { key: 'g', altKey: true });
+    await tick();
+    assert.deepEqual(dialogs, [{ title: 'Asker', message: 'Name', defaultValue: '' }]);
+    assert.deepEqual(inserted, ['<p>Ian</p>']);
 });

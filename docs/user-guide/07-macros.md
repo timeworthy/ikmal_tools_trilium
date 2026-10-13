@@ -15,6 +15,7 @@ Create a note, give it the label `#ikmalMacro`, and put the content to insert in
 | `#macroAutoExpand` | Optional flag. The abbreviation expands the moment you finish typing it, with no Tab (see Auto-expand). |
 | `#macroButton=star` | Optional launcher-bar button that runs the macro. The value is a Boxicons name (empty uses `bolt-circle`). Requires backend scripting (see below). |
 | `#macroCommand=bold` | Optional and repeatable. CKEditor commands run in order after the insert. |
+| `#macroStep=insert` | Optional and repeatable. Spells out what the macro does and in what order (see Chains). |
 | `#macroScope=type:text` | Optional and repeatable. Limits where the macro acts (see Scope). |
 | `#ikmalMacroLibrary` | Instead of `#ikmalMacro`: a library macro that stays off until you switch it on (see Macro library). Optional `#macroGroup` and `#macroSummary` describe it in the library screen. |
 
@@ -48,6 +49,25 @@ Write a token as `{{name}}` or `{{name:argument}}` anywhere in a macro's body.
 - Clipboard and prompt text is always inserted as plain text, never as HTML, so pasted `<b>` stays literal. Line breaks are kept.
 - If the browser blocks clipboard access, the macro still runs, `{{clipboard}}` inserts nothing, and a message says why.
 - A token with an unknown name is left as you typed it.
+
+## Chains
+
+A macro normally inserts its body and then runs its `#macroCommand`s. Add `#macroStep` labels when you want to say exactly what happens, and in what order. Steps run top to bottom:
+
+| Step | Does |
+| --- | --- |
+| `insert` | Inserts the note's body (tokens, prompts and `{{cursor}}` work as usual). May appear more than once. |
+| `command:bold` | Runs an editor command, like `#macroCommand`. |
+| `macro:Signature` | Runs another macro in the same editor. Name it by title (any case) or note id. |
+| `open:<noteId>` | Opens that note in the active tab. |
+
+Example: a "Report" macro with `#macroStep=insert`, `#macroStep=macro:Closing line`, `#macroStep=open:<noteId of your weekly note>` inserts a heading, asks for and inserts your closing line, then jumps to the weekly note.
+
+- Without any `#macroStep` nothing changes. Using `#macroStep` together with `#macroCommand` skips the macro with a message; write the commands as `command:` steps instead.
+- A chain with no `insert` step needs no body.
+- A `macro:` step runs only macros that act in the current note (see Scope). If none matches, the chain stops and says which step. A cancelled prompt anywhere stops the whole chain. Steps that already ran are not undone.
+- Macros that run each other in a circle are skipped with a message naming the loop, and nesting more than 5 deep stops with an error.
+- A prompt shown by a nested macro is titled with that macro's name.
 
 ## Auto-expand
 

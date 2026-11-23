@@ -1,0 +1,52 @@
+name: Auto-merge policy
+# Merges a pull request with a merge commit (never squash or rebase) once every
+# check on its head commit has passed. The repository default comes from the
+# AUTO_MERGE_DEFAULT variable ("on" enables it; anything else is off). The
+# AUTO_MERGE_REQUIRED_CHECKS is a comma-separated list of check names that must
+# all be present and successful; empty means nothing merges (fail closed).
+# per-pull-request labels "auto-merge" and "no-auto-merge" override the default.
+#
+# The check_suite trigger fires when a suite finishes, so a pull request is
+# re-evaluated after its checks complete. The condition below skips the suite
+# created by this workflow's own check (it has one check run), which would
+# otherwise re-trigger the workflow forever.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+  check_suite:
+    types: [completed]
+permissions:
+  contents: read
+concurrency:
+  group: auto-merge-policy-${{ github.event.pull_request.number || github.event.check_suite.id }}
+  cancel-in-progress: false
+jobs:
+  auto-merge-policy:
+    name: auto-merge-policy
+    if: >-
+      github.event_name != 'check_suite' ||
+      (github.event.check_suite.latest_check_runs_count > 1 && github.event.check_suite.pull_requests[0].number != null)
+    runs-on: k8s-runner
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+    steps:
+      - name: Checkout trusted code from the default branch only
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Decide and merge
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          AUTO_MERGE_DEFAULT: ${{ vars.AUTO_MERGE_DEFAULT }}
+          AUTO_MERGE_REQUIRED_CHECKS: ${{ vars.AUTO_MERGE_REQUIRED_CHECKS }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number }}
+        run: node scripts/auto_merge_policy.mjs

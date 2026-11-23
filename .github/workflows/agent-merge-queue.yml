@@ -55,6 +55,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AGENT_QUEUE_BASE_BRANCH: main
-          AGENT_QUEUE_MERGE_METHOD: squash
+          AGENT_QUEUE_MERGE_METHOD: merge
         run: node scripts/agent_merge_queue.mjs
         shell: bash
